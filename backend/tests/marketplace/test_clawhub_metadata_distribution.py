@@ -10,9 +10,11 @@ from collections.abc import Generator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 
 from backend.app.marketplace.service.clawhub_sync_service import (
+    _bounded_catalog_text,
     ClawHubIdentityError,
     ClawHubSyncService,
     ClawHubUpstreamError,
@@ -88,6 +90,36 @@ class _ClawHubContractHandler(BaseHTTPRequestHandler):
             self._json({'code': 'AMBIGUOUS_SKILL_SLUG'}, status=409)
             return
 
+        if parsed.path == '/api/v1/skills/ambiguous-ranked':
+            owner = query.get('ownerHandle', [None])[0]
+            if owner is None:
+                self._json(
+                    {
+                        'code': 'AMBIGUOUS_SKILL_SLUG',
+                        'matches': [
+                            {'slug': 'ambiguous-ranked', 'ownerHandle': 'alice'},
+                            {'slug': 'ambiguous-ranked', 'ownerHandle': 'bob'},
+                        ],
+                    },
+                    status=409,
+                )
+                return
+            version = '2.0.0' if owner == 'alice' else '1.0.0'
+            downloads = 900 if owner == 'alice' else 10
+            self._json(
+                {
+                    'skill': {
+                        'slug': 'ambiguous-ranked',
+                        'displayName': '榜单技能' if owner == 'alice' else '同名副本',
+                        'summary': '榜单记录' if owner == 'alice' else '低下载副本',
+                        'stats': {'downloads': downloads, 'stars': 3},
+                    },
+                    'owner': {'handle': owner},
+                    'latestVersion': {'version': version},
+                }
+            )
+            return
+
         if parsed.path == '/api/v1/skills/unique':
             self._json(
                 {
@@ -102,17 +134,59 @@ class _ClawHubContractHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == '/api/v1/skills/transient':
+            attempts = sum(
+                1
+                for path, _query in self.requests
+                if path == '/api/v1/skills/transient'
+            )
+            if attempts == 1:
+                self._json({'error': 'temporary'}, status=503)
+                return
+            self._json(
+                {
+                    'skill': {
+                        'slug': 'transient',
+                        'displayName': '瞬时错误重试',
+                        'summary': '用于验证 5xx 重试',
+                        'stats': {'downloads': 20, 'stars': 1},
+                    },
+                    'owner': {'handle': 'alice'},
+                    'latestVersion': {'version': '1.0.0'},
+                }
+            )
+            return
+
         if parsed.path in {
             '/api/v1/skills/demo/versions/1.2.3',
             '/api/v1/skills/unique/versions/1.2.3',
+            '/api/v1/skills/ambiguous-ranked/versions/2.0.0',
+            '/api/v1/skills/transient/versions/1.0.0',
         }:
+            if parsed.path.endswith('/transient/versions/1.0.0'):
+                attempts = sum(
+                    1
+                    for path, _query in self.requests
+                    if path == parsed.path
+                )
+                if attempts == 1:
+                    self._json({'error': 'temporary'}, status=503)
+                    return
             if query.get('ownerHandle') != ['alice']:
                 self._json({'error': 'ownerHandle required'}, status=400)
                 return
             self._json(
                 {
                     'version': {
-                        'version': '1.2.3',
+                        'version': (
+                            '2.0.0'
+                            if parsed.path.endswith('/versions/2.0.0')
+                            else (
+                                '1.0.0'
+                                if parsed.path.endswith('/versions/1.0.0')
+                                else '1.2.3'
+                            )
+                        ),
                         'files': [
                             {
                                 'path': 'SKILL.md',
@@ -219,6 +293,60 @@ def test_ambiguous_owner_is_explicit_error_not_community_fallback(
 
     with pytest.raises(ClawHubIdentityError, match='ambiguous'):
         asyncio.run(service._get_skill_owner('ambiguous'))
+
+
+def test_ambiguous_list_item_resolves_exact_ranked_owner(
+    clawhub_contract_server: str,
+) -> None:
+    service = ClawHubSyncService()
+    service.clawhub_api_url = clawhub_contract_server
+    listed = {
+        'slug': 'ambiguous-ranked',
+        'displayName': '榜单技能',
+        'summary': '榜单记录',
+        'stats': {'downloads': 900, 'stars': 3},
+        'latestVersion': {'version': '2.0.0'},
+    }
+
+    async def prepare() -> dict:
+        async with httpx.AsyncClient(timeout=5) as client:
+            return await service._prepare_distribution_metadata(client, listed, None)
+
+    resolved = asyncio.run(prepare())
+
+    assert resolved['ownerHandle'] == 'alice'
+    assert resolved['_distribution_version']['version'] == '2.0.0'
+
+
+def test_catalog_text_is_bounded_by_database_contract() -> None:
+    assert _bounded_catalog_text('名称', 200) == '名称'
+    assert _bounded_catalog_text('x' * 201, 200) == 'x' * 200
+
+
+def test_transient_detail_and_version_errors_are_retried(
+    clawhub_contract_server: str,
+) -> None:
+    service = ClawHubSyncService()
+    service.clawhub_api_url = clawhub_contract_server
+    listed = {
+        'slug': 'transient',
+        'displayName': '瞬时错误重试',
+        'summary': '用于验证 5xx 重试',
+        'stats': {'downloads': 20, 'stars': 1},
+        'latestVersion': {'version': '1.0.0'},
+    }
+
+    async def prepare() -> dict:
+        async with httpx.AsyncClient(timeout=5) as client:
+            return await service._prepare_distribution_metadata(client, listed, None)
+
+    resolved = asyncio.run(prepare())
+
+    assert resolved['ownerHandle'] == 'alice'
+    assert resolved['_distribution_version']['version'] == '1.0.0'
+    requested_paths = [path for path, _query in _ClawHubContractHandler.requests]
+    assert requested_paths.count('/api/v1/skills/transient') == 2
+    assert requested_paths.count('/api/v1/skills/transient/versions/1.0.0') == 2
 
 
 def test_fetch_version_metadata_keeps_file_manifest_without_downloading_package(
