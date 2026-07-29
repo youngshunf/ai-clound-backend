@@ -30,6 +30,7 @@ class LeadContactSchemaBase(SchemaBase):
     dedupe_key_email: str | None = Field(None, description='None')
     dedupe_key_phone: str | None = Field(None, description='None')
     dedupe_key_domain: str | None = Field(None, description='None')
+    fact_dedupe_key: str | None = Field(None, description='不含 PII 的全局公共事实去重键')
     normalization_version: str = Field(description='None')
     first_seen_at: datetime = Field(description='None')
     last_seen_at: datetime = Field(description='None')

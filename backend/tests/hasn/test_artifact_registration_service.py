@@ -156,6 +156,94 @@ async def test_resource_replay_uses_contribution_idempotency_key() -> None:
             await db.rollback()
 
 
+async def test_resource_metadata_counters_accumulate_once_per_contribution() -> None:
+    """批次摘要按新参与原子累加；同一 dispatch 重放不能重复计数。"""
+    owner = _id('owner')
+    agent = _id('agent')
+
+    def mutation(
+        *,
+        dispatch_id: str,
+        inserted: int,
+        updated: int,
+        skipped: int,
+        error_count: int,
+    ) -> ArtifactMutation:
+        return ArtifactMutation.model_validate({
+            'owner_hasn_id': owner,
+            'agent_hasn_id': agent,
+            'action': 'update',
+            'source_kind': 'app_write',
+            'resource_uri': 'hasn://growth/leads/project-s6-counter',
+            'resource_kind': 'growth.leads',
+            'resource_app_id': 'growth',
+            'dispatch_id': dispatch_id,
+            'title': '获客线索批次',
+            'metadata': {
+                'inserted': inserted,
+                'updated': updated,
+                'skipped': skipped,
+                'error_count': error_count,
+            },
+            'accumulate_metadata_keys': [
+                'inserted',
+                'updated',
+                'skipped',
+                'error_count',
+            ],
+        })
+
+    async with async_db_session() as db:
+        try:
+            first = mutation(
+                dispatch_id='growth-s6-batch-1',
+                inserted=2,
+                updated=1,
+                skipped=0,
+                error_count=1,
+            )
+            await artifact_registration_service.register(db, first)
+            await artifact_registration_service.register(db, first)
+            await artifact_registration_service.register(
+                db,
+                mutation(
+                    dispatch_id='growth-s6-batch-2',
+                    inserted=3,
+                    updated=0,
+                    skipped=4,
+                    error_count=0,
+                ),
+            )
+
+            artifact = (
+                await db.execute(
+                    select(HasnArtifacts).where(
+                        HasnArtifacts.owner_hasn_id == owner
+                    )
+                )
+            ).scalar_one()
+            assert artifact.meta_data == {
+                'inserted': 5,
+                'updated': 1,
+                'skipped': 4,
+                'error_count': 1,
+            }
+            contributions = (
+                (
+                    await db.execute(
+                        select(HasnArtifactContributions).where(
+                            HasnArtifactContributions.owner_hasn_id == owner
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(contributions) == 2
+        finally:
+            await db.rollback()
+
+
 async def test_query_returns_contextual_latest_contribution_without_local_path() -> None:
     """查询必须按筛选上下文选择最新参与记录，且读模型不泄露本地绝对路径。"""
     owner = _id('owner')

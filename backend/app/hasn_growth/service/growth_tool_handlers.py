@@ -16,10 +16,16 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn_growth.schema.business import CreateLeadJobParam
+from backend.app.hasn_growth.schema.project_lead import (
+    ProjectLeadBatchBody,
+    ProjectLeadStatusBody,
+)
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
@@ -37,6 +43,7 @@ from backend.app.hasn_growth.service.opportunity_flow_service import growth_oppo
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.pii import redact_pii_value
 from backend.app.hasn_growth.service.pii_boundary import assert_growth_pii_payload_safe
+from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
@@ -397,6 +404,77 @@ async def handle_growth_enrich_company(
 # ---------------- 线索 ----------------
 
 
+async def handle_growth_lead_ingest(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """按稳定批次写项目线索，并把批次摘要累计到同一项目线索产物。"""
+    body = ProjectLeadBatchBody.model_validate(input_payload)
+    scope = await _scope(db, agent)
+    result = await project_lead_service.ingest_batch(
+        db,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        batch_id=body.batch_id,
+        items=body.items,
+        scope=scope,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
+    )
+    dispatch_digest = hashlib.sha256(
+        f"{result['growth_project_id']}:{body.batch_id}".encode()
+    ).hexdigest()[:40]
+    counters = {
+        key: int(result[key])
+        for key in ('inserted', 'updated', 'skipped', 'error_count')
+    }
+    registration = await register_app_resource_artifact(
+        db,
+        app_id='growth',
+        resource_kind='growth.leads',
+        server_id=result['growth_project_id'],
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title='获客线索池',
+        summary=(
+            f"批次 {body.batch_id}：新增 {counters['inserted']}、更新 {counters['updated']}、"
+            f"跳过 {counters['skipped']}、错误 {counters['error_count']}"
+        ),
+        source_tool='hasn.growth.lead.ingest',
+        project_id=result['platform_project_id'],
+        action='update',
+        dispatch_id=f'growth-leads:{dispatch_digest}',
+        metadata={**counters, 'last_batch_id': body.batch_id},
+        accumulate_metadata_keys=list(counters),
+    )
+    return merge_resource_uri(result, registration)
+
+
+async def handle_growth_lead_list(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """分页读取当前 Agent 代主人可见的项目线索关联行。"""
+    scope = await _scope(
+        db,
+        agent,
+        view=str(input_payload.get('view', 'team')),
+    )
+    return await project_lead_service.list_project_leads(
+        db,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        scope=scope,
+        page=int(input_payload.get('page', 1)),
+        size=int(input_payload.get('size', 20)),
+        status=input_payload.get('status'),
+        query=input_payload.get('query'),
+        min_score=input_payload.get('min_score'),
+        freshness=input_payload.get('freshness'),
+        assignee=input_payload.get('assignee'),
+    )
+
+
 async def handle_growth_lead_search(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -443,11 +521,15 @@ async def handle_growth_lead_qualify(
 async def handle_growth_lead_dismiss(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    return await growth_funnel_service.dismiss_lead(
+    body = ProjectLeadStatusBody.model_validate(input_payload)
+    scope = await _scope(db, agent)
+    return await project_lead_service.change_lead_status(
         db,
-        user_id=agent.owner_user_id,
-        lead_contact_id=_int(input_payload, 'lead_contact_id'),
-        reason=_required_str(input_payload, 'reason'),
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        project_lead_id=_int(input_payload, 'project_lead_id'),
+        action=body.action,
+        reason=body.reason,
+        scope=scope,
     )
 
 

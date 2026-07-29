@@ -30,6 +30,11 @@ from backend.app.hasn_growth.schema.funnel import (
     UpdateStageParam,
 )
 from backend.app.hasn_growth.schema.project_app import EnableGrowthProjectBody
+from backend.app.hasn_growth.schema.project_lead import (
+    ProjectLeadAssignBody,
+    ProjectLeadBatchBody,
+    ProjectLeadStatusBody,
+)
 from backend.app.hasn_growth.schema.project_profile import (
     AdoptGrowthPlaybookBody,
     BindGrowthKnowledgeBody,
@@ -50,6 +55,7 @@ from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_qu
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.playbook_service import playbook_service
+from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import resolve_growth_scope
 from backend.common.exception import errors
@@ -378,7 +384,123 @@ async def reveal_contact_channel(
     return response_base.success(data=data)
 
 
-# ---------------- 线索池（主人看自己池子，可手动晋级/淘汰，默认脱敏） ----------------
+# ---------------- 项目线索（项目关联行是状态、评分与来源的权威） ----------------
+
+
+@router.post(
+    '/projects/{growth_project_id}/leads/import',
+    summary='[Owner] 稳定批次导入项目线索',
+    dependencies=[DependsJwtAuth],
+)
+async def import_project_leads(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: ProjectLeadBatchBody,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await project_lead_service.ingest_batch(
+        db,
+        growth_project_id=growth_project_id,
+        batch_id=obj.batch_id,
+        items=obj.items,
+        scope=scope,
+        actor_kind='owner',
+        actor_id=scope.owner_hasn_id or str(request.user.id),
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/leads',
+    summary='[Owner] 分页读取项目线索',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_leads(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+    status: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    min_score: Annotated[float | None, Query(ge=0, le=100)] = None,
+    freshness: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
+    assignee: Annotated[str | None, Query(max_length=40)] = None,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(
+        db,
+        user_id=request.user.id,
+        view=view,
+    )
+    data = await project_lead_service.list_project_leads(
+        db,
+        growth_project_id=growth_project_id,
+        scope=scope,
+        page=page,
+        size=size,
+        status=status,
+        query=q,
+        min_score=min_score,
+        freshness=freshness,
+        assignee=assignee,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/status',
+    summary='[Owner] 忽略或恢复项目线索',
+    dependencies=[DependsJwtAuth],
+)
+async def change_project_lead_status(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: ProjectLeadStatusBody,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await project_lead_service.change_lead_status(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        action=obj.action,
+        reason=obj.reason,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/assignee',
+    summary='[Owner] 分配项目线索负责人（仅企业经理）',
+    dependencies=[DependsJwtAuth],
+)
+async def assign_project_lead(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: ProjectLeadAssignBody,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(
+        db,
+        user_id=request.user.id,
+        view='team',
+    )
+    data = await project_lead_service.assign_lead(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        assignee=obj.assignee,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+# ---------------- 兼容线索池（旧调用面，项目页不再使用） ----------------
 
 
 @router.get('/leads', summary='[Owner] 线索池检索', dependencies=[DependsJwtAuth])

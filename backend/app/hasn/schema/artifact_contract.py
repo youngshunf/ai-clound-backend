@@ -58,6 +58,9 @@ class ArtifactMutation(ArtifactContractModel):
     title: str | None = None
     summary: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    # 同一应用资源可由一个工作会话分批写入；这些计数只在本次 contribution 首次插入时累加，
+    # 重放同一幂等键不再增加。调用方只能声明本次 metadata 中的非负整数键。
+    accumulate_metadata_keys: list[str] = Field(default_factory=list, max_length=32)
     # 幂等键由产生 mutation 的一侧计算并原样过网，云端不得重算（设计 A12）。缺省时按确定性规则
     # 兜底并告警，绝不生成随机键——随机兜底会让 outbox 每重试一次就多一条参与记录。
     idempotency_key: str | None = None
@@ -116,6 +119,25 @@ class ArtifactMutation(ArtifactContractModel):
         )
         if any(present) and not all(present):
             raise ValueError('source_asset_uri/source_hash/source_synced_at 必须全空或全非空')
+        return self
+
+    @model_validator(mode='after')
+    def validate_accumulated_metadata(self) -> ArtifactMutation:
+        """累计键必须唯一且对应非负整数，禁止把任意 JSON 当计数器相加。"""
+        if len(set(self.accumulate_metadata_keys)) != len(
+            self.accumulate_metadata_keys
+        ):
+            raise ValueError('accumulate_metadata_keys 不能重复')
+        for key in self.accumulate_metadata_keys:
+            if not key or len(key) > 64:
+                raise ValueError('累计 metadata 键无效')
+            value = self.metadata.get(key)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise ValueError('累计 metadata 值必须是非负整数')
         return self
 
 

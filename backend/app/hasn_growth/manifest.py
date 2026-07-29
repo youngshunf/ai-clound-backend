@@ -116,7 +116,7 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 获客 27 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# 获客 29 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
 # lead_request（2.1 请求线索·用户端默认入口）为第 1 条；其后 lookup/search/enrich_company
 # （GROWTH-QCC-4 企业数据读穿中台）；customer_reassign（GE4）为末条。
 _CAPABILITIES = [
@@ -416,6 +416,98 @@ _CAPABILITIES = [
         tags=['growth', 'collect', 'read'],
     ),
     _cap(
+        name='lead_ingest',
+        mcp_suffix='lead.ingest',
+        title='批量写入项目线索',
+        description=(
+            '把真实来源或受控导入的线索按稳定 batch_id 写入指定获客项目；公共企业事实全局去重，'
+            '私有联系人按当前主体加密隔离，并逐行返回确定性结果与错误。'
+        ),
+        scope=_SCOPE_COLLECT,
+        risk_level='medium',
+        properties={
+            'growth_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': '获客项目云端权威 UUID',
+            },
+            'batch_id': {
+                'type': 'string',
+                'minLength': 1,
+                'maxLength': 64,
+                'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]*$',
+                'description': '调用方生成并在重试时复用的稳定批次 ID',
+            },
+            'items': {
+                'type': 'array',
+                'minItems': 1,
+                'maxItems': 100,
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'client_ref': {'type': 'string', 'minLength': 1, 'maxLength': 64},
+                        'lead_contact_id': {'type': ['integer', 'null'], 'minimum': 1},
+                        'company_name': {'type': ['string', 'null'], 'maxLength': 255},
+                        'website': {'type': ['string', 'null'], 'maxLength': 500},
+                        'domain': {'type': ['string', 'null'], 'maxLength': 255},
+                        'country': {'type': ['string', 'null'], 'maxLength': 8},
+                        'region': {'type': ['string', 'null'], 'maxLength': 100},
+                        'city': {'type': ['string', 'null'], 'maxLength': 100},
+                        'industry': {'type': ['string', 'null'], 'maxLength': 100},
+                        'source_kind': {'type': 'string', 'minLength': 1, 'maxLength': 32},
+                        'source_tool': {'type': ['string', 'null'], 'maxLength': 64},
+                        'source_ref': {'type': 'string', 'minLength': 1, 'maxLength': 255},
+                        'source_meta': {'type': 'object'},
+                        'match_score': {'type': ['number', 'null'], 'minimum': 0, 'maximum': 100},
+                        'score_breakdown': {'type': 'object'},
+                        'scoring_version': {'type': ['string', 'null'], 'maxLength': 64},
+                        'evidence_fresh_at': {'type': ['string', 'null'], 'format': 'date-time'},
+                        'private_contact': {
+                            'type': ['object', 'null'],
+                            'description': '仅当前主体有合法来源时填写；服务端加密隔离，绝不进入公共池',
+                        },
+                    },
+                    'required': ['client_ref', 'source_kind', 'source_ref'],
+                    'additionalProperties': False,
+                },
+            },
+        },
+        required=['growth_project_id', 'batch_id', 'items'],
+        page_rank=12,
+        tags=['growth', 'lead', 'ingest', 'batch'],
+    ),
+    _cap(
+        name='lead_list',
+        mcp_suffix='lead.list',
+        title='分页读取项目线索',
+        description=(
+            '按项目分页读取线索关联行，返回状态、评分版本、来源、证据新鲜度及逐维解释；'
+            '企业成员的可见范围由后端重新裁剪。'
+        ),
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
+            'page': {'type': 'integer', 'minimum': 1, 'default': 1},
+            'size': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
+            'status': {
+                'type': ['string', 'null'],
+                'enum': ['new', 'qualified', 'dismissed', None],
+            },
+            'query': {'type': ['string', 'null'], 'maxLength': 200},
+            'min_score': {'type': ['number', 'null'], 'minimum': 0, 'maximum': 100},
+            'freshness': {
+                'type': ['string', 'null'],
+                'enum': ['fresh', 'stale', 'unknown', None],
+            },
+            'view': {'type': 'string', 'enum': ['team', 'mine'], 'default': 'team'},
+            'assignee': {'type': ['string', 'null'], 'maxLength': 40},
+        },
+        required=['growth_project_id'],
+        page_rank=12,
+        tags=['growth', 'lead', 'list', 'read'],
+    ),
+    _cap(
         name='lead_search',
         mcp_suffix='lead.search',
         title='检索线索池',
@@ -473,17 +565,19 @@ _CAPABILITIES = [
     _cap(
         name='lead_dismiss',
         mcp_suffix='lead.dismiss',
-        title='标记线索不合格',
-        description='标记线索不合格（写 reason，不再推荐）。',
+        title='忽略或恢复项目线索',
+        description='按项目关联行忽略线索并记录原因，或恢复为待处理；已晋级线索不可回退。',
         scope=_SCOPE_MANAGE,
         risk_level='low',
         properties={
-            'lead_contact_id': {'type': 'integer'},
-            'reason': {'type': ['string', 'null'], 'description': '不合格原因'},
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
+            'project_lead_id': {'type': 'integer', 'minimum': 1},
+            'action': {'type': 'string', 'enum': ['dismiss', 'restore']},
+            'reason': {'type': ['string', 'null'], 'maxLength': 500},
         },
-        required=['lead_contact_id'],
+        required=['growth_project_id', 'project_lead_id', 'action'],
         page_rank=15,
-        tags=['growth', 'lead', 'dismiss', 'manage'],
+        tags=['growth', 'lead', 'dismiss', 'restore', 'manage'],
     ),
     _cap(
         name='customer_list',
