@@ -18,14 +18,20 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
 from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
+from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.growth_attribution_event import (
+    GrowthAttributionEvent,
+)
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope
 from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_task.model.task import HasnTask
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -37,10 +43,8 @@ pytestmark = pytest.mark.asyncio
 _REPO = Path(__file__).resolve().parents[4]
 _SCHEMA_SQL = _REPO / 'backend/sql/hasn_growth/007_create_growth_project_v4_tables.sql'
 _KEY_STATE_SQL = _REPO / 'backend/sql/hasn_growth/008_create_growth_pii_key_state.sql'
-_S6_MIGRATION_SQL = (
-    _REPO
-    / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
-)
+_S6_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
+_S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
 
 
 async def _apply_sql(session: AsyncSession) -> None:
@@ -50,6 +54,7 @@ async def _apply_sql(session: AsyncSession) -> None:
     await connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
     await connection.execute(_KEY_STATE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -104,6 +109,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         owner_hasn_id=first_owner,
         owner_scope='personal',
         name=f'获客甲 {tag}',
+        owner_agent_id=f'a_growth_first_{tag}',
         status='active',
         provision_status='ready',
     )
@@ -113,6 +119,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         owner_hasn_id=second_owner,
         owner_scope='personal',
         name=f'获客乙 {tag}',
+        owner_agent_id=f'a_growth_second_{tag}',
         status='active',
         provision_status='ready',
     )
@@ -224,9 +231,7 @@ async def test_ingest_reuses_public_fact_but_keeps_each_owner_private_pii(
     profiles = (
         (
             await ctx.session.execute(
-                sa.select(ContactPrivateProfile).where(
-                    ContactPrivateProfile.lead_contact_id == contact_id
-                )
+                sa.select(ContactPrivateProfile).where(ContactPrivateProfile.lead_contact_id == contact_id)
             )
         )
         .scalars()
@@ -237,13 +242,7 @@ async def test_ingest_reuses_public_fact_but_keeps_each_owner_private_pii(
         ctx.second_user,
     }
     channels = (
-        (
-            await ctx.session.execute(
-                sa.select(ContactChannel).where(
-                    ContactChannel.lead_contact_id == contact_id
-                )
-            )
-        )
+        (await ctx.session.execute(sa.select(ContactChannel).where(ContactChannel.lead_contact_id == contact_id)))
         .scalars()
         .all()
     )
@@ -272,8 +271,9 @@ async def test_ingest_reuses_public_fact_but_keeps_each_owner_private_pii(
     )
     assert first_page['items'][0]['contact_name'].startswith('f')
     assert set(first_page['items'][0]['contact_name'][1:]) == {'*'}
-    assert first_page['items'][0]['channels'][0]['masked_value'] != (
-        second_page['items'][0]['channels'][0]['masked_value']
+    assert (
+        first_page['items'][0]['channels'][0]['masked_value']
+        != (second_page['items'][0]['channels'][0]['masked_value'])
     )
     assert 'second.owner' not in str(first_page)
     assert 'first.owner' not in str(second_page)
@@ -334,10 +334,7 @@ async def test_stable_batch_retry_does_not_duplicate_project_lead(ctx: SimpleNam
     )
     assert count == 1
     changed_contact_count = await ctx.session.scalar(
-        sa
-        .select(sa.func.count())
-        .select_from(LeadContact)
-        .where(LeadContact.domain == 'changed.example')
+        sa.select(sa.func.count()).select_from(LeadContact).where(LeadContact.domain == 'changed.example')
     )
     assert changed_contact_count == 0
 
@@ -535,3 +532,87 @@ async def test_enterprise_unassigned_inbound_is_manager_only_until_assignment(
         size=20,
     )
     assert visible_after_assignment['total'] == 1
+
+
+async def test_qualify_is_one_idempotent_transaction_for_customer_task_activity_and_attribution(
+    ctx: SimpleNamespace,
+) -> None:
+    scope = _personal_scope(
+        user_id=ctx.first_user,
+        owner_hasn_id=ctx.first_owner,
+    )
+    ingested = await project_lead_service.ingest_batch(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        batch_id=f's7-qualify-{uuid.uuid4()}',
+        items=[_item(client_ref='qualify')],
+        scope=scope,
+        actor_kind='owner',
+        actor_id=ctx.first_owner,
+    )
+    project_lead_id = ingested['items'][0]['project_lead_id']
+
+    first = await project_lead_service.qualify_project_lead(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        project_lead_id=project_lead_id,
+        scope=scope,
+        profile={'pain_point': '获客效率需要提升'},
+        intent_score=87,
+        actor_kind='owner',
+        actor_id=ctx.first_owner,
+    )
+    replay = await project_lead_service.qualify_project_lead(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        project_lead_id=project_lead_id,
+        scope=scope,
+        profile={'pain_point': '重试不得覆盖首次画像'},
+        intent_score=99,
+        actor_kind='owner',
+        actor_id=ctx.first_owner,
+    )
+
+    assert first['id'] == replay['id']
+    assert first['followup_task_id'] == replay['followup_task_id']
+    assert first['lifecycle_status'] == 'active'
+    assert first['intent_score'] == 87
+    assert replay['intent_score'] == 87
+    assert first['growth_project_id'] == str(ctx.first_growth.id)
+
+    project_lead = await ctx.session.get(GrowthProjectLead, project_lead_id)
+    assert project_lead is not None
+    assert project_lead.status == 'qualified'
+    customer_count = await ctx.session.scalar(
+        sa
+        .select(sa.func.count())
+        .select_from(Customer)
+        .where(
+            Customer.growth_project_id == ctx.first_growth.id,
+            Customer.lead_contact_id == project_lead.lead_contact_id,
+        )
+    )
+    activity_count = await ctx.session.scalar(
+        sa
+        .select(sa.func.count())
+        .select_from(Activity)
+        .where(
+            Activity.growth_project_id == ctx.first_growth.id,
+            Activity.kind == 'qualify',
+            Activity.ref_table == 'growth_project_lead',
+            Activity.ref_id == str(project_lead_id),
+        )
+    )
+    task_count = await ctx.session.scalar(
+        sa.select(sa.func.count()).select_from(HasnTask).where(HasnTask.task_uuid == first['followup_task_id'])
+    )
+    attribution_count = await ctx.session.scalar(
+        sa
+        .select(sa.func.count())
+        .select_from(GrowthAttributionEvent)
+        .where(
+            GrowthAttributionEvent.growth_project_id == ctx.first_growth.id,
+            GrowthAttributionEvent.idempotency_key == f'qualify:{project_lead_id}',
+        )
+    )
+    assert customer_count == activity_count == task_count == attribution_count == 1

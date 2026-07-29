@@ -29,6 +29,7 @@ from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.common.dataclasses import AgentTokenPayload
@@ -97,9 +98,7 @@ async def search_leads(
         query=q,
         limit=limit,
         reveal_pii=_reveal(agent),
-        growth_project_id=(
-            str(growth_project_id) if growth_project_id is not None else None
-        ),
+        growth_project_id=(str(growth_project_id) if growth_project_id is not None else None),
     )
     return response_base.success(data=data)
 
@@ -116,9 +115,7 @@ async def get_lead(
         user_id=agent.owner_user_id,
         lead_contact_id=lead_contact_id,
         reveal_pii=_reveal(agent),
-        growth_project_id=(
-            str(growth_project_id) if growth_project_id is not None else None
-        ),
+        growth_project_id=(str(growth_project_id) if growth_project_id is not None else None),
     )
     return response_base.success(data=data)
 
@@ -140,6 +137,32 @@ async def qualify_lead(
         intent_score=obj.intent_score,
         owner_agent_id=agent.agent_hasn_id,
         scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/qualify',
+    summary='[Agent] 项目线索晋级客户并建立接续任务',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def qualify_project_lead(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: QualifyLeadParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await project_lead_service.qualify_project_lead(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        scope=scope,
+        profile=obj.profile,
+        intent_score=obj.intent_score,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
     )
     return response_base.success(data=data)
 

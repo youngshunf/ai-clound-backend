@@ -36,6 +36,7 @@ from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.growth_project import GrowthProject
+from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
@@ -59,10 +60,8 @@ pytestmark = pytest.mark.asyncio
 # 整改后获客工具走云端 gateway_internal 的同一张 handler 注册表。
 _REG = ai_native_runtime_gateway._internal_handlers()
 _REPO = Path(__file__).resolve().parents[4]
-_S6_MIGRATION_SQL = (
-    _REPO
-    / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
-)
+_S6_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
+_S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
 
 
 @pytest_asyncio.fixture
@@ -80,6 +79,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     connection = raw.driver_connection
     assert connection is not None
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
     tag = uuid.uuid4().hex[:8]
     owner = f'h_gtc_{tag}'
     owner_uid = 94_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -140,11 +140,26 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         owner_hasn_id=owner,
         owner_scope='personal',
         name=f'获客工具漏斗-{tag}',
+        owner_agent_id=agent_hasn,
         status='active',
         provision_status='ready',
     )
     session.add(growth_project)
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
+    await session.flush()
+    project_lead = GrowthProjectLead(
+        growth_project_id=growth_project.id,
+        lead_contact_id=lead.id,
+        user_id=owner_uid,
+        owner_scope='personal',
+        source_kind='firecrawl',
+        source_tool='test_seed',
+        source_ref=f'controlled://gateway/{tag}',
+        status='new',
+        match_score=Decimal(72),
+        scoring_version='gateway-fixture-v1',
+    )
+    session.add(project_lead)
     await session.flush()
 
     def _agent(scopes: list[str]) -> AgentTokenPayload:
@@ -167,6 +182,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
             platform_project_id=platform_project.id,
             lead_platform_project_id=lead_platform_project.id,
             growth_project_id=growth_project.id,
+            project_lead_id=project_lead.id,
             agent=_agent,
         )
     finally:
@@ -336,7 +352,7 @@ async def test_growth_lead_ingest_registers_one_cumulative_project_artifact(
         agent,
         {'growth_project_id': project_id, 'page': 1, 'size': 1},
     )
-    assert listed['total'] == 2
+    assert listed['total'] == 3
     assert len(listed['items']) == 1
 
 
@@ -349,9 +365,30 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleName
     assert leads and leads[0]['email'] == 'w***@acme.com', 'agent 读类默认脱敏'
 
     # 晋级建客户（写）
-    cust = await _REG['growth.lead_qualify'](s, agent, {'lead_contact_id': ctx.lead_id, 'intent_score': 80})
+    qualify_input = {
+        'growth_project_id': str(ctx.growth_project_id),
+        'project_lead_id': ctx.project_lead_id,
+        'intent_score': 80,
+    }
+    cust = await _REG['growth.lead_qualify'](s, agent, qualify_input)
+    replay = await _REG['growth.lead_qualify'](s, agent, qualify_input)
     cid = cust['id']
+    assert replay['id'] == cid
     assert cust['email'] == 'w***@acme.com'
+    artifact = (
+        await s.execute(
+            select(HasnArtifacts).where(
+                HasnArtifacts.agent_hasn_id == ctx.agent_hasn,
+                HasnArtifacts.resource_uri == f'hasn://growth/customers/{cid}',
+            )
+        )
+    ).scalar_one()
+    contribution_count = await s.scalar(
+        select(sa.func.count())
+        .select_from(HasnArtifactContributions)
+        .where(HasnArtifactContributions.artifact_id == artifact.artifact_id)
+    )
+    assert contribution_count == 1
 
     # 列客户：返回 items + scope 元数据（个人模式 owner_scope=personal，无企业）
     listed = await _REG['growth.customer_list'](s, agent, {'view': 'team'})
@@ -410,7 +447,15 @@ async def test_growth_cloud_tools_legacy_pii_scope_stays_masked(ctx: SimpleNames
 async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace) -> None:
     """customer.reassign 经 handler 落到经理闸门：个人模式（非经理）→ ForbiddenError。"""
     s, agent = ctx.session, ctx.agent(['agent', 'growth:read', 'growth:manage'])
-    cust = await _REG['growth.lead_qualify'](s, agent, {'lead_contact_id': ctx.lead_id, 'intent_score': 60})
+    cust = await _REG['growth.lead_qualify'](
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'project_lead_id': ctx.project_lead_id,
+            'intent_score': 60,
+        },
+    )
     with pytest.raises(ForbiddenError):
         await _REG['growth.customer_reassign'](s, agent, {'customer_id': cust['id'], 'assignee': 'h_other'})
 

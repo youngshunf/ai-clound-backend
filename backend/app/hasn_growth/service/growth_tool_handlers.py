@@ -197,8 +197,7 @@ async def handle_growth_project_update_profile(
     """分身只提交待确认画像建议；Owner 接受前不改写当前画像。"""
     document_ids = input_payload.get('knowledge_document_ids')
     if not isinstance(document_ids, list) or not all(
-        isinstance(document_id, int) and document_id > 0
-        for document_id in document_ids
+        isinstance(document_id, int) and document_id > 0 for document_id in document_ids
     ):
         raise errors.RequestError(msg='knowledge_document_ids 必须是非空正整数数组')
     suggestion = await growth_profile_service.submit_suggestion(
@@ -421,13 +420,8 @@ async def handle_growth_lead_ingest(
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
     )
-    dispatch_digest = hashlib.sha256(
-        f"{result['growth_project_id']}:{body.batch_id}".encode()
-    ).hexdigest()[:40]
-    counters = {
-        key: int(result[key])
-        for key in ('inserted', 'updated', 'skipped', 'error_count')
-    }
+    dispatch_digest = hashlib.sha256(f'{result["growth_project_id"]}:{body.batch_id}'.encode()).hexdigest()[:40]
+    counters = {key: int(result[key]) for key in ('inserted', 'updated', 'skipped', 'error_count')}
     registration = await register_app_resource_artifact(
         db,
         app_id='growth',
@@ -437,8 +431,8 @@ async def handle_growth_lead_ingest(
         owner_hasn_id=agent.owner_hasn_id,
         title='获客线索池',
         summary=(
-            f"批次 {body.batch_id}：新增 {counters['inserted']}、更新 {counters['updated']}、"
-            f"跳过 {counters['skipped']}、错误 {counters['error_count']}"
+            f'批次 {body.batch_id}：新增 {counters["inserted"]}、更新 {counters["updated"]}、'
+            f'跳过 {counters["skipped"]}、错误 {counters["error_count"]}'
         ),
         source_tool='hasn.growth.lead.ingest',
         project_id=result['platform_project_id'],
@@ -503,18 +497,27 @@ async def handle_growth_lead_get(
 async def handle_growth_lead_qualify(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    # 企业模式下晋级的客户落企业池、assignee=主人 hasn_id（个人模式落个人池）。
     scope = await _scope(db, agent)
-    result = await growth_funnel_service.qualify_lead(
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    project_lead_id = _int(input_payload, 'project_lead_id')
+    result = await project_lead_service.qualify_project_lead(
         db,
-        user_id=agent.owner_user_id,
-        lead_contact_id=_int(input_payload, 'lead_contact_id'),
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        scope=scope,
         profile=input_payload.get('profile'),
         intent_score=input_payload.get('intent_score'),
-        owner_agent_id=agent.agent_hasn_id,
-        scope=scope,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
     )
-    registration = await _register_growth_customer(db, agent, result, source_tool='hasn.growth.lead.qualify')
+    registration = await _register_growth_customer(
+        db,
+        agent,
+        result,
+        source_tool='hasn.growth.lead.qualify',
+        dispatch_id=f'growth-qualify:{growth_project_id}:{project_lead_id}',
+        project_id=result.get('platform_project_id'),
+    )
     return merge_resource_uri(result, registration)
 
 
@@ -627,7 +630,13 @@ async def handle_growth_activity_log(
 
 
 async def _register_growth_customer(
-    db: AsyncSession, agent: AgentTokenPayload, result: Any, *, source_tool: str
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    result: Any,
+    *,
+    source_tool: str,
+    dispatch_id: str | None = None,
+    project_id: str | None = None,
 ) -> ArtifactRegistration | None:
     """register-on-write：分身晋级/维护的客户登记为产物（doc31 铁律）。
 
@@ -641,16 +650,23 @@ async def _register_growth_customer(
     raw_title = str(result.get('company_name') or result.get('contact_name') or '').strip() or '客户资料'
     title = str(redact_pii_value(raw_title))
     assert_growth_pii_payload_safe({'title': title, 'customer_id': customer_id})
-    return await register_app_resource_artifact(
-        db,
-        app_id='growth',
-        resource_kind='growth.customer',
-        server_id=customer_id,
-        agent_hasn_id=agent.agent_hasn_id,
-        owner_hasn_id=agent.owner_hasn_id,
-        title=title,
-        source_tool=source_tool,
-    )
+    registration_args: dict[str, Any] = {
+        'app_id': 'growth',
+        'resource_kind': 'growth.customer',
+        'server_id': customer_id,
+        'agent_hasn_id': agent.agent_hasn_id,
+        'owner_hasn_id': agent.owner_hasn_id,
+        'title': title,
+        'source_tool': source_tool,
+        'dispatch_id': dispatch_id,
+    }
+    if project_id is not None:
+        return await register_app_resource_artifact(
+            db,
+            **registration_args,
+            project_id=project_id,
+        )
+    return await register_app_resource_artifact(db, **registration_args)
 
 
 async def handle_growth_customer_reassign(
