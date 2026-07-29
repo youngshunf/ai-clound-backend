@@ -25,29 +25,32 @@ from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_core import HasnAgents
 from backend.app.hasn.service.hasn_auth import verify_owner_proof
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_im.adapters.routing.delivery_bus import ws_delivery_bus
+from backend.app.hasn_im.adapters.routing.offline_frame_policy import (
+    OfflineStorageAction,
+    decide_offline_storage,
+)
 from backend.app.hasn_im.adapters.routing.redis_presence_store import (
     AGENT_READY_PREFIX,
-    OFFLINE_PREFIX,
-    OFFLINE_TTL,
+    ENTITY_NODE_KEY,
     NODE_ALIVE_PREFIX,
-NODE_CONN_KEY,
+    NODE_CONN_KEY,
     NODE_ENTITIES_PREFIX,
     NODE_GENERATION_KEY,
     NODE_PRESENCE_TTL_SECS,
-USER_NODES_PREFIX,
-ENTITY_NODE_KEY,
-_ACK_OFFLINE_PREFIX_SCRIPT,
-_REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
-_UNREGISTER_NODE_IF_CURRENT_SCRIPT,
+    OFFLINE_PREFIX,
+    OFFLINE_TTL,
+    USER_NODES_PREFIX,
+    _ACK_OFFLINE_PREFIX_SCRIPT,
+    _REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
+    _UNREGISTER_NODE_IF_CURRENT_SCRIPT,
 )
-from backend.database.redis import redis_client
 from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
-    _ws_connections,
     _ws_connection_ids,
+    _ws_connections,  # noqa: F401 兼容既有跨 worker 投递测试的注册表清理入口
     _ws_ready_connection_ids,
     get_connection,
     get_connection_id,
@@ -56,6 +59,8 @@ from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     register_connection,
     unregister_connection,
 )
+from backend.core.conf import settings
+from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
@@ -305,9 +310,7 @@ class NodeSessionService:
         await self._clear_agent_readiness(agent_id)
         return {'agent_id': agent_id, 'accepted': True}
 
-    async def set_agent_readiness(
-        self, agent_id: str, online_status: str, health_status: str | None
-    ) -> str | None:
+    async def set_agent_readiness(self, agent_id: str, online_status: str, health_status: str | None) -> str | None:
         """按 daemon 心跳携带的运行时健康写/删 agent 就绪键（在线语义收紧）。
 
         仅当 ``online_status == 'online' and health_status == 'ok'``（协议权威「在线」：
@@ -549,7 +552,13 @@ class NodeSessionService:
         return False
 
     async def _enqueue_offline(self, hasn_id: str, payload_json: str) -> None:
-        """消息入离线队列"""
+        """按 durable 覆盖策略决定是否写入 Redis 离线队列。"""
+        action = decide_offline_storage(
+            payload_json,
+            settings.HASN_OFFLINE_RECOVERY,
+        )
+        if action is OfflineStorageAction.SKIP:
+            return
         key = f'{OFFLINE_PREFIX}:{hasn_id}'
         await redis_client.rpush(key, payload_json)
         await redis_client.expire(key, OFFLINE_TTL)
@@ -561,6 +570,8 @@ class NodeSessionService:
         entity_ids: list[str],
     ) -> tuple[list[dict], dict[str, list[str]]]:
         """读取待补推消息但暂不删除，返回帧内容和用于成功确认的原始队列前缀。"""
+        if settings.HASN_OFFLINE_RECOVERY == 'sync':
+            return [], {}
         all_msgs: list[dict] = []
         claims: dict[str, list[str]] = {}
         for entity_id in entity_ids:
@@ -575,6 +586,8 @@ class NodeSessionService:
 
     async def ack_offline_messages(self, claims: dict[str, list[str]]) -> None:
         """发送成功后仅删除领取时看到的相同前缀，保留并发新入队消息。"""
+        if settings.HASN_OFFLINE_RECOVERY == 'sync':
+            return
         for key, raw_messages in claims.items():
             if not raw_messages:
                 continue
@@ -590,6 +603,8 @@ class NodeSessionService:
         entity_ids: list[str],
     ) -> list[dict]:
         """获取并清理离线消息（所有已上报实体）"""
+        if settings.HASN_OFFLINE_RECOVERY == 'sync':
+            return []
         all_msgs: list[dict] = []
 
         for eid in entity_ids:
