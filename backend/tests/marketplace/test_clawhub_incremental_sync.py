@@ -94,6 +94,25 @@ def test_version_unchanged_does_not_require_repo_path() -> None:
     ) is True
 
 
+def test_version_unchanged_does_not_require_generated_translation() -> None:
+    """源摘要为空时，缺少目标语言译文不能触发每轮重抓和重译。"""
+    existing = _existing(
+        name='No Summary',
+        name_en='No Summary',
+        name_zh=None,
+        description_en='',
+        description_zh=None,
+        source_language='en',
+    )
+    skill = _skill(displayName='No Summary', summary='')
+
+    assert clawhub_sync_service._is_version_unchanged(
+        existing,
+        skill,
+        {'clawhub/alice/translator': '1.0.0'},
+    ) is True
+
+
 def test_version_unchanged_requires_verified_file_manifest() -> None:
     existing = _existing(files='[{"path":"SKILL.md","size":120}]')
     skill = _skill()

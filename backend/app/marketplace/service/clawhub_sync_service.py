@@ -602,7 +602,16 @@ class ClawHubSyncService:
             'name': skill_data.get('displayName') or skill_data.get('slug') or '',
             'description': skill_data.get('summary') or '',
         }
-        return metadata_unchanged(scanned, existing)
+        source_language = existing.source_language or 'en'
+        source_description = (
+            existing.description_zh
+            if source_language == 'zh'
+            else existing.description_en
+        )
+        return (
+            (existing.name or '') == scanned['name']
+            and (source_description or '') == scanned['description']
+        )
 
     @staticmethod
     def _has_verified_file_manifest(value: Any) -> bool:
