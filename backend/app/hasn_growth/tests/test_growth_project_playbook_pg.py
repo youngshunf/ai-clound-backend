@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
@@ -61,7 +61,10 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         enabled=True,
         goal='取得首次有效回复',
         target_profile={'buyer_roles': ['销售负责人']},
-        cadence=[{'day': 1, 'channel': 'email', 'goal': '建立联系'}],
+        cadence=cast(
+            'Any',
+            [{'day': 1, 'channel': 'email', 'goal': '建立联系'}],
+        ),
         tone_guide='具体、克制',
         exit_rule={'max_silent_rounds': 2, 'action': 'stop'},
         is_builtin=True,

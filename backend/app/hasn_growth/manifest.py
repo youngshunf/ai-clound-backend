@@ -51,6 +51,41 @@ _SCOPE_MANAGE = 'growth:manage'
 _SCOPE_OUTREACH = 'growth:outreach'
 _SCOPE_COLLECT = 'growth:collect'
 
+_RESOURCE_PARAM_TYPES = {
+    'growth_project_id': 'growth_project',
+    'customer_id': 'growth_customer',
+    'opportunity_id': 'growth_opportunity',
+}
+
+
+def _resource_access_for_cap(cap: dict) -> list[dict]:
+    """按工具入参生成 Growth 资源权限门声明。
+
+    读工具需要 viewer，写工具需要 editor；线索工具的漏斗参数按线索池资源判权。
+    可选资源参数显式声明 required=False，避免统一权限门把可选参数误判成必填。
+    """
+    properties = (cap.get('input_schema') or {}).get('properties') or {}
+    required = set((cap.get('input_schema') or {}).get('required') or [])
+    tool_id = str(cap.get('tool_id') or '')
+    need = 'viewer' if cap.get('required_scopes') == [_SCOPE_READ] else 'editor'
+    declarations: list[dict] = []
+
+    for param, default_type in _RESOURCE_PARAM_TYPES.items():
+        if param not in properties:
+            continue
+        resource_type = (
+            'growth_leads' if param == 'growth_project_id' and tool_id.startswith('hasn_growth.lead_') else default_type
+        )
+        declaration: dict[str, Any] = {
+            'param': param,
+            'type': resource_type,
+            'need': need,
+        }
+        if param not in required:
+            declaration['required'] = False
+        declarations.append(declaration)
+    return declarations
+
 
 def _cap(
     *,
@@ -105,7 +140,7 @@ def _tool_from_cap(cap: dict) -> dict:
     ``idempotent``：纯读类（仅需 growth:read）可安全重试；写类（collect/manage/outreach）非幂等不自动重放。
     """
     scopes = list(cap.get('required_scopes') or [])
-    return {
+    tool = {
         'tool_id': cap['tool_id'],
         'mcp_name': cap['mcp_name'],
         'transport': 'gateway_internal',
@@ -114,6 +149,10 @@ def _tool_from_cap(cap: dict) -> dict:
         'risk_level': cap['risk_level'],
         'idempotent': scopes == [_SCOPE_READ],
     }
+    resource_access = _resource_access_for_cap(cap)
+    if resource_access:
+        tool['resource_access'] = resource_access
+    return tool
 
 
 # 获客 29 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；

@@ -1,15 +1,20 @@
 """获客项目化 S2 manifest、挂靠与资源 ACL 静态契约测试。"""
 
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 from fastapi.routing import APIRoute
 
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
+from backend.app.hasn_core.app_platform import (
+    ai_native_app_registry,
+    app_catalog_registry,
+)
 from backend.app.hasn_growth.api.v1.app.growth import router as growth_app_router
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.service.funnel_service import _customer_to_dict
 from backend.app.hasn_growth.service.opportunity_flow_service import (
     _opportunity_to_dict,
@@ -93,12 +98,47 @@ def test_growth_resource_acl_adapters_are_registered() -> None:
     } <= registered
 
 
+def test_growth_tools_declare_resource_access_for_every_resource_id() -> None:
+    """Growth 工具必须按读写语义声明资源门，且可选资源参数不得被误判为必填。"""
+    tools = {tool['tool_id']: tool for tool in GROWTH_AI_NATIVE_MANIFEST['tools']}
+
+    assert tools['hasn_growth.project_get']['resource_access'] == [
+        {
+            'param': 'growth_project_id',
+            'type': 'growth_project',
+            'need': 'viewer',
+            'required': False,
+        }
+    ]
+    assert tools['hasn_growth.lead_ingest']['resource_access'] == [
+        {
+            'param': 'growth_project_id',
+            'type': 'growth_leads',
+            'need': 'editor',
+        }
+    ]
+    assert tools['hasn_growth.outreach_draft']['resource_access'] == [
+        {
+            'param': 'growth_project_id',
+            'type': 'growth_project',
+            'need': 'editor',
+        },
+        {
+            'param': 'customer_id',
+            'type': 'growth_customer',
+            'need': 'editor',
+        },
+        {
+            'param': 'opportunity_id',
+            'type': 'growth_opportunity',
+            'need': 'editor',
+            'required': False,
+        },
+    ]
+
+
 def test_growth_owner_project_routes_exist_without_rebind() -> None:
-    paths = {
-        route.path
-        for route in growth_app_router.routes
-        if isinstance(route, APIRoute)
-    }
+    paths = {route.path for route in growth_app_router.routes if isinstance(route, APIRoute)}
     assert '/projects/by-platform/{platform_project_id}' in paths
     assert '/projects/{growth_project_id}' in paths
     assert '/projects' in paths
@@ -156,9 +196,5 @@ def test_growth_resource_serializers_expose_authoritative_project_id() -> None:
         created_time=None,
     )
 
-    assert _customer_to_dict(customer)['growth_project_id'] == str(
-        growth_project_id
-    )
-    assert _opportunity_to_dict(opportunity)['growth_project_id'] == str(
-        growth_project_id
-    )
+    assert _customer_to_dict(cast('Customer', customer))['growth_project_id'] == str(growth_project_id)
+    assert _opportunity_to_dict(cast('Opportunity', opportunity))['growth_project_id'] == str(growth_project_id)
