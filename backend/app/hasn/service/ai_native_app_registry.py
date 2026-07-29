@@ -41,6 +41,7 @@ from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_project.manifest import PROJECT_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.service import resource_adapter as _plan_resource_adapter  # noqa: F401
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_publish.service import project_linkage as _publish_project_linkage  # noqa: F401
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
 from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST

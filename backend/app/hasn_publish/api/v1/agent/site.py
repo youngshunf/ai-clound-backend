@@ -50,6 +50,7 @@ class AgentCreateSiteRequest(BaseModel):
     allow_indexing: bool = Field(default=False)
     source_app: str | None = Field(default=None, max_length=32)
     source_ref: str | None = Field(default=None, max_length=80)
+    platform_project_id: str | None = Field(default=None, max_length=36)
 
 
 class AgentUpdateSiteRequest(BaseModel):
@@ -95,6 +96,7 @@ async def agent_create_site(
         allow_indexing=body.allow_indexing,
         source_app=body.source_app,
         source_ref=body.source_ref,
+        platform_project_id=body.platform_project_id,
     )
     return response_base.success(data=data)
 
