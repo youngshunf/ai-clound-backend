@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -22,10 +23,15 @@ from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_project_playbook import GrowthProjectPlaybook
 from backend.app.hasn_growth.model.growth_review_suggestion import GrowthReviewSuggestion
 from backend.app.hasn_growth.model.playbook import Playbook
+from backend.app.hasn_growth.service.growth_project_app_service import (
+    growth_project_app_service,
+)
 from backend.app.hasn_growth.service.playbook_service import playbook_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_task.model.task import HasnTask
+from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 if TYPE_CHECKING:
@@ -68,6 +74,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         user_id=user_id,
         owner_hasn_id=owner,
         owner_scope='personal',
+        owner_agent_id=f'a_growth_review_{tag}',
         name=f'经营复盘漏斗 {tag}',
         product_profile={'offering': '企业知识助手', 'value_propositions': ['减少重复答疑']},
         icp_profile={
@@ -113,6 +120,103 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         await session.rollback()
         await session.close()
         await engine.dispose()
+
+
+async def test_review_schedule_is_idempotent_and_project_lifecycle_stops_it(
+    ctx: SimpleNamespace,
+) -> None:
+    """周期复盘由 Owner 显式启用，使用稳定任务键；暂停后不自动恢复。"""
+    first = await growth_review_service.set_review_schedule(
+        ctx.session,
+        owner_hasn_id=ctx.owner,
+        growth_project_id=ctx.growth.id,
+        enabled=True,
+    )
+    replay = await growth_review_service.set_review_schedule(
+        ctx.session,
+        owner_hasn_id=ctx.owner,
+        growth_project_id=ctx.growth.id,
+        enabled=True,
+    )
+    assert replay['task_uuid'] == first['task_uuid']
+    assert replay['enabled'] is True
+    task = await ctx.session.scalar(sa.select(HasnTask).where(HasnTask.task_uuid == first['task_uuid']))
+    assert task is not None
+    assert task.schedule_type == 'cron'
+    assert task.schedule_config == {'expr': '0 9 * * 1'}
+    assert task.timezone == 'Asia/Shanghai'
+    assert task.next_run_at is not None
+    next_run_local = task.next_run_at.astimezone(ZoneInfo(task.timezone))
+    assert next_run_local.weekday() == 0
+    assert (next_run_local.hour, next_run_local.minute) == (9, 0)
+    assert task.execution_spec['kind'] == 'growth_cycle_review'
+    assert task.execution_spec['idempotency_scope'] == 'growth_project_cycle'
+    assert task.execution_spec['cancel_when'] == [
+        'project_paused',
+        'project_archived',
+        'entitlement_unavailable',
+    ]
+    assert (
+        await ctx.session.scalar(
+            sa.select(sa.func.count()).select_from(HasnTask).where(HasnTask.task_uuid == first['task_uuid'])
+        )
+    ) == 1
+
+    paused_project = await growth_project_app_service.pause(
+        ctx.session,
+        owner_hasn_id=ctx.owner,
+        growth_project_id=ctx.growth.id,
+    )
+    assert paused_project['status'] == 'paused'
+    await ctx.session.refresh(task)
+    assert task.enabled is False
+    assert task.state == 'paused'
+    assert task.next_run_at is None
+    schedule = await growth_review_service.get_review_schedule(
+        ctx.session,
+        owner_hasn_id=ctx.owner,
+        growth_project_id=ctx.growth.id,
+    )
+    assert schedule['enabled'] is False
+
+    with pytest.raises(errors.ConflictError) as paused_error:
+        await growth_review_service.set_review_schedule(
+            ctx.session,
+            owner_hasn_id=ctx.owner,
+            growth_project_id=ctx.growth.id,
+            enabled=True,
+        )
+    assert paused_error.value.data['error_code'] == 'GROWTH_PROJECT_INACTIVE'
+
+
+async def test_paused_project_rejects_new_agent_review_suggestion(
+    ctx: SimpleNamespace,
+) -> None:
+    """已暂停或归档项目即使遇到在途任务，也不能继续写入下一周期建议。"""
+    ctx.growth.status = 'paused'
+    await ctx.session.flush()
+    with pytest.raises(errors.ConflictError) as paused_error:
+        await growth_review_service.create_suggestion(
+            ctx.session,
+            owner_hasn_id=ctx.owner,
+            growth_project_id=ctx.growth.id,
+            suggestion_kind='channel',
+            proposal={
+                'quiet_hours_start': 22,
+                'quiet_hours_end': 8,
+                'daily_outreach_limit': 12,
+            },
+            evidence={
+                'scope': 'current_month',
+                'event_count': 3,
+                'insufficient_data': True,
+                'limitations': ['样本量不足'],
+            },
+            proposed_by_kind='agent',
+            proposed_by_id=ctx.growth.owner_agent_id,
+            idempotency_key='review:paused:2026-07',
+        )
+    assert paused_error.value.data['error_code'] == 'GROWTH_PROJECT_INACTIVE'
 
 
 async def test_performance_report_traces_source_playbook_touchpoints_and_win_loss(

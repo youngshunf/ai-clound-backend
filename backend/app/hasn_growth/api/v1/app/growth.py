@@ -47,6 +47,7 @@ from backend.app.hasn_growth.schema.project_profile import (
 from backend.app.hasn_growth.schema.project_review import (
     ReviewGrowthReviewSuggestionBody,
     UpdateGrowthProjectPolicyBody,
+    UpdateGrowthReviewScheduleBody,
 )
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
@@ -342,6 +343,46 @@ async def review_growth_review_suggestion(
         growth_project_id=growth_project_id,
         suggestion_id=suggestion_id,
         decision=obj.decision,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/review/schedule',
+    summary='[Owner] 读取周期经营复盘任务状态',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_review_schedule(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.get_review_schedule(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/review/schedule',
+    summary='[Owner] 显式启用或暂停周期经营复盘',
+    dependencies=[DependsJwtAuth],
+)
+async def update_growth_review_schedule(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    obj: UpdateGrowthReviewScheduleBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.set_review_schedule(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+        enabled=obj.enabled,
     )
     return response_base.success(data=data)
 

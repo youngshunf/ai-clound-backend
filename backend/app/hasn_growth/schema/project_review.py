@@ -22,6 +22,12 @@ class ReviewGrowthReviewSuggestionBody(SchemaBase):
     decision: Literal['accept', 'reject']
 
 
+class UpdateGrowthReviewScheduleBody(SchemaBase):
+    """Owner 显式启用或暂停周期经营复盘。"""
+
+    enabled: bool
+
+
 class UpdateGrowthProjectPolicyBody(SchemaBase):
     """Owner 修改静默时段、频控和预算策略。"""
 

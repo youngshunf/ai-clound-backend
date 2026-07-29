@@ -457,6 +457,38 @@ async def test_growth_review_suggestion_and_policy_http_contract(e2e: SimpleName
     )
     assert stale.status_code == 409
 
+    schedule_before = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{project_id}/review/schedule',
+        )
+    )
+    assert schedule_before['enabled'] is False
+    schedule_enabled = _ok(
+        await e2e.client.put(
+            f'{owner_api}/projects/{project_id}/review/schedule',
+            json={'enabled': True},
+        )
+    )
+    assert schedule_enabled['enabled'] is True
+    assert schedule_enabled['schedule_display'] == '每周一 09:00'
+    assert (
+        _ok(
+            await e2e.client.put(
+                f'{owner_api}/projects/{project_id}/review/schedule',
+                json={'enabled': True},
+            )
+        )['task_uuid']
+        == schedule_enabled['task_uuid']
+    )
+    schedule_disabled = _ok(
+        await e2e.client.put(
+            f'{owner_api}/projects/{project_id}/review/schedule',
+            json={'enabled': False},
+        )
+    )
+    assert schedule_disabled['enabled'] is False
+    assert schedule_disabled['state'] == 'paused'
+
 
 async def test_owner_project_lead_batch_pagination_and_status_http_contract(
     e2e: SimpleNamespace,
