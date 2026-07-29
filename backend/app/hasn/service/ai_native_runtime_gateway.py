@@ -675,6 +675,8 @@ class AiNativeRuntimeGateway:
             'growth.customer_update_profile': growth_handlers.handle_growth_customer_update_profile,
             'growth.activity_log': growth_handlers.handle_growth_activity_log,
             'growth.customer_reassign': growth_handlers.handle_growth_customer_reassign,
+            'growth.outreach_draft': growth_handlers.handle_growth_outreach_draft,
+            'growth.outreach_submit': growth_handlers.handle_growth_outreach_submit,
             'growth.outreach_send': growth_handlers.handle_growth_outreach_send,
             'growth.outreach_status': growth_handlers.handle_growth_outreach_status,
             'growth.opportunity_create': growth_handlers.handle_growth_opportunity_create,

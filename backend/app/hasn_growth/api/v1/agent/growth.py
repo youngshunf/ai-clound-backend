@@ -18,9 +18,11 @@ from backend.app.hasn_growth.schema.funnel import (
     CloseDealParam,
     CreateOpportunityParam,
     DismissLeadParam,
+    DraftOutreachParam,
     LogActivityParam,
     QualifyLeadParam,
     SendOutreachParam,
+    SubmitOutreachParam,
     UpdateCustomerParam,
     UpdateStageParam,
 )
@@ -365,6 +367,69 @@ async def reassign_customer(
 
 
 # ---------------- 触达 ----------------
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/drafts',
+    summary='[Agent] 创建项目触达草稿',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def draft_project_outreach(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: DraftOutreachParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_outreach_service.draft_outreach(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        customer_id=obj.customer_id,
+        channel=obj.channel,
+        content=obj.content,
+        idempotency_key=obj.idempotency_key,
+        agent_id=agent.agent_hasn_id,
+        subject=obj.subject,
+        intent_note=obj.intent_note,
+        content_assets=obj.content_assets,
+        opportunity_id=obj.opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/submit',
+    summary='[Agent] 提交项目触达审批',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def submit_project_outreach(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: SubmitOutreachParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_outreach_service.submit_outreach(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        message_id=message_id,
+        expected_content_version=obj.expected_content_version,
+        idempotency_key=obj.idempotency_key,
+        scope=scope,
+    )
+    if data.get('approval_status') == 'pending_approval':
+        await growth_notification_service.outreach_pending_approval(
+            db,
+            agent=agent,
+            message_id=int(data['id']),
+            customer_id=int(data['customer_id']),
+            channel=str(data['channel']),
+        )
+    return response_base.success(data=data)
 
 
 @router.post('/outreach', summary='[Agent] 发起触达（进审批状态机）', dependencies=[DependsAgentJwtAuth])

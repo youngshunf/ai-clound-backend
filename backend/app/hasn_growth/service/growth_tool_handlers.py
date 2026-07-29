@@ -721,6 +721,64 @@ async def handle_growth_customer_reassign(
 # ---------------- 触达 ----------------
 
 
+async def handle_growth_outreach_draft(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await growth_outreach_service.draft_outreach(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(
+            input_payload,
+            'growth_project_id',
+        ),
+        customer_id=_int(input_payload, 'customer_id'),
+        channel=_required_str(input_payload, 'channel'),
+        content=_required_str(input_payload, 'content'),
+        idempotency_key=_required_str(input_payload, 'idempotency_key'),
+        agent_id=agent.agent_hasn_id,
+        subject=input_payload.get('subject'),
+        intent_note=input_payload.get('intent_note'),
+        content_assets=input_payload.get('content_assets'),
+        opportunity_id=input_payload.get('opportunity_id'),
+        scope=scope,
+    )
+
+
+async def handle_growth_outreach_submit(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    data = await growth_outreach_service.submit_outreach(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(
+            input_payload,
+            'growth_project_id',
+        ),
+        message_id=_int(input_payload, 'message_id'),
+        expected_content_version=_int(
+            input_payload,
+            'expected_content_version',
+        ),
+        idempotency_key=_required_str(input_payload, 'idempotency_key'),
+        scope=scope,
+    )
+    if data.get('approval_status') == 'pending_approval':
+        await growth_notification_service.outreach_pending_approval(
+            db,
+            agent=agent,
+            message_id=int(data['id']),
+            customer_id=int(data['customer_id']),
+            channel=str(data['channel']),
+        )
+    return data
+
+
 async def handle_growth_outreach_send(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -737,6 +795,11 @@ async def handle_growth_outreach_send(
         content_assets=input_payload.get('content_assets'),
         opportunity_id=input_payload.get('opportunity_id'),
         scope=scope,
+        growth_project_id=_required_str(
+            input_payload,
+            'growth_project_id',
+        ),
+        idempotency_key=_required_str(input_payload, 'idempotency_key'),
     )
     # 触达待审批 → 通知主人去审批队列（仅 pending_approval；放行/拦截不打扰）。
     if data.get('status') == 'pending_approval':
@@ -754,13 +817,14 @@ async def handle_growth_outreach_status(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> list[dict[str, Any]]:
     scope = await _scope(db, agent)
-    detail = await project_customer_service.get_customer_detail(
+    return await growth_outreach_service.list_customer_outreach(
         db,
+        user_id=agent.owner_user_id,
         growth_project_id=_required_str(input_payload, 'growth_project_id'),
         customer_id=_int(input_payload, 'customer_id'),
+        limit=int(input_payload.get('limit', 50)),
         scope=scope,
     )
-    return detail['outreach'][: int(input_payload.get('limit', 50))]
 
 
 # ---------------- 商机 / 成交 ----------------

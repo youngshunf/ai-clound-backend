@@ -194,7 +194,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: ignore[unused-async]
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 29
+    assert len(handlers) == 31
     for h in (
         'growth.project_get',
         'growth.project_create',
@@ -207,6 +207,8 @@ async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: 
     assert 'growth.lead_ingest' in handlers
     assert 'growth.lead_list' in handlers
     for h in ('growth.lookup_company', 'growth.search_companies', 'growth.enrich_company'):
+        assert h in handlers, h
+    for h in ('growth.outreach_draft', 'growth.outreach_submit'):
         assert h in handlers, h
     for h in handlers:
         assert h.startswith('growth.'), h
@@ -422,18 +424,48 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleName
         },
     )
 
-    # 触达：首触达必 pending_approval（不可豁免）
-    sent = await _REG['growth.outreach_send'](
+    # 触达：draft 不审批、不排队；submit 后首触达必 pending_approval（不可豁免）。
+    draft = await _REG['growth.outreach_draft'](
         s,
         agent,
         {
+            'growth_project_id': str(ctx.growth_project_id),
             'customer_id': cid,
             'channel': 'manual_assist',
             'content': '您好，想聊聊获客',
             'intent_note': '破冰',
+            'idempotency_key': f'gateway:draft:{ctx.project_lead_id}',
         },
     )
-    assert sent['status'] == 'pending_approval'
+    assert draft['approval_status'] == 'draft'
+    assert draft['delivery_status'] == 'not_queued'
+    submitted = await _REG['growth.outreach_submit'](
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'message_id': draft['id'],
+            'expected_content_version': draft['content_version'],
+            'idempotency_key': f'gateway:submit:{ctx.project_lead_id}',
+        },
+    )
+    assert submitted['approval_status'] == 'pending_approval'
+    assert submitted['delivery_status'] == 'not_queued'
+    outreach_status = await _REG['growth.outreach_status'](
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'customer_id': cid,
+        },
+    )
+    assert outreach_status[0]['id'] == draft['id']
+    assert outreach_status[0]['approval_status'] == 'pending_approval'
+    assert outreach_status[0]['delivery_status'] == 'not_queued'
+    assert [event['event_type'] for event in outreach_status[0]['events']] == [
+        'drafted',
+        'approval_requested',
+    ]
 
     # 商机：立 → 推进 → 成交
     opp = await _REG['growth.opportunity_create'](

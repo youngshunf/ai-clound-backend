@@ -21,13 +21,17 @@ from backend.app.hasn_growth.schema.funnel import (
     CreateLeadParam,
     CreateOpportunityParam,
     DismissLeadParam,
+    EditOutreachParam,
     LogActivityParam,
+    ManualAttestOutreachParam,
     MarkSentParam,
     OptoutParam,
     QualifyLeadParam,
     RejectOutreachParam,
     RequestLeadsParam,
     UpdateStageParam,
+    VersionedApproveOutreachParam,
+    VersionedRejectOutreachParam,
 )
 from backend.app.hasn_growth.schema.project_app import EnableGrowthProjectBody
 from backend.app.hasn_growth.schema.project_lead import (
@@ -790,6 +794,187 @@ async def reassign_customer(
 # ---------------- 触达审批队列（§8.2，业务态，不走 ask_gate） ----------------
 
 
+@router.get(
+    '/projects/{growth_project_id}/outreach/pending',
+    summary='[Owner] 项目待审批触达队列',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_pending(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.list_pending_approvals(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        limit=limit,
+        offset=offset,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/outreach/team-overview',
+    summary='[Owner] 项目团队待审批聚合（仅企业经理）',
+    dependencies=[DependsJwtAuth],
+)
+async def project_team_approval_overview(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(
+        db,
+        user_id=request.user.id,
+        view='team',
+    )
+    data = await growth_outreach_service.team_approval_overview(
+        db,
+        user_id=request.user.id,
+        scope=scope,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/approve',
+    summary='[Owner] 按内容版本批准项目触达',
+    dependencies=[DependsJwtAuth],
+)
+async def approve_project_outreach(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: VersionedApproveOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.approve_outreach(
+        db,
+        user_id=request.user.id,
+        message_id=message_id,
+        approver_user_id=request.user.id,
+        edited_content=obj.edited_content,
+        expected_content_version=obj.expected_content_version,
+        growth_project_id=growth_project_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.patch(
+    '/projects/{growth_project_id}/outreach/{message_id}',
+    summary='[Owner] 改稿并使旧批准失效',
+    dependencies=[DependsJwtAuth],
+)
+async def edit_project_outreach(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: EditOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.edit_outreach(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        message_id=message_id,
+        expected_content_version=obj.expected_content_version,
+        content=obj.content,
+        subject=obj.subject,
+        channel=obj.channel,
+        content_assets=obj.content_assets,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/reject',
+    summary='[Owner] 按内容版本拒绝项目触达',
+    dependencies=[DependsJwtAuth],
+)
+async def reject_project_outreach(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: VersionedRejectOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.reject_outreach(
+        db,
+        user_id=request.user.id,
+        message_id=message_id,
+        approver_user_id=request.user.id,
+        reason=obj.reason,
+        expected_content_version=obj.expected_content_version,
+        growth_project_id=growth_project_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/outreach/{message_id}/send-material',
+    summary='[Owner] 读取已冻结的人工发送素材',
+    dependencies=[DependsJwtAuth],
+)
+async def project_send_material(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    message_id: int,
+    expected_content_version: Annotated[int, Query(ge=1)],
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.build_send_material(
+        db,
+        user_id=request.user.id,
+        message_id=message_id,
+        expected_content_version=expected_content_version,
+        growth_project_id=growth_project_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/manual-attest',
+    summary='[Owner] 记录人工发送证明（不等于渠道送达）',
+    dependencies=[DependsJwtAuth],
+)
+async def attest_project_manual_send(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: ManualAttestOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    actor_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_outreach_service.attest_manual_send(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        message_id=message_id,
+        expected_content_version=obj.expected_content_version,
+        actor_id=actor_id,
+        channel_actual=obj.channel_actual,
+        proof=obj.proof,
+        idempotency_key=obj.idempotency_key,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
 @router.get('/outreach/pending', summary='[Owner] 待审批触达队列', dependencies=[DependsJwtAuth])
 async def list_pending(
     request: Request,
@@ -837,6 +1022,7 @@ async def approve_outreach(
         message_id=message_id,
         approver_user_id=request.user.id,
         edited_content=obj.edited_content,
+        expected_content_version=obj.expected_content_version,
         scope=scope,
     )
     return response_base.success(data=data)
@@ -853,6 +1039,7 @@ async def reject_outreach(
         message_id=message_id,
         approver_user_id=request.user.id,
         reason=obj.reason,
+        expected_content_version=obj.expected_content_version,
         scope=scope,
     )
     return response_base.success(data=data)
@@ -913,7 +1100,7 @@ async def list_opportunities(
     request: Request,
     db: CurrentSession,
     customer_id: Annotated[int | None, Query()] = None,
-    open_only: Annotated[bool, Query()] = False,
+    open_only: Annotated[bool, Query()] = False,  # ruff: ignore[boolean-default-value-positional-argument]
     view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
     assignee: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,

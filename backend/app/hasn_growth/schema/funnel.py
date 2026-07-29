@@ -84,12 +84,59 @@ class SendOutreachParam(SchemaBase):
     opportunity_id: int | None = Field(default=None)
 
 
+class DraftOutreachParam(SendOutreachParam):
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=200,
+        description='调用方稳定幂等键；重试必须复用',
+    )
+
+
+class SubmitOutreachParam(SchemaBase):
+    expected_content_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
 class ApproveOutreachParam(SchemaBase):
     edited_content: str | None = Field(default=None, description='改话术后批（留痕）')
+    expected_content_version: int | None = Field(default=None, ge=1)
+
+
+class VersionedApproveOutreachParam(SchemaBase):
+    """项目化审批必须显式携带用户看到的内容版本。"""
+
+    edited_content: str | None = Field(default=None, description='改话术后批（留痕）')
+    expected_content_version: int = Field(ge=1)
 
 
 class RejectOutreachParam(SchemaBase):
     reason: str = Field(min_length=1, max_length=500)
+    expected_content_version: int | None = Field(default=None, ge=1)
+
+
+class VersionedRejectOutreachParam(SchemaBase):
+    """项目化拒绝必须显式携带用户看到的内容版本。"""
+
+    reason: str = Field(min_length=1, max_length=500)
+    expected_content_version: int = Field(ge=1)
+
+
+class EditOutreachParam(SchemaBase):
+    expected_content_version: int = Field(ge=1)
+    content: str = Field(min_length=1)
+    subject: str | None = Field(default=None, max_length=200)
+    channel: OutreachChannel | None = None
+    content_assets: dict[str, Any] | None = None
+
+
+class ManualAttestOutreachParam(SchemaBase):
+    expected_content_version: int = Field(ge=1)
+    channel_actual: OutreachChannel
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    proof: dict[str, Any] = Field(
+        default_factory=dict,
+        description='人工操作证明元数据，不得含联系方式明文',
+    )
 
 
 class MarkSentParam(SchemaBase):

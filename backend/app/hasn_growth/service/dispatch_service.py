@@ -25,8 +25,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.outreach_service import (
-    _QUIET_END_HOUR,
-    _QUIET_START_HOUR,
     growth_outreach_service,
 )
 from backend.utils.timezone import timezone
@@ -34,9 +32,9 @@ from backend.utils.timezone import timezone
 # owner 手动复制发送渠道：worker 不接管（owner 驱动）。
 _MANUAL_CHANNEL = 'manual_assist'
 
-# 渠道 sender 注册表：channel -> async (db, message) -> {'ok': bool, 'channel_actual'?: str, 'error'?: str}。
+# 渠道 sender 注册表：channel -> async (db, 冻结包) -> 真实 provider 结果。
 # 默认空——真实 IM/邮件 transport（飞书 gateway 等下行接缝）在 M8 物化时注册；未注册渠道一律 channel_unavailable。
-ChannelSenderFn = Callable[[AsyncSession, OutreachMessage], Awaitable[dict[str, Any]]]
+ChannelSenderFn = Callable[[AsyncSession, dict[str, Any]], Awaitable[dict[str, Any]]]
 _CHANNEL_SENDERS: dict[str, ChannelSenderFn] = {}
 
 
@@ -73,7 +71,11 @@ async def get_channel_setting(db: AsyncSession, *, user_id: int) -> dict[str, An
     return {'wechat_auto_send_confirmed': await _wechat_auto_send_confirmed(db, user_id)}
 
 
-async def _attempt_send(db: AsyncSession, message: OutreachMessage) -> dict[str, Any]:
+async def _attempt_send(
+    db: AsyncSession,
+    message: OutreachMessage,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
     """尝试经渠道 sender 真实发送。无可用 transport → channel_unavailable（零 fake，不假装已发送）。"""
     sender = _CHANNEL_SENDERS.get(message.channel)
     if sender is None:
@@ -84,14 +86,26 @@ async def _attempt_send(db: AsyncSession, message: OutreachMessage) -> dict[str,
                 '建议回退 manual_assist 由主人手动复制发送'
             ),
         }
-    return await sender(db, message)
+    return await sender(
+        db,
+        {
+            'message_id': message.id,
+            'growth_project_id': str(message.growth_project_id),
+            'customer_id': message.customer_id,
+            'channel': message.channel,
+            'approval_version': message.approval_version,
+            'content_version': message.content_version,
+            'idempotency_key': (f'outreach:{message.id}:approval:{message.approval_version}'),
+            'snapshot': snapshot,
+        },
+    )
 
 
 class GrowthDispatchService:
     """获客发送 worker：扫 approved → 按渠道闸门分发 → 状态回写（sent/failed）。"""
 
     @staticmethod
-    async def dispatch_approved_batch(
+    async def dispatch_approved_batch(  # ruff: ignore[complex-structure]
         db: AsyncSession, *, limit: int = 50, now_hour: int | None = None
     ) -> dict[str, int]:
         """扫一批 approved 出站触达并分发。返回统计（旁路，可观测）。
@@ -99,16 +113,34 @@ class GrowthDispatchService:
         now_hour：测试可注入小时数覆盖 quiet hours 判定；缺省取服务端当前小时。
         """
         hour = now_hour if now_hour is not None else timezone.now().hour
-        quiet_ok = _QUIET_START_HOUR <= hour < _QUIET_END_HOUR
 
         messages = (
-            await db.execute(
-                sa.select(OutreachMessage)
-                .where(OutreachMessage.status == 'approved', OutreachMessage.direction == 'outbound')
-                .order_by(OutreachMessage.id)
-                .limit(max(1, min(limit, 200)))
+            (
+                await db.execute(
+                    sa
+                    .select(OutreachMessage)
+                    .where(
+                        OutreachMessage.direction == 'outbound',
+                        sa.or_(
+                            OutreachMessage.approval_status == 'approved',
+                            sa.and_(
+                                OutreachMessage.approval_status.is_(None),
+                                OutreachMessage.status == 'approved',
+                            ),
+                        ),
+                        sa.or_(
+                            OutreachMessage.delivery_status.in_(('not_queued', 'queued')),
+                            OutreachMessage.delivery_status.is_(None),
+                        ),
+                    )
+                    .order_by(OutreachMessage.id)
+                    .limit(max(1, min(limit, 200)))
+                    .with_for_update(skip_locked=True)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         stat = {
             'scanned': 0,
@@ -117,30 +149,124 @@ class GrowthDispatchService:
             'skipped_manual': 0,
             'queued_quiet_hours': 0,
             'wechat_unconfirmed': 0,
+            'blocked_project': 0,
+            'blocked_entitlement': 0,
+            'blocked_budget': 0,
+            'blocked_optout': 0,
+            'blocked_compliance': 0,
+            'invalid_target': 0,
+            'retry_scheduled': 0,
         }
         for m in messages:
             stat['scanned'] += 1
             if m.channel == _MANUAL_CHANNEL:
                 stat['skipped_manual'] += 1
                 continue
-            if not quiet_ok:
-                stat['queued_quiet_hours'] += 1  # 保持 approved，下个 tick 再扫
-                continue
             if m.channel == 'wechat' and not await _wechat_auto_send_confirmed(db, m.user_id):
                 stat['wechat_unconfirmed'] += 1  # J1 未确认 → 恒 manual_assist，主人手动发
                 continue
 
+            preflight = await growth_outreach_service.dispatch_preflight(
+                db,
+                message=m,
+                now_hour=hour,
+            )
+            if not preflight['allowed']:
+                action = str(preflight['action'])
+                error_class = str(preflight['error_class'])
+                reason = str(preflight['reason'])
+                event_key = f'preflight:{error_class}:v{m.approval_version}'
+                if action == 'retry_scheduled':
+                    await growth_outreach_service.schedule_retry(
+                        db,
+                        user_id=m.user_id,
+                        message_id=m.id,
+                        reason=reason,
+                        idempotency_key=event_key,
+                    )
+                    stat['queued_quiet_hours'] += 1
+                    stat['retry_scheduled'] += 1
+                elif action in {'blocked_optout', 'blocked_compliance'}:
+                    await growth_outreach_service.mark_blocked(
+                        db,
+                        user_id=m.user_id,
+                        message_id=m.id,
+                        delivery_status=action,
+                        error_class=error_class,
+                        reason=reason,
+                        idempotency_key=event_key,
+                    )
+                    if error_class == 'project_not_active':
+                        stat['blocked_project'] += 1
+                    elif error_class == 'entitlement_required':
+                        stat['blocked_entitlement'] += 1
+                    elif error_class == 'monthly_budget_exhausted':
+                        stat['blocked_budget'] += 1
+                    elif action == 'blocked_optout':
+                        stat['blocked_optout'] += 1
+                    else:
+                        stat['blocked_compliance'] += 1
+                else:
+                    await growth_outreach_service.mark_failed(
+                        db,
+                        user_id=m.user_id,
+                        message_id=m.id,
+                        error=reason,
+                        error_class=error_class,
+                        idempotency_key=event_key,
+                    )
+                    stat['invalid_target'] += 1
+                    stat['failed'] += 1
+                continue
+
             # 认领（approved → sending）后尝试真实发送，结果如实回写。
-            await growth_outreach_service.mark_sending(db, user_id=m.user_id, message_id=m.id)
-            result = await _attempt_send(db, m)
+            dispatch_key = f'dispatch:v{m.approval_version}'
+            await growth_outreach_service.mark_sending(
+                db,
+                user_id=m.user_id,
+                message_id=m.id,
+                idempotency_key=dispatch_key,
+            )
+            try:
+                result = await _attempt_send(
+                    db,
+                    m,
+                    dict(preflight['snapshot']),
+                )
+            except Exception as exc:
+                result = {
+                    'ok': False,
+                    'error': f'渠道发送异常：{type(exc).__name__}',
+                    'error_class': 'transport_exception',
+                    'retryable': False,
+                    'dedupe_guaranteed': False,
+                }
             if result.get('ok'):
                 await growth_outreach_service.mark_sent(
-                    db, user_id=m.user_id, message_id=m.id, channel_actual=result.get('channel_actual') or m.channel
+                    db,
+                    user_id=m.user_id,
+                    message_id=m.id,
+                    channel_actual=result.get('channel_actual') or m.channel,
+                    provider_event_id=result.get('provider_event_id'),
                 )
                 stat['sent'] += 1
+            elif result.get('retryable') and result.get('dedupe_guaranteed'):
+                await growth_outreach_service.schedule_retry(
+                    db,
+                    user_id=m.user_id,
+                    message_id=m.id,
+                    reason=result.get('error') or '渠道瞬时失败',
+                    idempotency_key=(f'retry:{result.get("provider_event_id") or dispatch_key}'),
+                )
+                stat['retry_scheduled'] += 1
             else:
                 await growth_outreach_service.mark_failed(
-                    db, user_id=m.user_id, message_id=m.id, error=result.get('error') or 'channel_unavailable'
+                    db,
+                    user_id=m.user_id,
+                    message_id=m.id,
+                    error=result.get('error') or 'channel_unavailable',
+                    error_class=result.get('error_class') or 'channel_unavailable',
+                    idempotency_key=(f'failed:{result.get("provider_event_id") or dispatch_key}'),
                 )
                 stat['failed'] += 1
         return stat

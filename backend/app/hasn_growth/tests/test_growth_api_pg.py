@@ -60,14 +60,8 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.asyncio
 _REPO = Path(__file__).resolve().parents[4]
-_S6_MIGRATION_SQL = (
-    _REPO
-    / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
-)
-_S7_MIGRATION_SQL = (
-    _REPO
-    / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
-)
+_S6_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
+_S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
 
 _APP = FastAPI()
 _APP.include_router(agent_growth_router, prefix='/api/v1/growth/agent')
@@ -375,7 +369,7 @@ async def test_owner_project_lead_batch_pagination_and_status_http_contract(
 
     dismissed = _ok(
         await e2e.client.post(
-            f"{owner_api}/projects/{project_id}/leads/{lead['id']}/status",
+            f'{owner_api}/projects/{project_id}/leads/{lead["id"]}/status',
             json={'action': 'dismiss', 'reason': '当前批次优先级不匹配'},
         )
     )
@@ -389,14 +383,14 @@ async def test_owner_project_lead_batch_pagination_and_status_http_contract(
     assert dismissed_page['total'] == 1
     restored = _ok(
         await e2e.client.post(
-            f"{owner_api}/projects/{project_id}/leads/{lead['id']}/status",
+            f'{owner_api}/projects/{project_id}/leads/{lead["id"]}/status',
             json={'action': 'restore'},
         )
     )
     assert restored['status'] == 'new'
 
     personal_assign = await e2e.client.put(
-        f"{owner_api}/projects/{project_id}/leads/{lead['id']}/assignee",
+        f'{owner_api}/projects/{project_id}/leads/{lead["id"]}/assignee',
         json={'assignee': e2e.owner},
     )
     assert personal_assign.status_code == 403
@@ -914,9 +908,7 @@ async def test_project_customer_owner_and_agent_reads_are_masked_and_reveal_is_a
                     'title': '销售负责人',
                     'lawful_basis': 'public_business_contact',
                     'source_ref': 'controlled://growth-s7/private/profile',
-                    'retention_until': (
-                        datetime.now(UTC) + timedelta(days=30)
-                    ).isoformat(),
+                    'retention_until': (datetime.now(UTC) + timedelta(days=30)).isoformat(),
                     'channels': [
                         {
                             'channel': 'email',
@@ -1008,3 +1000,131 @@ async def test_project_customer_owner_and_agent_reads_are_masked_and_reveal_is_a
         f'{agent_api}/projects/{e2e.growth_project_id}/customers/{customer_id}/detail',
     )
     assert denied.status_code == 404
+
+
+async def test_project_outreach_draft_submit_versioned_approval_and_manual_attestation_http(
+    e2e: SimpleNamespace,
+) -> None:
+    """S8 Agent/Owner HTTP 共用项目状态机，409 明确拒绝旧内容版本。"""
+    customer = Customer(
+        customer_no=f'C-S8-{uuid.uuid4().hex[:8]}',
+        user_id=e2e.owner_uid,
+        growth_project_id=e2e.growth_project_id,
+        source_kind='controlled_import',
+        company_name='S8 受控审批客户',
+        contact_name='周女士',
+        email='s8-http-private@example.com',
+        lifecycle_status='active',
+        owner_agent_id=e2e.agent_hasn,
+        owner_scope='personal',
+    )
+    e2e.session.add(customer)
+    await e2e.session.flush()
+    agent_api = '/api/v1/growth/agent'
+    owner_api = '/api/v1/growth/app'
+    project_path = f'/projects/{e2e.growth_project_id}/outreach'
+
+    draft_payload = {
+        'customer_id': customer.id,
+        'channel': 'manual_assist',
+        'content': '您好，想沟通贵司客户增长目标',
+        'intent_note': '首次触达，确认增长计划',
+        'content_assets': {
+            'attachments': ['hasn://asset/s8-http-controlled'],
+        },
+        'idempotency_key': 's8-http-draft-1',
+    }
+    drafted = _ok(
+        await e2e.client.post(
+            f'{agent_api}{project_path}/drafts',
+            json=draft_payload,
+        )
+    )
+    replayed = _ok(
+        await e2e.client.post(
+            f'{agent_api}{project_path}/drafts',
+            json={**draft_payload, 'content': '重放不得覆盖'},
+        )
+    )
+    assert drafted['id'] == replayed['id']
+    assert drafted['approval_status'] == 'draft'
+
+    submitted = _ok(
+        await e2e.client.post(
+            f'{agent_api}{project_path}/{drafted["id"]}/submit',
+            json={
+                'expected_content_version': 1,
+                'idempotency_key': 's8-http-submit-1',
+            },
+        )
+    )
+    assert submitted['approval_status'] == 'pending_approval'
+    pending = _ok(await e2e.client.get(f'{owner_api}{project_path}/pending'))
+    card = next(item for item in pending if item['id'] == drafted['id'])
+    assert card['target_customer']['email'] == 's***@example.com'
+    assert 's8-http-private@example.com' not in str(card)
+    assert [event['event_type'] for event in card['events']] == [
+        'drafted',
+        'approval_requested',
+    ]
+    missing_version = await e2e.client.post(
+        f'{owner_api}{project_path}/{drafted["id"]}/approve',
+        json={},
+    )
+    assert missing_version.status_code == 422
+
+    edited = _ok(
+        await e2e.client.patch(
+            f'{owner_api}{project_path}/{drafted["id"]}',
+            json={
+                'expected_content_version': 1,
+                'content': '您好，想请教贵司今年的客户增长目标',
+                'content_assets': {
+                    'attachments': ['hasn://asset/s8-http-controlled-v2'],
+                },
+            },
+        )
+    )
+    assert edited['content_version'] == 2
+    stale = await e2e.client.post(
+        f'{owner_api}{project_path}/{drafted["id"]}/approve',
+        json={'expected_content_version': 1},
+    )
+    assert stale.status_code == 409
+    assert '内容已变化' in stale.json()['msg']
+
+    approved = _ok(
+        await e2e.client.post(
+            f'{owner_api}{project_path}/{drafted["id"]}/approve',
+            json={'expected_content_version': 2},
+        )
+    )
+    assert approved['approval_status'] == 'approved'
+    assert approved['approval_version'] == approved['content_version'] == 2
+    material = _ok(
+        await e2e.client.get(
+            f'{owner_api}{project_path}/{drafted["id"]}/send-material',
+            params={'expected_content_version': 2},
+        )
+    )
+    assert material['content'] == '您好，想请教贵司今年的客户增长目标'
+    assert material['content_assets']['attachments'] == ['hasn://asset/s8-http-controlled-v2']
+    assert 's8-http-private@example.com' not in str(material)
+
+    attested = _ok(
+        await e2e.client.post(
+            f'{owner_api}{project_path}/{drafted["id"]}/manual-attest',
+            json={
+                'expected_content_version': 2,
+                'channel_actual': 'email',
+                'idempotency_key': 's8-http-manual-proof-1',
+                'proof': {
+                    'method': 'owner_checkbox',
+                    'note': '已在企业邮箱客户端人工发送',
+                },
+            },
+        )
+    )
+    assert attested['manual_attested_at'] is not None
+    assert attested['delivery_status'] == 'not_queued'
+    assert attested['sent_at'] is None

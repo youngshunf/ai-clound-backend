@@ -676,7 +676,10 @@ _CAPABILITIES = [
         name='customer_reassign',
         mcp_suffix='customer.reassign',
         title='分配/转移客户负责人',
-        description='企业经理分配/转移客户负责人（GE4，仅企业经理主人的分身；assignee 为人或分身 hasn_id）。非经理由 service 拒。',
+        description=(
+            '企业经理分配/转移客户负责人（GE4，仅企业经理主人的分身；'
+            'assignee 为人或分身 hasn_id）。非经理由 service 拒。'
+        ),
         scope=_SCOPE_MANAGE,
         risk_level='medium',
         properties={
@@ -694,6 +697,56 @@ _CAPABILITIES = [
         tags=['growth', 'customer', 'assign', 'manage', 'enterprise'],
     ),
     _cap(
+        name='outreach_draft',
+        mcp_suffix='outreach.draft',
+        title='起草项目触达',
+        description='保存项目触达草稿，不审批、不排队、不发送；重试必须复用 idempotency_key。',
+        scope=_SCOPE_OUTREACH,
+        risk_level='medium',
+        properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
+            'customer_id': {'type': 'integer'},
+            'channel': {'type': 'string', 'description': '渠道 manual_assist/wechat/email/hasn_dm/...'},
+            'content': {'type': 'string', 'minLength': 1},
+            'subject': {'type': ['string', 'null']},
+            'intent_note': {'type': ['string', 'null']},
+            'content_assets': {'type': ['object', 'null']},
+            'opportunity_id': {'type': ['integer', 'null']},
+            'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+        },
+        required=[
+            'growth_project_id',
+            'customer_id',
+            'channel',
+            'content',
+            'idempotency_key',
+        ],
+        page_rank=22,
+        tags=['growth', 'outreach', 'draft'],
+    ),
+    _cap(
+        name='outreach_submit',
+        mcp_suffix='outreach.submit',
+        title='提交项目触达审批',
+        description='按内容版本提交审批；首次触达强制待主人审批，返回正交审批态与投递态。',
+        scope=_SCOPE_OUTREACH,
+        risk_level='high',
+        properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
+            'message_id': {'type': 'integer'},
+            'expected_content_version': {'type': 'integer', 'minimum': 1},
+            'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+        },
+        required=[
+            'growth_project_id',
+            'message_id',
+            'expected_content_version',
+            'idempotency_key',
+        ],
+        page_rank=23,
+        tags=['growth', 'outreach', 'submit', 'approval'],
+    ),
+    _cap(
         name='outreach_send',
         mcp_suffix='outreach.send',
         title='请求发送触达',
@@ -704,6 +757,7 @@ _CAPABILITIES = [
         scope=_SCOPE_OUTREACH,
         risk_level='high',
         properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
             'customer_id': {'type': 'integer'},
             'channel': {'type': 'string', 'description': '渠道 manual_assist/wechat/email/hasn_dm/...'},
             'content': {'type': 'string', 'minLength': 1},
@@ -711,10 +765,17 @@ _CAPABILITIES = [
             'intent_note': {'type': ['string', 'null'], 'description': '给主人看：为什么现在发这条'},
             'content_assets': {'type': ['object', 'null'], 'description': '随附素材（图片/文件引用等）'},
             'opportunity_id': {'type': ['integer', 'null']},
+            'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 200},
         },
-        required=['customer_id', 'channel', 'content'],
-        page_rank=22,
-        tags=['growth', 'outreach', 'send'],
+        required=[
+            'growth_project_id',
+            'customer_id',
+            'channel',
+            'content',
+            'idempotency_key',
+        ],
+        page_rank=24,
+        tags=['growth', 'outreach', 'send', 'compatibility'],
     ),
     _cap(
         name='outreach_status',
@@ -729,7 +790,7 @@ _CAPABILITIES = [
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
         },
         required=['growth_project_id', 'customer_id'],
-        page_rank=23,
+        page_rank=25,
         tags=['growth', 'outreach', 'status', 'read'],
     ),
     _cap(
@@ -779,7 +840,10 @@ _CAPABILITIES = [
         name='deal_close',
         mcp_suffix='deal.close',
         title='成交/流失登记',
-        description='成交/流失登记（won 需金额；附复盘 close_note / 败因 lost_reason）。商机进 closed_won/closed_lost，客户生命周期同步。',
+        description=(
+            '成交/流失登记（won 需金额；附复盘 close_note / 败因 lost_reason）。'
+            '商机进 closed_won/closed_lost，客户生命周期同步。'
+        ),
         scope=_SCOPE_MANAGE,
         risk_level='high',
         properties={
