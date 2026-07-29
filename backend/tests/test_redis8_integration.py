@@ -26,7 +26,11 @@ import pytest_asyncio
 from redis import Redis as SyncRedis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from backend.app.hasn_im.adapters.routing import delivery_bus, redis_presence_store
+from backend.app.hasn_im.adapters.routing import (
+    delivery_bus,
+    redis_presence_store,
+    redis_realtime_wakeup_bus,
+)
 from backend.database.redis import RedisCli
 
 
@@ -223,6 +227,60 @@ async def test_pubsub_round_trip(
         await pubsub.aclose()
         await subscriber_client.aclose()
         await publisher_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_realtime_wakeup_adapter_round_trip(
+    redis8_server: Redis8Server,
+    redis8_client: RedisCli,
+) -> None:
+    """真实验证 wake-up adapter 的定向、广播和订阅资源回收。"""
+
+    def create_subscriber() -> RedisCli:
+        return RedisCli(
+            host=redis8_server.host,
+            port=redis8_server.port,
+            password=redis8_server.password,
+            db=15,
+            protocol=2,
+        )
+
+    events: list[dict[str, object]] = []
+    event_received = asyncio.Event()
+
+    async def handle(event: dict[str, object]) -> None:  # noqa: RUF029
+        events.append(event)
+        event_received.set()
+
+    bus = redis_realtime_wakeup_bus.RedisRealtimeWakeupBus(
+        publisher=redis8_client,
+        subscriber_factory=create_subscriber,
+    )
+    bus.start(handle)
+    try:
+        deadline = asyncio.get_running_loop().time() + 3
+        while asyncio.get_running_loop().time() < deadline:
+            result = await redis8_client.execute_command(
+                'PUBSUB',
+                'NUMSUB',
+                redis_realtime_wakeup_bus.WS_DELIVERY_CHANNEL,
+            )
+            if int(result[1]) == 1:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail('Redis wake-up adapter 未在期限内完成订阅')
+
+        await bus.publish_node_wakeup('node-real')
+        await asyncio.wait_for(event_received.wait(), timeout=2)
+        assert events == [{'node_id': 'node-real'}]
+
+        event_received.clear()
+        await bus.publish_broadcast('FRAME')
+        await asyncio.wait_for(event_received.wait(), timeout=2)
+        assert events[-1] == {'broadcast': True, 'payload': 'FRAME'}
+    finally:
+        await bus.stop()
 
 
 @pytest.mark.asyncio

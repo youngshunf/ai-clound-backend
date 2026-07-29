@@ -242,9 +242,11 @@ async def test_publish_then_deliver_full_loop(monkeypatch: pytest.MonkeyPatch) -
     """确定性模拟跨 worker：worker-A publish → worker-B（持有连接）_deliver_local 下发。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn_im.adapters.routing import node_session_service as rmod
+    from backend.app.hasn_im.adapters.routing import redis_realtime_wakeup_bus as wakeupmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
+    monkeypatch.setattr(wakeupmod, 'redis_client', redis)
     rmod._ws_connections.clear()
     rmod._ws_connection_ids.clear()
     rmod._ws_ready_connection_ids.clear()
@@ -258,7 +260,7 @@ async def test_publish_then_deliver_full_loop(monkeypatch: pytest.MonkeyPatch) -
     await busmod.WsDeliveryBus.publish_to_node('node-x', 'PAYLOAD')
     assert len(redis.published) == 1
     channel, message = redis.published[0]
-    assert channel == busmod.WS_DELIVERY_CHANNEL
+    assert channel == wakeupmod.WS_DELIVERY_CHANNEL
 
     # 「持有连接的 worker」订阅者收到该帧 → 下发
     await busmod.WsDeliveryBus._deliver_local(json.loads(message))
@@ -275,9 +277,11 @@ async def test_publish_persists_payload_when_pubsub_wakeup_fails(
 ) -> None:
     """目标 worker 订阅短暂中断时，消息仍留在 node 待投队列等待周期重试。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import redis_realtime_wakeup_bus as wakeupmod
 
     redis = FakeRedis(fail_publish=True)
     monkeypatch.setattr(busmod, 'redis_client', redis)
+    monkeypatch.setattr(wakeupmod, 'redis_client', redis)
 
     queued = await busmod.WsDeliveryBus.publish_to_node('node-x', 'PAYLOAD')
 
