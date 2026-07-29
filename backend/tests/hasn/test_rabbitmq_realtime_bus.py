@@ -31,6 +31,7 @@ from backend.app.hasn_im.adapters.routing.redis_realtime_wakeup_bus import (
     RedisRealtimeWakeupBus,
 )
 from backend.app.hasn_im.ports.realtime_wakeup_bus import RealtimeWakeupBus
+from backend.database.redis import redis_client
 
 
 @dataclass
@@ -305,8 +306,12 @@ async def test_real_shadow_reconciles_one_hundred_thousand_event_ids() -> None:
     published_event_ids: set[str] = set()
     try:
         await shadow.wait_shadow_ready(timeout=20)
-        for start in range(0, event_count, 200):
-            batch_size = min(200, event_count - start)
+        max_connections = redis_client.connection_pool.max_connections
+        assert isinstance(max_connections, int)
+        # 为订阅与同进程其他 Redis 操作预留至少一半连接，避免压测驱动先耗尽生产连接池。
+        batch_concurrency = max(1, min(50, max_connections // 2))
+        for start in range(0, event_count, batch_concurrency):
+            batch_size = min(batch_concurrency, event_count - start)
             published_event_ids.update(
                 await asyncio.gather(*(shadow.publish_node_wakeup_event(node_id) for _ in range(batch_size)))
             )
