@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
+from uuid import NAMESPACE_URL, uuid5
 
 import sqlalchemy as sa
 
@@ -23,15 +24,22 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
 from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
+from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.growth_attribution_event import (
+    GrowthAttributionEvent,
+)
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
+from backend.app.hasn_growth.model.growth_project_playbook import GrowthProjectPlaybook
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.schema.project_lead import ProjectLeadIngestItem
 from backend.app.hasn_growth.service.contact_privacy_service import (
     ContactChannelWrite,
     contact_privacy_service,
 )
+from backend.app.hasn_growth.service.funnel_service import masked_customer_response
 from backend.app.hasn_growth.service.pii import redact_pii_value
 from backend.app.hasn_growth.service.pii_boundary import (
     GrowthPiiBoundaryError,
@@ -43,6 +51,7 @@ from backend.app.hasn_growth.service.scope_context import (
     apply_scope,
     can_manage_assignment,
 )
+from backend.app.hasn_task.model.task import HasnTask
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -55,6 +64,15 @@ if TYPE_CHECKING:
 _FRESHNESS_WINDOW = timedelta(days=90)
 _BATCH_META_KEY = '_ingest'
 _OWNER_ROLES = ('owner', 'admin')
+_CUSTOMER_SOURCE_KIND = {
+    'firecrawl': 'outbound_crawl',
+    'crawl': 'outbound_crawl',
+    'web': 'outbound_crawl',
+    'controlled_import': 'manual',
+    'manual': 'manual',
+    'inbound_form': 'inbound_form',
+    'community': 'community',
+}
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -93,9 +111,7 @@ def _domain(value: str | None, *, website: str | None) -> str | None:
         cleaned = candidate.strip() if candidate else ''
         if not cleaned:
             continue
-        parsed = urlsplit(
-            cleaned if cleaned.startswith(('http://', 'https://')) else f'https://{cleaned}'
-        )
+        parsed = urlsplit(cleaned if cleaned.startswith(('http://', 'https://')) else f'https://{cleaned}')
         if parsed.hostname:
             return parsed.hostname.casefold().removeprefix('www.')[:255]
     return None
@@ -124,14 +140,12 @@ def _fact_dedupe_key(
                 msg='缺少可去重的企业域名或企业名称',
                 data={'error_code': 'LEAD_PUBLIC_FACT_REQUIRED'},
             )
-        canonical = '|'.join(
-            (
-                f'company:{company}',
-                f'country:{_normalized_fact(country)}',
-                f'region:{_normalized_fact(region)}',
-                f'city:{_normalized_fact(city)}',
-            )
-        )
+        canonical = '|'.join((
+            f'company:{company}',
+            f'country:{_normalized_fact(country)}',
+            f'region:{_normalized_fact(region)}',
+            f'city:{_normalized_fact(city)}',
+        ))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -167,17 +181,12 @@ class ProjectLeadService:
         require_writable: bool = False,
     ) -> GrowthProject:
         project = (
-            await db.execute(
-                sa.select(GrowthProject).where(GrowthProject.id == growth_project_id)
-            )
+            await db.execute(sa.select(GrowthProject).where(GrowthProject.id == growth_project_id))
         ).scalar_one_or_none()
         if project is None:
             raise errors.NotFoundError(msg='获客项目不存在或无权访问')
         if scope.is_enterprise:
-            allowed = (
-                project.owner_scope == 'enterprise'
-                and project.enterprise_id == scope.enterprise_id
-            )
+            allowed = project.owner_scope == 'enterprise' and project.enterprise_id == scope.enterprise_id
         else:
             allowed = (
                 project.owner_scope == 'personal'
@@ -225,12 +234,7 @@ class ProjectLeadService:
                 ContactPrivateProfile.owner_scope == 'personal',
                 ContactPrivateProfile.user_id == scope.user_id,
             ])
-        return (
-            await db.scalar(
-                sa.select(ContactPrivateProfile.id).where(*conditions).limit(1)
-            )
-            is not None
-        )
+        return await db.scalar(sa.select(ContactPrivateProfile.id).where(*conditions).limit(1)) is not None
 
     async def _upsert_public_contact(
         self,
@@ -288,9 +292,7 @@ class ProjectLeadService:
             confidence_score=Decimal(0),
             dedupe_key_email=None,
             dedupe_key_phone=None,
-            dedupe_key_domain=(
-                hashlib.sha256(domain.encode()).hexdigest() if domain else None
-            ),
+            dedupe_key_domain=(hashlib.sha256(domain.encode()).hexdigest() if domain else None),
             fact_dedupe_key=fact_key,
             normalization_version='public-fact-v1',
             first_seen_at=now,
@@ -303,9 +305,7 @@ class ProjectLeadService:
             index_elements=[LeadContact.fact_dedupe_key],
             # 必须与部分唯一索引使用同一字面量谓词；若把 `public` 参数化，
             # asyncpg 在第六次切 generic prepared plan 后无法证明索引谓词成立。
-            index_where=sa.text(
-                "pool_visibility = 'public' AND fact_dedupe_key IS NOT NULL"
-            ),
+            index_where=sa.text("pool_visibility = 'public' AND fact_dedupe_key IS NOT NULL"),
             set_={
                 'company_name': sa.func.coalesce(
                     excluded.company_name,
@@ -407,7 +407,9 @@ class ProjectLeadService:
             'assignee': (
                 None
                 if scope.is_enterprise and item.source_kind == 'inbound_form'
-                else scope.owner_hasn_id if scope.is_enterprise else None
+                else scope.owner_hasn_id
+                if scope.is_enterprise
+                else None
             ),
             'source_kind': item.source_kind,
             'source_tool': item.source_tool,
@@ -415,14 +417,9 @@ class ProjectLeadService:
             'source_meta': source_meta,
             'ingest_batch_id': batch_id,
             'ingest_client_ref': item.client_ref,
-            'match_score': (
-                Decimal(str(item.match_score))
-                if item.match_score is not None
-                else None
-            ),
+            'match_score': (Decimal(str(item.match_score)) if item.match_score is not None else None),
             'score_breakdown': {
-                key: component.model_dump(mode='json')
-                for key, component in item.score_breakdown.items()
+                key: component.model_dump(mode='json') for key, component in item.score_breakdown.items()
             },
             'scoring_version': item.scoring_version,
             'evidence_fresh_at': item.evidence_fresh_at,
@@ -623,9 +620,13 @@ class ProjectLeadService:
     ) -> dict[str, Any]:
         """逐条校验并写入稳定批次；已知条目错误不拖垮同批合法行。"""
         batch_id = batch_id.strip()
-        if not batch_id or len(batch_id) > 64 or not re.fullmatch(
-            r'[A-Za-z0-9][A-Za-z0-9._:-]*',
-            batch_id,
+        if (
+            not batch_id
+            or len(batch_id) > 64
+            or not re.fullmatch(
+                r'[A-Za-z0-9][A-Za-z0-9._:-]*',
+                batch_id,
+            )
         ):
             raise errors.RequestError(msg='batch_id 格式无效')
         if not 1 <= len(items) <= 100:
@@ -669,11 +670,7 @@ class ProjectLeadService:
                     'message': '线索条目校验失败',
                 })
             except (errors.RequestError, errors.ConflictError) as exc:
-                error_code = (
-                    exc.data.get('error_code')
-                    if isinstance(exc.data, dict)
-                    else None
-                )
+                error_code = exc.data.get('error_code') if isinstance(exc.data, dict) else None
                 failures.append({
                     'index': index,
                     'client_ref': client_ref or None,
@@ -694,11 +691,7 @@ class ProjectLeadService:
     def _freshness(evidence_fresh_at: datetime | None) -> str:
         if evidence_fresh_at is None:
             return 'unknown'
-        return (
-            'fresh'
-            if evidence_fresh_at >= timezone.now() - _FRESHNESS_WINDOW
-            else 'stale'
-        )
+        return 'fresh' if evidence_fresh_at >= timezone.now() - _FRESHNESS_WINDOW else 'stale'
 
     async def _lead_view(
         self,
@@ -727,9 +720,7 @@ class ProjectLeadService:
             'country': contact.country,
             'region': contact.region,
             'city': contact.city,
-            'contact_name': (
-                private_contact.get('contact_name') if private_contact else None
-            ),
+            'contact_name': (private_contact.get('contact_name') if private_contact else None),
             'title': private_contact.get('title') if private_contact else None,
             'channels': private_contact.get('channels', []) if private_contact else [],
             'status': project_lead.status,
@@ -740,19 +731,11 @@ class ProjectLeadService:
             'source_tool': project_lead.source_tool,
             'source_ref': project_lead.source_ref,
             'source_meta': project_lead.source_meta,
-            'match_score': (
-                float(project_lead.match_score)
-                if project_lead.match_score is not None
-                else None
-            ),
+            'match_score': (float(project_lead.match_score) if project_lead.match_score is not None else None),
             'score_breakdown': project_lead.score_breakdown,
             'scoring_version': project_lead.scoring_version,
-            'evidence_fresh_at': _serialize_datetime(
-                project_lead.evidence_fresh_at
-            ),
-            'evidence_freshness': self._freshness(
-                project_lead.evidence_fresh_at
-            ),
+            'evidence_fresh_at': _serialize_datetime(project_lead.evidence_fresh_at),
+            'evidence_freshness': self._freshness(project_lead.evidence_fresh_at),
             'acquired_at': _serialize_datetime(project_lead.acquired_at),
             'updated_time': _serialize_datetime(project_lead.updated_time),
         }
@@ -806,9 +789,7 @@ class ProjectLeadService:
         if freshness == 'unknown':
             statement = statement.where(GrowthProjectLead.evidence_fresh_at.is_(None))
         elif freshness == 'fresh':
-            statement = statement.where(
-                GrowthProjectLead.evidence_fresh_at >= timezone.now() - _FRESHNESS_WINDOW
-            )
+            statement = statement.where(GrowthProjectLead.evidence_fresh_at >= timezone.now() - _FRESHNESS_WINDOW)
         elif freshness == 'stale':
             statement = statement.where(
                 GrowthProjectLead.evidence_fresh_at.is_not(None),
@@ -870,9 +851,7 @@ class ProjectLeadService:
             assignee=assignee,
         )
 
-        count_statement = sa.select(sa.func.count()).select_from(
-            statement.order_by(None).subquery()
-        )
+        count_statement = sa.select(sa.func.count()).select_from(statement.order_by(None).subquery())
         total = int((await db.execute(count_statement)).scalar_one())
         rows = (
             await db.execute(
@@ -977,6 +956,230 @@ class ProjectLeadService:
             'dismiss_reason': project_lead.dismiss_reason,
         }
 
+    async def qualify_project_lead(
+        self,
+        db: AsyncSession,
+        *,
+        growth_project_id: str | UUID,
+        project_lead_id: int,
+        scope: GrowthScope,
+        profile: dict[str, Any] | None,
+        intent_score: float | None,
+        actor_kind: Literal['owner', 'agent'],
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """在同一事务内把项目线索晋级为客户，并建立首个接续链路。"""
+        normalized_actor_id = actor_id.strip()
+        if actor_kind not in {'owner', 'agent'} or not normalized_actor_id:
+            raise errors.RequestError(msg='晋级操作者无效')
+        if intent_score is not None and not 0 <= intent_score <= 100:
+            raise errors.RequestError(msg='意向分必须介于 0 到 100')
+
+        project = await self._require_project(
+            db,
+            growth_project_id=growth_project_id,
+            scope=scope,
+            require_writable=True,
+        )
+        project_lead = await self._load_scoped_lead(
+            db,
+            project=project,
+            project_lead_id=project_lead_id,
+            scope=scope,
+            write_lock=True,
+        )
+        if project_lead.status == 'dismissed':
+            raise errors.ConflictError(
+                msg='已忽略线索需先恢复再晋级',
+                data={'error_code': 'LEAD_DISMISSED'},
+            )
+
+        contact = await db.get(LeadContact, project_lead.lead_contact_id)
+        if contact is None:
+            raise errors.NotFoundError(msg='项目线索关联的公共联系人不存在')
+
+        customer = (
+            await db.execute(
+                sa.select(Customer).where(
+                    Customer.growth_project_id == project.id,
+                    Customer.lead_contact_id == project_lead.lead_contact_id,
+                )
+            )
+        ).scalar_one_or_none()
+        task_agent_id = normalized_actor_id if actor_kind == 'agent' else (project.owner_agent_id or '').strip()
+        if customer is None and not task_agent_id:
+            raise errors.ConflictError(
+                msg='获客项目尚未绑定负责分身，无法建立接续任务',
+                data={'error_code': 'GROWTH_PROJECT_AGENT_REQUIRED'},
+            )
+
+        now = timezone.now()
+        next_followup_at = now + timedelta(days=1)
+        safe_profile = redact_pii_value(profile or {})
+        assert_growth_pii_payload_safe(safe_profile)
+        playbook = (
+            await db.execute(
+                sa
+                .select(GrowthProjectPlaybook)
+                .where(
+                    GrowthProjectPlaybook.growth_project_id == project.id,
+                    GrowthProjectPlaybook.status == 'active',
+                )
+                .order_by(GrowthProjectPlaybook.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if customer is None:
+            score = Decimal(
+                str(
+                    intent_score
+                    if intent_score is not None
+                    else (project_lead.match_score or contact.confidence_score or 0)
+                )
+            )
+            customer_no = 'CUS' + hashlib.sha256(f'{project.id}:{project_lead.id}'.encode()).hexdigest()[:12].upper()
+            customer = Customer(
+                customer_no=customer_no,
+                user_id=scope.user_id,
+                growth_project_id=project.id,
+                lead_contact_id=project_lead.lead_contact_id,
+                source_kind=_CUSTOMER_SOURCE_KIND.get(
+                    project_lead.source_kind or contact.source_type or 'manual',
+                    'outbound_crawl',
+                ),
+                company_name=contact.company_name,
+                contact_name=None,
+                email=None,
+                phone=None,
+                wechat=None,
+                im_refs={},
+                profile_json=safe_profile,
+                intent_score=score,
+                lifecycle_status='active',
+                owner_agent_id=task_agent_id,
+                owner_scope='enterprise' if scope.is_enterprise else 'personal',
+                enterprise_id=scope.enterprise_id if scope.is_enterprise else None,
+                assignee=(project_lead.assignee or scope.owner_hasn_id if scope.is_enterprise else None),
+                tags=[],
+                last_activity_at=now,
+                next_followup_at=next_followup_at,
+                silent_round_count=0,
+            )
+            db.add(customer)
+            await db.flush()
+
+        task_uuid = customer.followup_task_id
+        if not task_uuid:
+            if not task_agent_id:
+                raise errors.ConflictError(
+                    msg='客户尚无接续任务且项目未绑定负责分身',
+                    data={'error_code': 'GROWTH_PROJECT_AGENT_REQUIRED'},
+                )
+            task_uuid = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f'hasn:growth:followup:{project.id}:{project_lead.id}',
+                )
+            )
+            task_prompt = (
+                f'跟进获客项目 {project.id} 的客户 {customer.id}。'
+                '先读取客户脱敏详情、最近活动和当前打法，再提出下一步合规跟进建议；'
+                '任何对外发送必须进入审批流程，不得直接发送。'
+            )
+            await db.execute(
+                pg_insert(HasnTask)
+                .values(
+                    owner_id=project.owner_hasn_id,
+                    agent_id=task_agent_id,
+                    name=f'跟进客户：{contact.company_name or customer.customer_no}'[:200],
+                    description='项目线索晋级后自动建立的首次接续任务',
+                    prompt=task_prompt,
+                    schedule_type='once',
+                    schedule_config={'run_at': next_followup_at.isoformat()},
+                    schedule_display='线索晋级后次日跟进',
+                    timezone='Asia/Shanghai',
+                    misfire_policy='skip',
+                    enabled=True,
+                    state='scheduled',
+                    next_run_at=next_followup_at,
+                    created_by=normalized_actor_id,
+                    task_uuid=task_uuid,
+                    executor_policy='local_node',
+                    task_revision=1,
+                    created_by_kind=actor_kind,
+                    risk_level='low',
+                    project_id=project.platform_project_id,
+                    app_id='growth',
+                    execution_kind='freeform',
+                    execution_spec={'prompt': task_prompt},
+                )
+                .on_conflict_do_nothing(index_elements=[HasnTask.task_uuid])
+            )
+            customer.followup_task_id = task_uuid
+            if customer.next_followup_at is None:
+                customer.next_followup_at = next_followup_at
+
+        await db.execute(
+            pg_insert(Activity)
+            .values(
+                customer_id=customer.id,
+                user_id=scope.user_id,
+                growth_project_id=project.id,
+                growth_project_playbook_id=playbook.id if playbook else None,
+                playbook_id=playbook.playbook_id if playbook else None,
+                playbook_version=playbook.playbook_version if playbook else None,
+                kind='qualify',
+                content=f'项目线索晋级为客户（来源 {customer.source_kind}）',
+                actor_kind=actor_kind,
+                actor_id=normalized_actor_id,
+                ref_table='growth_project_lead',
+                ref_id=str(project_lead.id),
+                occurred_at=now,
+                owner_scope=customer.owner_scope,
+                enterprise_id=customer.enterprise_id,
+                assignee=customer.assignee,
+            )
+            .on_conflict_do_nothing()
+        )
+        await db.execute(
+            pg_insert(GrowthAttributionEvent)
+            .values(
+                growth_project_id=project.id,
+                event_type='qualified',
+                lead_contact_id=project_lead.lead_contact_id,
+                customer_id=customer.id,
+                growth_project_playbook_id=playbook.id if playbook else None,
+                playbook_id=playbook.playbook_id if playbook else None,
+                playbook_version=playbook.playbook_version if playbook else None,
+                source_kind=project_lead.source_kind,
+                source_ref=project_lead.source_ref,
+                campaign_ref=project_lead.source_meta.get('campaign'),
+                occurred_time=now,
+                idempotency_key=f'qualify:{project_lead.id}',
+                meta_data={
+                    'project_lead_id': project_lead.id,
+                    'scoring_version': project_lead.scoring_version,
+                    'match_score': (float(project_lead.match_score) if project_lead.match_score is not None else None),
+                },
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    GrowthAttributionEvent.growth_project_id,
+                    GrowthAttributionEvent.idempotency_key,
+                ]
+            )
+        )
+        project_lead.status = 'qualified'
+        project_lead.dismiss_reason = None
+        project_lead.updated_time = now
+        await db.flush()
+
+        result = await masked_customer_response(db, customer)
+        result['project_lead_id'] = project_lead.id
+        result['platform_project_id'] = str(project.platform_project_id)
+        return result
+
     async def assign_lead(
         self,
         db: AsyncSession,
@@ -1007,13 +1210,10 @@ class ProjectLeadService:
         membership = (
             await db.execute(
                 sa.select(HasnEnterpriseMembership.id).where(
-                    HasnEnterpriseMembership.enterprise_id
-                    == scope.enterprise_id,
+                    HasnEnterpriseMembership.enterprise_id == scope.enterprise_id,
                     HasnEnterpriseMembership.user_id == assignee_user_id,
                     HasnEnterpriseMembership.status == 'approved',
-                    HasnEnterpriseMembership.role.in_(
-                        (*_OWNER_ROLES, 'member')
-                    ),
+                    HasnEnterpriseMembership.role.in_((*_OWNER_ROLES, 'member')),
                 )
             )
         ).scalar_one_or_none()

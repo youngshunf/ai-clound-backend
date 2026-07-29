@@ -22,6 +22,7 @@ import uuid
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -34,8 +35,11 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
+from backend.app.hasn_growth.model.growth_project import GrowthProject
+from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
+from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -45,6 +49,8 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 _REG = ai_native_runtime_gateway._internal_handlers()
+_REPO = Path(__file__).resolve().parents[4]
+_S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
 
 
 @pytest_asyncio.fixture
@@ -58,6 +64,10 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
+    raw = await (await session.connection()).get_raw_connection()
+    connection = raw.driver_connection
+    assert connection is not None
+    await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
     tag = uuid.uuid4().hex[:8]
     owner = f'h_disp_{tag}'
     owner_uid = 90_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -89,6 +99,39 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     session.add(lead)
     await session.flush()
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
+    platform_project = HasnProject(
+        owner_id=owner,
+        name=f'派发工具链项目-{tag}',
+        goal='验证项目线索晋级',
+        status='active',
+    )
+    session.add(platform_project)
+    await session.flush()
+    growth_project = GrowthProject(
+        platform_project_id=platform_project.id,
+        user_id=owner_uid,
+        owner_hasn_id=owner,
+        owner_scope='personal',
+        name=f'派发工具链漏斗-{tag}',
+        owner_agent_id=agent_hasn,
+        status='active',
+        provision_status='ready',
+    )
+    session.add(growth_project)
+    await session.flush()
+    project_lead = GrowthProjectLead(
+        growth_project_id=growth_project.id,
+        lead_contact_id=lead.id,
+        user_id=owner_uid,
+        owner_scope='personal',
+        source_kind='qcc',
+        source_tool='test_seed',
+        source_ref=f'controlled://dispatch/{tag}',
+        status='new',
+        match_score=Decimal(88),
+        scoring_version='dispatch-fixture-v1',
+    )
+    session.add(project_lead)
     await session.flush()
 
     def _agent(scopes: list[str]) -> AgentTokenPayload:
@@ -103,7 +146,15 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 
     try:
         yield SimpleNamespace(
-            session=session, owner=owner, owner_uid=owner_uid, lead_id=lead.id, company=company, tag=tag, agent=_agent
+            session=session,
+            owner=owner,
+            owner_uid=owner_uid,
+            lead_id=lead.id,
+            company=company,
+            tag=tag,
+            growth_project_id=growth_project.id,
+            project_lead_id=project_lead.id,
+            agent=_agent,
         )
     finally:
         await session.rollback()
@@ -119,16 +170,24 @@ async def test_dispatch_find_then_decide_tool_chain(ctx: SimpleNamespace) -> Non
     # ① 找：search_companies 用唯一公司名 + limit=1 → 纯池命中（from_pool>=1 且 fetched==0，不触 qcc）。
     #    这正是分身「拿到线索、无需分辨来源」——工具就地把主人池里的线索交回来供分析。
     found = await _REG['growth.search_companies'](s, agent, {'query': ctx.company, 'limit': 1})
-    assert found['from_pool'] >= 1, f"读穿应命中主人池: {found}"
-    assert found['fetched'] == 0, f"唯一名 + limit=1 应纯池命中、零 qcc 拉取: {found}"
+    assert found['from_pool'] >= 1, f'读穿应命中主人池: {found}'
+    assert found['fetched'] == 0, f'唯一名 + limit=1 应纯池命中、零 qcc 拉取: {found}'
     hit = next((x for x in found['leads'] if x.get('company_name') == ctx.company), None)
-    assert hit is not None, f"找到的线索里应含本测试公司: {found['leads']}"
+    assert hit is not None, f'找到的线索里应含本测试公司: {found["leads"]}'
     assert int(hit.get('lead_contact_id') or ctx.lead_id) == ctx.lead_id
 
     # ② 决策·加为客户：lead.qualify 晋级建客户
-    cust = await _REG['growth.lead_qualify'](s, agent, {'lead_contact_id': ctx.lead_id, 'intent_score': 85})
+    cust = await _REG['growth.lead_qualify'](
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'project_lead_id': ctx.project_lead_id,
+            'intent_score': 85,
+        },
+    )
     cid = cust['id']
-    assert cid, f"qualify 应建出客户: {cust}"
+    assert cid, f'qualify 应建出客户: {cust}'
 
     # 客户确实落库、可被 customer_list 检出（决策落地的证据）
     listed = await _REG['growth.customer_list'](s, agent, {'view': 'team'})
@@ -138,7 +197,7 @@ async def test_dispatch_find_then_decide_tool_chain(ctx: SimpleNamespace) -> Non
     opp = await _REG['growth.opportunity_create'](
         s, agent, {'customer_id': cid, 'name': f'年度合作_{ctx.tag}', 'amount': 200000}
     )
-    assert opp['id'] and opp['stage'] == 'contacted', f"应立出商机: {opp}"
+    assert opp['id'] and opp['stage'] == 'contacted', f'应立出商机: {opp}'
 
 
 async def test_dispatch_find_returns_lead_contact_id_for_downstream(ctx: SimpleNamespace) -> None:
@@ -146,6 +205,6 @@ async def test_dispatch_find_returns_lead_contact_id_for_downstream(ctx: SimpleN
     s = ctx.session
     agent = ctx.agent(['agent', 'growth:read'])
     found = await _REG['growth.search_companies'](s, agent, {'query': ctx.company, 'limit': 1})
-    assert found['leads'], f"应至少命中池里那条: {found}"
+    assert found['leads'], f'应至少命中池里那条: {found}'
     for lead in found['leads']:
-        assert lead.get('lead_contact_id'), f"每条找回线索须带 lead_contact_id 供下钻: {lead}"
+        assert lead.get('lead_contact_id'), f'每条找回线索须带 lead_contact_id 供下钻: {lead}'

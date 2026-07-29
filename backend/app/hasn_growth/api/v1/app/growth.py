@@ -450,6 +450,34 @@ async def list_project_leads(
 
 
 @router.post(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/qualify',
+    summary='[Owner] 项目线索晋级客户并建立接续任务',
+    dependencies=[DependsJwtAuth],
+)
+async def qualify_project_lead(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: QualifyLeadParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    if not scope.owner_hasn_id:
+        raise errors.ForbiddenError(msg='当前账号尚未绑定主人身份')
+    data = await project_lead_service.qualify_project_lead(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        scope=scope,
+        profile=obj.profile,
+        intent_score=obj.intent_score,
+        actor_kind='owner',
+        actor_id=scope.owner_hasn_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
     '/projects/{growth_project_id}/leads/{project_lead_id}/status',
     summary='[Owner] 忽略或恢复项目线索',
     dependencies=[DependsJwtAuth],
