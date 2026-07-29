@@ -213,7 +213,149 @@ error_log_count=0
 临时 realtime queue policy、三角色权限和 vhost 限额均保留。definitions 模板的
 `users`、`permissions` 为空，不含密码、密码哈希、默认口令或完整 DSN。
 
-## 4. 后续证据索引
+## 4. B2-01 Celery RabbitMQ 可靠性与真实 E2E
+
+### 4.1 固定配置
+
+2026-07-30 01:22 CST 完成 Celery 5.6.3 精确锁版和 broker 配置测试。RabbitMQ
+模式固定使用 durable classic queue `huanxing.celery.default`、direct exchange
+`huanxing.celery`、persistent delivery、publisher confirm、60 秒 heartbeat、
+prefetch 1、late ACK 和 worker-lost reject；Redis rollback 分支保留历史 `celery` 队列，
+但不伪造 RabbitMQ confirm。
+
+RabbitMQ 4.3.4 的真实 remote-control 首次运行暴露了兼容性缺口：
+Celery/Kombu 默认把 pidbox 请求/回复 queue 和事件接收 queue 声明为非持久、
+非独占队列，而 RabbitMQ 4.3 默认拒绝已弃用的 `transient_nonexcl_queues`。
+没有打开 RabbitMQ 的弃用兼容开关，而是在应用配置中把 control/event queue
+改为非持久的独占队列；它们本就绑定单个客户端连接，断线自动删除符合其生命周期。
+
+配置、静态类型与变更相关回归验证：
+
+```text
+DATABASE_PORT=15432 ENVIRONMENT=dev uv run pytest -q <本阶段 12 组测试文件>
+=> 53 passed, 12 skipped, 140 warnings in 2.36s
+
+uv run mypy <本阶段 26 个 Python 实现与测试文件>
+=> Success: no issues found in 26 source files
+
+uv run mypy backend/
+=> Success: no issues found in 2999 source files
+
+git ls-files -m -o --exclude-standard -z | xargs -0 uv run prek run --files
+=> 全部 hooks 通过
+```
+
+Docker Compose 另经本地 YAML 解析、测试约束和生产主机的真实
+`docker compose config --quiet` 验证。期间发现并修正两项实际部署缺陷：
+
+- Compose 直接导出 `CELERY_BROKER=rabbitmq` 会被 Celery CLI 当作 URL；
+  改用 `CELERY_BROKER_MODE=rabbitmq`，Settings 在校验前归一到应用字段。
+- 容器启动命令原先在后台 `supervisord` 后执行无目标 `supervisorctl restart`；
+  改为 `exec supervisord -n`，确保 PID 1 生命周期正确。
+
+### 4.2 真实 RabbitMQ 与 PostgreSQL E2E
+
+测试通过 SSH 本地转发连接生产 RabbitMQ loopback 监听，凭据只进入进程环境；
+每轮创建唯一 durable queue/exchange，启动独立 `celery worker --pool=solo` 子进程，
+并在结束后删除测试拓扑。result backend 使用真实本地 PostgreSQL，不使用 eager、
+mock、fake broker 或内存 backend。
+
+本机是 macOS，Celery prefork 子进程会在 Python 导入期间触发 Objective-C fork
+安全保护，因此本地故障语义 E2E 固定使用真实 solo worker；Linux 生产的 prefork
+并发 4 启动、消费和重投另列入 B2-02 生产验收，不用本机兼容参数替代。
+
+```text
+CELERY_RABBITMQ_E2E=1 uv run pytest -q \
+  backend/tests/tasks/test_celery_rabbitmq_e2e.py
+=> 11 passed, 60 warnings in 77.31s
+```
+
+十一条链路分别验证：
+
+- 真实生产任务 `credit_outbox_metrics_refresh` 由 RabbitMQ 消费，结果写入项目自定义
+  PostgreSQL `DatabaseBackend`；
+- 首次失败走 Celery `retry`，第二次成功并返回真实 `retries=1`；
+- `countdown=2` 的实际执行延迟不低于 1.5 秒；
+- `inspect.ping` 与 `inspect.registered` 经 pidbox 正常返回；
+- `revoke` 可撤销仍在 countdown 窗口内的任务，任务不会产生业务效果；
+- Flower 同形态的事件 Receiver 使用独占临时 queue 捕获 worker heartbeat；
+- 真实 Beat 子进程使用项目 `DatabaseScheduler`，在随机临时 PostgreSQL 数据库写入
+  调度行、发布探针、由 worker 消费，并在正常退出时回写 `total_run_count`；
+- 实际 Flower 进程只监听回环地址，未认证请求返回 `401`，正确 Basic Auth 可读
+  `/api/workers` 并发现目标 worker；
+- publish 前关闭连接不会向队列写入任务；
+- broker 已接收 publish、但 confirm 返回前关闭连接时，生产者得到歧义失败；用同一
+  `task_id` 重投后出现两次 delivery，PostgreSQL 幂等表只产生一次业务效果；
+- consumer ACK 前强制终止 worker 后，消息带 `redelivered=true` 由下一 worker
+  重收，两次 delivery 仍只产生一次业务效果。
+
+实际 `DatabaseScheduler` 首次运行暴露了生产缺陷：空调度表时
+`self._schedule or {}` 返回临时字典，导致默认计划与 `beat_schedule` 写入后丢失，
+Beat 只持锁而不发布。改为始终返回同一个可变映射后，真实用例通过。
+
+故障 E2E 还暴露了 `BEFORE_CONFIRM` 与 `BEFORE_PUBLISH` 的转发线程退出竞态。代理现以
+短 socket 轮询响应停止信号、双向 shutdown 并严格上抛 cleanup 错误；publish 前场景
+连续 3 次通过后，再通过上述 11 项全套。
+测试结束后生产 RabbitMQ 中名称含 `.e2e.` 的 queue/exchange、E2E 用户和连接均为
+0，`huanxing_celery` 角色标签仍为 `[]`。
+
+真实 Redis rollback 使用独立 DB 15、生产 Celery 应用和真实 PostgreSQL result backend，
+消费生产 `credit_outbox_metrics_refresh` 任务，并验证 registered、active、reserved、
+scheduled 与旧 `celery` queue：
+
+```text
+CELERY_REDIS_E2E=1 CELERY_BROKER_MODE=redis CELERY_BROKER_REDIS_DATABASE=15 \
+  DATABASE_PORT=15432 ENVIRONMENT=dev \
+  uv run pytest backend/tests/tasks/test_celery_redis_rollback_e2e.py -q
+=> 1 passed, 60 warnings in 15.87s
+```
+
+测试仅在 DB 15 初始为空时运行，结束后只删除本轮创建的键。
+
+### 4.3 任务 ACK 与幂等审计
+
+共核对 `backend/app/**/tasks.py` 和 `backend/app/tasks/push_message.py` 的 34 个
+任务入口：
+
+| 类别 | 处理结论 |
+|---|---|
+| 数据库状态更新、日志清理和确定性运算 | 使用条件更新、唯一键或确定性结果；可安全采用默认 late ACK |
+| billing / relation / artifact outbox | 持久事件 ID、状态机、`SKIP LOCKED` 或 reconcile 保护权威业务写；WSPUSH 只是 best-effort 加速，客户端仍由 sync pull 追平 |
+| Growth 开通 | 可靠步骤表和 reconcile 收敛，采用默认 late ACK |
+| Growth 采集 | 显式 early ACK；`pending` 权威状态、行锁和周期恢复避免并发重复落库，但 worker 在爬虫/LLM 返回后、事务提交前退出仍可能重复外部调用，不宣称调用成本 exactly-once |
+| Growth 渠道发送 | 显式 early ACK、`FOR UPDATE SKIP LOCKED` 串行认领；每个审批版本生成稳定 `idempotency_key`，注册通道必须声明 provider 去重保证 |
+| Owner 记忆 / Peer 画像 | 显式 early ACK；按 owner 或 owner-peer 的 PostgreSQL 事务级 advisory lock 串行化，锁后重查 pending/脏状态，周期 sweep 恢复未提交结果；LLM 调用成本不宣称 exactly-once |
+| 存储与技能 sweeper | 按数据库权威状态、内容指纹或游标 reconcile，重复轮次收敛到同一状态 |
+| 旧 `push_message` | 已退役为无副作用兼容 no-op；实际移动推送由持久集成事件 consumer 按既有 best-effort 契约处理 |
+
+RabbitMQ 默认任务使用 late ACK、prefetch 1 和 worker-lost reject；不可事务化的
+LLM、爬虫、外部发送任务逐个显式覆盖为 early ACK。这里保证的是数据库权威业务状态
+可恢复、可收敛，不把跨数据库与外部 provider 的崩溃窗口描述成 exactly-once。
+
+B2-01 的配置、真实 RabbitMQ 协议 E2E、实际 `DatabaseScheduler` 和真实 Redis
+rollback 均已完成。Linux prefork、生产任务、Redis 排空、服务切换与生产回滚实操
+属于 B2-02。
+
+### 4.4 全量后端回归基线
+
+```text
+DATABASE_PORT=15432 ENVIRONMENT=dev uv run pytest backend/ -q --tb=short
+=> 5351 passed, 38 skipped, 6 failed, 1 error in 440.73s
+```
+
+施工前同一共享环境为 `5315 passed, 27 skipped, 14 failed, 1 error`。本轮剩余项均不在
+本阶段变更文件：
+
+- Growth 真实开通缺可解密知识库 service key；
+- 两项 IM PG 用例撞到共享库固定 nickname 残留；
+- Agent asset 用例复用全局 Redis client 时跨 pytest 事件循环；
+- 知识分享 adapter 读到了与预期 ORM 类型不一致的存量结果；
+- 股票下载 cleanup 触发既有 `STORAGE_TOMBSTONE_TARGET_MISMATCH`；
+- 响应信封基线尚未纳入三个既有 bootstrap route。
+
+以上失败均可单独复现；未删除共享数据库未知归属数据，也未修改非本任务文件掩盖失败。
+
+## 5. 后续证据索引
 
 | 阶段 | 证据 |
 |---|---|

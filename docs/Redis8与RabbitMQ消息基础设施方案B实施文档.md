@@ -66,6 +66,7 @@
 | 配置 | 允许值/默认值 | 说明 |
 |---|---|---|
 | `CELERY_BROKER` | `redis` / `rabbitmq`，迁移期默认 `redis` | 已存在 |
+| `CELERY_BROKER_MODE` | `inherit` / `redis` / `rabbitmq`，默认 `inherit` | 仅供容器/进程环境注入，避免与 Celery CLI 同名 URL 变量冲突 |
 | `CELERY_RABBITMQ_*` | 现有 host/port/user/password/vhost | 仅 Celery 账号 |
 | `SOCKETIO_MANAGER` | `redis` / `rabbitmq`，默认 `redis` | 传统 Socket.IO manager |
 | `REALTIME_RABBITMQ_HOST` | 默认 `127.0.0.1` | Socket.IO 与 HASN realtime 共用连接端点 |
@@ -91,7 +92,13 @@
 
 约束：
 
-- Celery queue 开启 publisher confirm，任务保持至少一次语义，任务实现必须幂等。
+- Celery queue 开启 publisher confirm；confirm 返回前断线仍属于“broker 可能已接收”的歧义结果，
+  生产者只能使用稳定 `task_id`/业务幂等键重投，不能把 confirm 当作 exactly-once。
+- 可由数据库状态机、唯一键或 outbox 收敛的任务使用 late ACK，保持至少一次投递语义；业务写点必须幂等。
+- 调用 LLM、爬虫或不支持幂等键的外部服务等不可事务化副作用任务必须显式使用 early ACK，
+  并按用户可见性提供数据库权威状态和周期恢复扫描；其外部调用成本/效果不宣称 exactly-once。
+- 自动渠道发送只有在 provider 明确保证按稳定 `idempotency_key` 去重时才允许注册；
+  发送成功但数据库提交前崩溃的歧义由 provider 去重和数据库恢复共同收敛。
 - Socket.IO 与 HASN realtime queue 都是在线临时通道，不承担离线消息。
 - HASN 第一版给每个 API worker 一份 fanout 消息，再由本地连接表和 Redis generation 判断是否持有目标连接。
 - 单节点不使用 quorum queue。建设 3 节点集群后另行评估。
@@ -264,16 +271,16 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] 默认 queue/exchange 固定为 `huanxing.celery.default` / `huanxing.celery`。
-- [ ] publisher confirm 开启；broker 连接失败不会静默改走 Redis。
-- [ ] worker、beat、Flower、inspect、revoke 和任务事件在 RabbitMQ 下可用。
-- [ ] Redis broker 模式继续可用作迁移期回滚。
+- [x] 默认 queue/exchange 固定为 `huanxing.celery.default` / `huanxing.celery`。
+- [x] publisher confirm 开启；broker 连接失败不会静默改走 Redis。
+- [x] worker、beat、Flower、inspect、revoke 和任务事件在 RabbitMQ 下可用。
+- [x] Redis broker 模式继续可用作迁移期回滚。
 
 **验证：**
 
-- [ ] `uv run pytest backend/tests/tasks/test_celery_broker_config.py -q`
-- [ ] 真实 RabbitMQ E2E 覆盖普通任务、失败重试、ETA/countdown、Beat、Flower。
-- [ ] RabbitMQ 分别在 publish 前、confirm 前、consumer ACK 前中断，观察任务至少一次语义和幂等结果。
+- [x] `uv run pytest backend/tests/tasks/test_celery_broker_config.py -q`
+- [x] 真实 RabbitMQ E2E 覆盖普通任务、失败重试、ETA/countdown、Beat、Flower。
+- [x] RabbitMQ 分别在 publish 前、confirm 前、consumer ACK 前中断，观察任务至少一次语义和幂等结果。
 
 **依赖：** B1-01。
 
@@ -740,7 +747,7 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B0-01 | 进行中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B0-02 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B1-01 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B2-01 | 进行中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B2-01 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B2-02 | 待开始 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | — |
 | B3-01 | 待开始 | — | — | — | — |
 | B3-02 | 待开始 | — | — | — | — |

@@ -39,8 +39,15 @@ ChannelSenderFn = Callable[[AsyncSession, dict[str, Any]], Awaitable[dict[str, A
 _CHANNEL_SENDERS: dict[str, ChannelSenderFn] = {}
 
 
-def register_channel_sender(channel: str, sender: ChannelSenderFn) -> None:
-    """注册某渠道的真实发送通道（M8 物化时由 IM/邮件适配器调用）。"""
+def register_channel_sender(
+    channel: str,
+    sender: ChannelSenderFn,
+    *,
+    guarantees_idempotency: bool,
+) -> None:
+    """注册具备 provider 侧稳定幂等键去重能力的真实发送通道。"""
+    if guarantees_idempotency is not True:
+        raise ValueError('自动发送通道必须保证按 idempotency_key 去重')
     _CHANNEL_SENDERS[channel] = sender
 
 

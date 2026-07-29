@@ -19,7 +19,11 @@ from backend.app.hasn_memory.service.peer_portrait_service import peer_portrait_
 from backend.common.log import log
 
 
-@shared_task(name='owner_memory_retry_pending_merges')
+@shared_task(
+    name='owner_memory_retry_pending_merges',
+    acks_late=False,
+    reject_on_worker_lost=False,
+)
 async def owner_memory_retry_pending_merges() -> str:
     """周期扫描滞留 pending 的 owner 记忆贡献并重跑合并（同步内联失败的兜底重试）。"""
     summary = await owner_memory_service.sweep_pending_merges()
@@ -31,7 +35,11 @@ async def owner_memory_retry_pending_merges() -> str:
     return msg
 
 
-@shared_task(name='peer_portrait_sweep')
+@shared_task(
+    name='peer_portrait_sweep',
+    acks_late=False,
+    reject_on_worker_lost=False,
+)
 async def peer_portrait_sweep() -> str:
     """Peer 画像合成 worker（doc17 PEERSYN-P4）：扫「有新 peer 事实但画像未追上」的 (owner, peer) 对，
     跨该 owner 全部分身聚合事实 → LLM 合成/基线演进一份画像 → 发 memory.peer_portrait.upserted 下行。
