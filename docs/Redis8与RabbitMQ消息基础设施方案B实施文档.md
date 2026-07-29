@@ -302,17 +302,17 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] Redis broker 的 active/reserved/scheduled 和待消费队列为 0。
-- [ ] RabbitMQ worker 能消费真实无副作用探针任务，PostgreSQL result 正常。
-- [ ] API、worker、beat、Flower 四个服务稳定运行，旧 Redis broker 无新增写入。
+- [x] Redis broker 的 active/reserved/scheduled 和待消费队列为 0。
+- [x] RabbitMQ worker 能消费真实无副作用探针任务，PostgreSQL result 正常。
+- [x] API、worker、beat、Flower 四个服务稳定运行，旧 Redis broker 无新增写入。
 
 **验证：**
 
-- [ ] `celery -A backend.app.task.celery inspect active`
-- [ ] `celery -A backend.app.task.celery inspect reserved`
-- [ ] `celery -A backend.app.task.celery inspect scheduled`
-- [ ] `rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers`
-- [ ] 观察至少一个完整 Beat 周期。
+- [x] `celery -A backend.app.task.celery inspect active`
+- [x] `celery -A backend.app.task.celery inspect reserved`
+- [x] `celery -A backend.app.task.celery inspect scheduled`
+- [x] `rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers`
+- [x] 观察至少一个完整 Beat 周期。
 
 **依赖：** B2-01。
 
@@ -328,7 +328,7 @@ flowchart TD
 - [ ] Celery 在 RabbitMQ 上稳定运行至少 24 小时。
 - [ ] 无持续增长的 ready/unacked 队列。
 - [ ] Redis DB 1 不再承担 Celery broker 写入。
-- [ ] RabbitMQ 故障回滚流程已实操，不只是文档推演。
+- [x] RabbitMQ 故障回滚流程已实操，不只是文档推演。
 
 ### 阶段 B3：Redis 8.8 升级
 
@@ -747,10 +747,10 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | 任务 | 状态 | 分支 | worktree | 提交 | 证据 |
 |---|---|---|---|---|---|
 | B0-01 | 进行中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B0-02 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B1-01 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B2-01 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B2-02 | 待开始 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | — |
+| B0-02 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `5d0fd2df` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B1-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `5d0fd2df` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B2-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `cebc218c`–`b0a054ed` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B2-02 | 已完成，24h 观察中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2f3007bd` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B3-01 | 待开始 | — | — | — | — |
 | B3-02 | 待开始 | — | — | — | — |
 | B4-01 | 待开始 | — | — | — | — |
