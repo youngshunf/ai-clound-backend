@@ -27,6 +27,9 @@ from fastapi import FastAPI
 from backend.app.admin.model.user import User
 from backend.app.hasn.model import HasnAgentMcpKeys, HasnAgents
 from backend.app.hasn.service.hasn_agent_runtime_provision_service import _ensure_cloud_agent_mcp_key
+from backend.app.marketplace.api.v1.agent.marketplace_skill_pack import (
+    router as agent_skill_pack_router,
+)
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import async_db_session, get_db
@@ -122,8 +125,54 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
             owner_hasn_id=owner,
             owner_user_id=user.id,
         )
+        package_id = f'huanxing/private-runtime-{tag}'
+        await db.execute(
+            sa.text(
+                """
+                INSERT INTO hasn_marketplace.marketplace_template (
+                    template_id, namespace, slug, template_type, name, author_id,
+                    pricing_type, price, is_private, is_official, download_count,
+                    source_type, status, created_time, updated_time
+                ) VALUES (
+                    :package_id, 'huanxing', :slug, 'skill_pack', '私有 Runtime 包',
+                    :author_id, 'free', 0, true, false, 0, 'local', 'draft', now(), now()
+                )
+                """
+            ),
+            {
+                'package_id': package_id,
+                'slug': f'private-runtime-{tag}',
+                'author_id': user.id,
+            },
+        )
+        await db.execute(
+            sa.text(
+                """
+                INSERT INTO hasn_marketplace.marketplace_template_version (
+                    template_id, version, bundle_slug, command_key, hermes_yaml,
+                    content_hash, file_hash, is_latest, created_time, updated_time
+                ) VALUES (
+                    :package_id, '1.2.3', :slug, :command_key, :hermes_yaml,
+                    :content_hash, :content_hash, true, now(), now()
+                )
+                """
+            ),
+            {
+                'package_id': package_id,
+                'slug': f'private-runtime-{tag}',
+                'command_key': f'/private-runtime-{tag}',
+                'hermes_yaml': (
+                    f'name: private-runtime-{tag}\n'
+                    'skills:\n'
+                    '  - huanxing/official/task-management\n'
+                ),
+                'content_hash': 'sha256:runtime-private-bundle',
+            },
+        )
+        await db.flush()
 
         app = FastAPI()
+        app.include_router(agent_skill_pack_router, prefix='/marketplace/agent/skill-packs')
 
         @app.get('/agent/whoami')
         async def whoami(
@@ -147,10 +196,28 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
                 '/agent/whoami',
                 headers={'Authorization': f'Bearer {key}'},
             )
-
-        assert response.status_code == 200, response.text
-        assert response.json() == {
-            'agent_hasn_id': agent,
-            'owner_hasn_id': owner,
-            'owner_user_id': user.id,
-        }
+            assert response.status_code == 200, response.text
+            assert response.json() == {
+                'agent_hasn_id': agent,
+                'owner_hasn_id': owner,
+                'owner_user_id': user.id,
+            }
+            authority = await client.get(
+                f'/marketplace/agent/skill-packs/{package_id}',
+                params={'version': '1.2.3'},
+                headers={'Authorization': f'Bearer {key}'},
+            )
+            assert authority.status_code == 200, authority.text
+            assert authority.json()['data'] == {
+                'package_id': package_id,
+                'version': '1.2.3',
+                'bundle_slug': f'private-runtime-{tag}',
+                'command_key': f'/private-runtime-{tag}',
+                'hermes_yaml': (
+                    f'name: private-runtime-{tag}\n'
+                    'skills:\n'
+                    '  - huanxing/official/task-management\n'
+                ),
+                'content_hash': 'sha256:runtime-private-bundle',
+                'member_skill_ids': ['huanxing/official/task-management'],
+            }
