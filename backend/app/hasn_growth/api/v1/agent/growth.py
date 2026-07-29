@@ -29,6 +29,9 @@ from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.project_customer_service import (
+    project_customer_service,
+)
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
@@ -181,6 +184,76 @@ async def dismiss_lead(
 
 
 # ---------------- 客户 ----------------
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers',
+    summary='[Agent] 项目客户分页列表',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def list_project_customers(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    lifecycle_status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent, view=view)
+    data = await project_customer_service.list_customers(
+        db,
+        growth_project_id=growth_project_id,
+        scope=scope,
+        page=page,
+        size=size,
+        lifecycle_status=lifecycle_status,
+        assignee=assignee,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers/{customer_id}',
+    summary='[Agent] 项目客户脱敏详情',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def get_project_customer(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: int,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await project_customer_service.get_customer(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers/{customer_id}/detail',
+    summary='[Agent] 项目客户接续详情',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def get_project_customer_detail(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: int,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await project_customer_service.get_customer_detail(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
 
 
 @router.get('/customers', summary='[Agent] 客户列表', dependencies=[DependsAgentJwtAuth])

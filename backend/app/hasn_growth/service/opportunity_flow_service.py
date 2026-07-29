@@ -97,6 +97,7 @@ class GrowthOpportunityService:
             opportunity_no=_gen_no('OPP'),
             customer_id=customer_id,
             user_id=user_id,
+            growth_project_id=customer.growth_project_id,
             name=name,
             stage=stage,
             amount=Decimal(str(amount)) if amount is not None else None,

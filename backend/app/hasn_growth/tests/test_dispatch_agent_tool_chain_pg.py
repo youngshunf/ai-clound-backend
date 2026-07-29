@@ -190,7 +190,11 @@ async def test_dispatch_find_then_decide_tool_chain(ctx: SimpleNamespace) -> Non
     assert cid, f'qualify 应建出客户: {cust}'
 
     # 客户确实落库、可被 customer_list 检出（决策落地的证据）
-    listed = await _REG['growth.customer_list'](s, agent, {'view': 'team'})
+    listed = await _REG['growth.customer_list'](
+        s,
+        agent,
+        {'growth_project_id': str(ctx.growth_project_id), 'view': 'team'},
+    )
     assert any(it['id'] == cid for it in listed['items']), '晋级出的客户应在客户列表中'
 
     # ③ 决策·继续找商机：opportunity.create 立商机

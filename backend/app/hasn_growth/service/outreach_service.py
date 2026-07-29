@@ -118,6 +118,9 @@ def _legacy_address_hash(value: str | None) -> str | None:
 def _outreach_to_dict(m: OutreachMessage) -> dict[str, Any]:
     return redact_pii_value({
         'id': m.id,
+        'growth_project_id': (
+            str(m.growth_project_id) if m.growth_project_id is not None else None
+        ),
         'customer_id': m.customer_id,
         'opportunity_id': m.opportunity_id,
         'agent_id': m.agent_id,
@@ -471,6 +474,7 @@ class GrowthOutreachService:
             customer_id=customer_id,
             opportunity_id=opportunity_id,
             user_id=user_id,
+            growth_project_id=customer.growth_project_id,
             agent_id=agent_id,
             direction='outbound',
             channel=normalized_channel,
@@ -721,6 +725,7 @@ class GrowthOutreachService:
         message = OutreachMessage(
             customer_id=customer_id,
             user_id=user_id,
+            growth_project_id=customer.growth_project_id,
             agent_id=agent_id,
             direction='inbound',
             channel=normalized_channel,
