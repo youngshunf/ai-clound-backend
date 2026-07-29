@@ -50,7 +50,8 @@ install -d -m 0750 "$data_root/backups"
 
 rendered_config="$data_root/secrets/redis.conf"
 sed "s/{{REDIS8_PASSWORD}}/$redis8_password/g" \
-  "$script_dir/redis.conf.template" >"$rendered_config"
+  "$script_dir/redis.conf.template" \
+  | sed 's/^appendonly yes$/appendonly no/' >"$rendered_config"
 chown 999:999 "$rendered_config"
 chmod 0400 "$rendered_config"
 
@@ -85,13 +86,14 @@ case "$reported_version" in
   *) fail '容器中的 Redis 版本不是 8.8.0' ;;
 esac
 
+healthy=0
 for _ in $(seq 1 30); do
   health_status=$(docker inspect \
     --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
     "$container_name")
   if [ "$health_status" = 'healthy' ]; then
-    printf 'Redis 8 已启动并通过健康检查，监听 127.0.0.1:9397。\n'
-    exit 0
+    healthy=1
+    break
   fi
   if [ "$health_status" = 'unhealthy' ]; then
     docker compose logs --tail 50 redis8 >&2
@@ -100,5 +102,78 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-docker compose logs --tail 50 redis8 >&2
-fail '容器未在等待窗口内进入健康状态'
+if [ "$healthy" != 1 ]; then
+  docker compose logs --tail 50 redis8 >&2
+  fail '容器未在等待窗口内进入健康状态'
+fi
+
+export REDISCLI_AUTH="$redis8_password"
+redis_cli=(
+  docker compose exec -T -e REDISCLI_AUTH redis8
+  redis-cli -h 127.0.0.1 -p 9397 --no-auth-warning --raw
+)
+
+loaded_keys=$(
+  "${redis_cli[@]}" INFO keyspace \
+    | awk -F'[=,]' '/^db[0-9]+:/ { total += $2 } END { print total + 0 }'
+)
+[ "$loaded_keys" -gt 0 ] || fail 'RDB 未载入任何有效键，拒绝创建空 AOF'
+
+"${redis_cli[@]}" CONFIG SET appendonly yes >/dev/null
+aof_ready=0
+for _ in $(seq 1 120); do
+  persistence=$("${redis_cli[@]}" INFO persistence)
+  rewrite_in_progress=$(
+    printf '%s\n' "$persistence" \
+      | awk -F: '$1 == "aof_rewrite_in_progress" { gsub("\r", "", $2); print $2 }'
+  )
+  rewrite_scheduled=$(
+    printf '%s\n' "$persistence" \
+      | awk -F: '$1 == "aof_rewrite_scheduled" { gsub("\r", "", $2); print $2 }'
+  )
+  rewrite_status=$(
+    printf '%s\n' "$persistence" \
+      | awk -F: '$1 == "aof_last_bgrewrite_status" { gsub("\r", "", $2); print $2 }'
+  )
+  if [ "$rewrite_in_progress" = 0 ] \
+    && [ "$rewrite_scheduled" = 0 ] \
+    && [ "$rewrite_status" = ok ]; then
+    aof_ready=1
+    break
+  fi
+  sleep 1
+done
+[ "$aof_ready" = 1 ] || fail 'AOF 初始重写未在等待窗口内成功完成'
+
+sed "s/{{REDIS8_PASSWORD}}/$redis8_password/g" \
+  "$script_dir/redis.conf.template" >"$rendered_config"
+chown 999:999 "$rendered_config"
+chmod 0400 "$rendered_config"
+
+docker compose restart redis8
+healthy=0
+for _ in $(seq 1 30); do
+  health_status=$(docker inspect \
+    --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+    "$container_name")
+  if [ "$health_status" = 'healthy' ]; then
+    healthy=1
+    break
+  fi
+  if [ "$health_status" = 'unhealthy' ]; then
+    docker compose logs --tail 50 redis8 >&2
+    fail '启用 AOF 后 Redis 8 健康检查失败'
+  fi
+  sleep 2
+done
+[ "$healthy" = 1 ] || fail '启用 AOF 后容器未在等待窗口内恢复健康'
+
+reloaded_keys=$(
+  "${redis_cli[@]}" INFO keyspace \
+    | awk -F'[=,]' '/^db[0-9]+:/ { total += $2 } END { print total + 0 }'
+)
+[ "$reloaded_keys" = "$loaded_keys" ] || fail '启用 AOF 并重启后键数量不一致'
+
+unset REDISCLI_AUTH redis8_password
+printf 'Redis 8 已载入 %s 个键、启用 AOF 并通过重启校验，监听 127.0.0.1:9397。\n' \
+  "$reloaded_keys"

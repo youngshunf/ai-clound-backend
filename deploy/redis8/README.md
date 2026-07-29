@@ -20,12 +20,12 @@
 
 ## 切换前只读校验
 
-分别通过环境变量提供源、目标连接，随后执行：
+在项目根目录分别通过环境变量提供源、目标连接，随后使用项目虚拟环境执行：
 
 ```bash
 SOURCE_REDIS_URL='<源连接>' \
 TARGET_REDIS_URL='<目标连接>' \
-./verify_snapshot.py
+uv run --frozen python deploy/redis8/verify_snapshot.py
 ```
 
 校验器遍历 16 个逻辑库，对比 `dbsize`、键集合、类型、内容摘要和 TTL；键名只输出不可逆短摘要，连接信息不会输出。它覆盖 string、list、set、zset、hash 和 stream，遇到未知类型会显式失败。60 秒内即将过期的键不参与逐键摘要，但停写窗口内 `dbsize` 仍须完全一致。

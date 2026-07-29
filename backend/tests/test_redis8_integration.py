@@ -53,6 +53,20 @@ def test_bootstrap_uses_explicit_rdb_checker_entrypoint() -> None:
     assert '--entrypoint redis-check-rdb' in source
 
 
+def test_bootstrap_loads_rdb_before_enabling_aof() -> None:
+    """首次导入必须先载入 RDB，再生成并重启校验 AOF。"""
+    source = BOOTSTRAP_SCRIPT.read_text(encoding='utf-8')
+
+    disable_aof = source.index("sed 's/^appendonly yes$/appendonly no/'")
+    validate_loaded_keys = source.index(
+        '[ "$loaded_keys" -gt 0 ] || fail \'RDB 未载入任何有效键，拒绝创建空 AOF\'',
+    )
+    enable_aof = source.index('CONFIG SET appendonly yes')
+    restart = source.index('docker compose restart redis8')
+
+    assert disable_aof < validate_loaded_keys < enable_aof < restart
+
+
 def _reserve_loopback_port() -> int:
     """向内核申请一个当前可用的本机端口。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
