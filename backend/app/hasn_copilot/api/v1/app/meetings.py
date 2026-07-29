@@ -14,12 +14,17 @@ from fastapi import APIRouter, Request
 
 from backend.app.hasn_copilot.schema.meetings import (
     AddMediaRequest,
+    CreateMeetingEnhancementRevisionRequest,
     CreateMeetingRequest,
     PatchMeetingRequest,
     PutSegmentsRequest,
+    RejectMeetingEnhancementRevisionRequest,
     ShareMeetingRequest,
     ShareRevokeRequest,
     WriteMinutesRequest,
+)
+from backend.app.hasn_copilot.service.meeting_enhancement_revisions_service import (
+    meeting_enhancement_revisions_service,
 )
 from backend.app.hasn_copilot.service.meetings_service import meetings_service
 from backend.app.hasn_core import hasn_humans_dao
@@ -123,6 +128,93 @@ async def write_minutes(
         body_md=body.body_md,
         record_view_version=body.record_view_version,
         summary_turn_id=body.summary_turn_id,
+    )
+    return response_base.success(data=data)
+
+
+# ---------- 会后增强候选 revision ----------
+
+
+@router.post(
+    '/meetings/{meeting_id}/enhancement-revisions',
+    summary='创建会后增强候选 revision',
+    dependencies=[DependsJwtAuth],
+)
+async def create_enhancement_revision(
+    request: Request,
+    db: CurrentSessionTransaction,
+    meeting_id: str,
+    body: CreateMeetingEnhancementRevisionRequest,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await meeting_enhancement_revisions_service.create_candidate(
+        db,
+        owner_hasn_id=owner,
+        meeting_id=meeting_id,
+        **body.model_dump(),
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/meetings/{meeting_id}/enhancement-revisions',
+    summary='列出会后增强候选历史',
+    dependencies=[DependsJwtAuth],
+)
+async def list_enhancement_revisions(
+    request: Request,
+    db: CurrentSession,
+    meeting_id: str,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await meeting_enhancement_revisions_service.list_history(
+        db,
+        owner_hasn_id=owner,
+        meeting_id=meeting_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/meetings/{meeting_id}/enhancement-revisions/{revision_id}/accept',
+    summary='接受会后增强候选并切换首选视图',
+    dependencies=[DependsJwtAuth],
+)
+async def accept_enhancement_revision(
+    request: Request,
+    db: CurrentSessionTransaction,
+    meeting_id: str,
+    revision_id: str,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await meeting_enhancement_revisions_service.accept_candidate(
+        db,
+        owner_hasn_id=owner,
+        meeting_id=meeting_id,
+        revision_id=revision_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/meetings/{meeting_id}/enhancement-revisions/{revision_id}/reject',
+    summary='拒绝当前待确认会后增强候选',
+    dependencies=[DependsJwtAuth],
+)
+async def reject_enhancement_revision(
+    request: Request,
+    db: CurrentSessionTransaction,
+    meeting_id: str,
+    revision_id: str,
+    body: RejectMeetingEnhancementRevisionRequest,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await meeting_enhancement_revisions_service.reject_candidate(
+        db,
+        owner_hasn_id=owner,
+        meeting_id=meeting_id,
+        revision_id=revision_id,
+        reason=body.reason,
     )
     return response_base.success(data=data)
 

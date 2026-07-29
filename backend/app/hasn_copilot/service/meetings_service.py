@@ -21,7 +21,12 @@ from sqlalchemy import delete, select
 
 from backend.app.hasn.model import HasnResourceShare
 from backend.app.hasn_core import HasnAgents
-from backend.app.hasn_copilot.model import MeetingMinutes, MeetingTranscriptSegments, Meetings
+from backend.app.hasn_copilot.model import (
+    MeetingEnhancementRevisions,
+    MeetingMinutes,
+    MeetingTranscriptSegments,
+    Meetings,
+)
 
 # 触发会议资源适配器注册（分享建行 fail-closed 依赖 resource_type='meeting' 已注册）。
 # 该 import 经 authz.resource_registry 先完整初始化 authz 包，也为分享方法里对
@@ -93,6 +98,10 @@ def _meeting_dict(m: Meetings) -> dict[str, Any]:
         'scene': m.scene,
         'status': m.status,
         'record_version': m.record_version,
+        'realtime_revision_id': str(m.realtime_revision_id),
+        'preferred_enhancement_revision_id': (
+            str(m.preferred_enhancement_revision_id) if m.preferred_enhancement_revision_id else None
+        ),
         'speaker_annotation_revision': m.speaker_annotation_revision,
         'minutes_state': m.minutes_state,
         'minutes_version': m.minutes_version,
@@ -133,6 +142,24 @@ def _minutes_dict(mi: MeetingMinutes) -> dict[str, Any]:
         'created_time': mi.created_time,
         'updated_time': mi.updated_time,
     }
+
+
+async def _revision_state(
+    db: AsyncSession,
+    *,
+    meeting: Meetings,
+    owner_hasn_id: str,
+) -> dict[str, Any]:
+    """惰性导入候选服务，避免会议服务与候选服务形成模块初始化环。"""
+    from backend.app.hasn_copilot.service.meeting_enhancement_revisions_service import (
+        meeting_enhancement_revisions_service,
+    )
+
+    return await meeting_enhancement_revisions_service.get_revision_state(
+        db,
+        meeting=meeting,
+        owner_hasn_id=owner_hasn_id,
+    )
 
 
 def _grantee_type_of(hasn_id: str) -> str:
@@ -277,6 +304,7 @@ class MeetingsService:
             'meeting': _meeting_dict(meeting),
             'segments': [_segment_dict(s) for s in segments],
             'minutes': [_minutes_dict(m) for m in minutes],
+            'revision_state': await _revision_state(db, meeting=meeting, owner_hasn_id=owner_hasn_id),
             'relation': 'owner',
             'my_permission': 'manage',
         }
@@ -523,6 +551,7 @@ class MeetingsService:
         mid = meeting.id
         await db.execute(delete(MeetingTranscriptSegments).where(MeetingTranscriptSegments.meeting_id == mid))
         await db.execute(delete(MeetingMinutes).where(MeetingMinutes.meeting_id == mid))
+        await db.execute(delete(MeetingEnhancementRevisions).where(MeetingEnhancementRevisions.meeting_id == mid))
         await db.execute(
             delete(HasnResourceShare).where(
                 HasnResourceShare.resource_type == _RESOURCE_TYPE,
