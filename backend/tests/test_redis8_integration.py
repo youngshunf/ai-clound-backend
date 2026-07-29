@@ -33,6 +33,9 @@ from backend.app.hasn_im.adapters.routing import (
 )
 from backend.database.redis import RedisCli
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BOOTSTRAP_SCRIPT = PROJECT_ROOT / 'deploy' / 'redis8' / 'bootstrap.sh'
+
 
 @dataclass(frozen=True)
 class Redis8Server:
@@ -41,6 +44,13 @@ class Redis8Server:
     host: str
     port: int
     password: str
+
+
+def test_bootstrap_uses_explicit_rdb_checker_entrypoint() -> None:
+    """固定镜像必须显式进入 RDB 校验器，不能被默认入口改写为 Redis Server。"""
+    source = BOOTSTRAP_SCRIPT.read_text(encoding='utf-8')
+
+    assert '--entrypoint redis-check-rdb' in source
 
 
 def _reserve_loopback_port() -> int:
