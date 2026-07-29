@@ -1,12 +1,12 @@
-"""Marketplace publish API.
+"""技能市场发布 API。
 
-This API is used by CLI/agent upload flows with an LLM API key. It writes user
-resources to the same draft/review state machine as the app-side API.
+用户发布沿用私有草稿与审核状态机；官方/GitHub 来源发布仅允许管理员 API Key，
+接收本地 Hub 的确定性 ZIP 并直接形成公开、内容寻址的 CDN 制品。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
 from pydantic import BaseModel
@@ -17,9 +17,11 @@ from backend.app.hasn_core import hasn_humans_dao
 from backend.app.marketplace.model import MarketplaceSkillVersion, MarketplaceTemplateVersion
 from backend.app.marketplace.service.marketplace_skill_service import marketplace_skill_service
 from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service
+from backend.app.marketplace.service.source_release_service import source_release_service
 from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
 from backend.app.newapi.apikey.service import api_key_service
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
@@ -28,16 +30,27 @@ router = APIRouter()
 
 @dataclass
 class PublishUser:
-    """Authenticated publisher."""
+    """已认证发布者。"""
 
     user_id: int
     hasn_id: str
     username: str
     nickname: str
+    is_admin: bool
+
+
+@dataclass
+class SourcePublishUser:
+    """已通过 API Key 认证的来源制品发布者。"""
+
+    user_id: int
+    username: str
+    nickname: str
+    is_admin: bool
 
 
 class PublishResult(BaseModel):
-    """Publish result returned to CLI/agent clients."""
+    """返回给 CLI 或 Agent 的用户发布结果。"""
 
     id: str
     namespace: str
@@ -52,11 +65,41 @@ class PublishResult(BaseModel):
     file_size: int
 
 
-async def verify_publish_api_key(
+class SourcePublishResult(BaseModel):
+    """来源技能制品发布结果。"""
+
+    skill_id: str
+    namespace: str
+    slug: str
+    source_type: str
+    version: str
+    package_url: str
+    file_hash: str
+    content_hash: str
+    file_size: int
+    uploaded: bool
+
+
+class SourceReconcileRequest(BaseModel):
+    """完整来源发布后的下架对账请求。"""
+
+    source_type: Literal['huanxing', 'github']
+    active_skill_ids: list[str]
+
+
+class SourceReconcileResult(BaseModel):
+    """来源下架对账结果。"""
+
+    source_type: str
+    active_count: int
+    unpublished_skill_ids: list[str]
+
+
+async def _verify_api_key_user(
     db: CurrentSession,
-    x_api_key: Annotated[str | None, Header(alias='X-API-Key')] = None,
-) -> PublishUser:
-    """Validate publish API key and resolve HASN identity."""
+    x_api_key: str | None,
+) -> User:
+    """校验发布 API Key 并返回对应用户。"""
     if not x_api_key:
         raise errors.AuthorizationError(msg='缺少 API Key')
 
@@ -65,6 +108,15 @@ async def verify_publish_api_key(
     user = result.scalar_one_or_none()
     if not user:
         raise errors.AuthorizationError(msg='用户不存在')
+    return user
+
+
+async def verify_publish_api_key(
+    db: CurrentSession,
+    x_api_key: Annotated[str | None, Header(alias='X-API-Key')] = None,
+) -> PublishUser:
+    """校验普通发布 API Key 并解析 HASN 身份。"""
+    user = await _verify_api_key_user(db, x_api_key)
 
     hasn_human = await hasn_humans_dao.get_by_user_id(db, user_id=user.id)
     if not hasn_human:
@@ -75,7 +127,43 @@ async def verify_publish_api_key(
         hasn_id=hasn_human.hasn_id,
         username=user.username,
         nickname=user.nickname,
+        is_admin=bool(user.is_superuser or user.is_staff),
     )
+
+
+def require_source_publish_admin(
+    publish_user: SourcePublishUser,
+) -> SourcePublishUser:
+    """拒绝非管理员的来源制品发布。"""
+    if not publish_user.is_admin:
+        raise errors.AuthorizationError(msg='来源技能发布仅允许管理员')
+    return publish_user
+
+
+async def verify_source_publish_api_key(
+    db: CurrentSession,
+    x_api_key: Annotated[str | None, Header(alias='X-API-Key')] = None,
+) -> SourcePublishUser:
+    """来源发布只依赖管理员 API Key，不要求后台账号注册 HASN 身份。"""
+    user = await _verify_api_key_user(db, x_api_key)
+    return require_source_publish_admin(
+        SourcePublishUser(
+            user_id=user.id,
+            username=user.username,
+            nickname=user.nickname,
+            is_admin=bool(user.is_superuser or user.is_staff),
+        )
+    )
+
+
+async def _bump_common_skills(db: CurrentSession) -> None:
+    """发布后刷新公共技能修订；推送失败不回滚权威发布事务。"""
+    try:
+        from backend.app.hasn.service.sync_invalidate_service import bump
+
+        await bump('common_skills', db)
+    except Exception as exc:
+        log.warning(f'来源技能发布后的公共技能失效通知失败，将由周期对账追平: {exc}')
 
 
 async def _latest_skill_version(db: CurrentSession, skill_id: str) -> MarketplaceSkillVersion:
@@ -161,6 +249,62 @@ async def publish_skill(
             file_hash=version.file_hash or '',
             file_size=version.file_size or 0,
         ),
+    )
+
+
+@router.post('/source/skill', summary='发布官方或 GitHub 来源技能制品')
+async def publish_source_skill(
+    db: CurrentSessionTransaction,
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_api_key)],
+    file: Annotated[UploadFile, File(description='技能包 ZIP 文件')],
+    source_type: Annotated[Literal['huanxing', 'github'], Form(description='来源类型')],
+    namespace: Annotated[str, Form(description='huanxing/<category> 或 github/<owner>')],
+    slug: Annotated[str, Form(description='目录 slug')],
+    source_repo_path: Annotated[str, Form(description='源仓库内相对路径')],
+    source_repo_url: Annotated[str | None, Form(description='源仓库 URL')] = None,
+    git_commit_hash: Annotated[str | None, Form(description='源仓库 commit')] = None,
+    is_common: Annotated[bool, Form(description='是否为默认公共技能')] = False,
+    changelog: Annotated[str | None, Form(description='更新日志')] = None,
+    content_hash: Annotated[str | None, Form(description='本地源内容指纹')] = None,
+    file_hash: Annotated[str | None, Form(description='本地 ZIP SHA256')] = None,
+) -> ResponseSchemaModel[SourcePublishResult]:
+    content = await file.read()
+    result = await source_release_service.publish_skill(
+        db=db,
+        source_type=source_type,
+        namespace=namespace,
+        slug=slug,
+        content=content,
+        source_repo_url=source_repo_url,
+        source_repo_path=source_repo_path,
+        git_commit_hash=git_commit_hash,
+        is_common=is_common,
+        changelog=changelog,
+        expected_content_hash=content_hash,
+        expected_file_hash=file_hash,
+    )
+    await _bump_common_skills(db)
+    return response_base.success(data=SourcePublishResult(**result.__dict__))
+
+
+@router.post('/source/reconcile', summary='对账官方或 GitHub 来源完整发布清单')
+async def reconcile_source_skills(
+    db: CurrentSessionTransaction,
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_api_key)],
+    request: SourceReconcileRequest,
+) -> ResponseSchemaModel[SourceReconcileResult]:
+    unpublished = await source_release_service.reconcile(
+        db=db,
+        source_type=request.source_type,
+        active_skill_ids=request.active_skill_ids,
+    )
+    await _bump_common_skills(db)
+    return response_base.success(
+        data=SourceReconcileResult(
+            source_type=request.source_type,
+            active_count=len(set(request.active_skill_ids)),
+            unpublished_skill_ids=unpublished,
+        )
     )
 
 

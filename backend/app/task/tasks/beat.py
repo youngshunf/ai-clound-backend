@@ -117,8 +117,7 @@ LOCAL_BEAT_SCHEDULE = {
     },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
-        # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；
-        # 磁盘硬闸 MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB）——clawhub 目录占用达上限即暂停下载。
+        # 每 3 天增量同步一次（真 72h 间隔）。只读取元数据与文件清单，技能 ZIP 由 ClawHub 分发。
         'schedule': schedule(timedelta(days=3)),
     },
     '技能市场-公共技能共享目录 reconcile': {
