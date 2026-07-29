@@ -58,7 +58,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
     'reel': 57,  # 短视频合成（源自 MoneyPrinterTurbo，瘦引擎应用；default_mount=FALSE 由 install_policy=manual 推导）
-    'imagelab': 58,  # 图像处理（图坊，自研本地引擎，doc30；default_mount=FALSE 由 install_policy=manual 推导）
+    'imagelab': 58,  # 图像处理（图坊，自研本地引擎；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融投研（local_tool 本地应用；default_mount=FALSE 由 install_policy=manual 推导）
@@ -212,7 +212,7 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '一把梭 hasn.reel.generate 或分步合成出片 → hasn.reel.artifact.upload 登记成片。'
         '真实引擎本地合成、本地优先不自动上云，零 fake，失败如实报错。',
     ),
-    # 图像处理（图坊，自研本地引擎，doc30 §5.5/§5.7）也归「内容运营官（content_operator）」——无专有「修图师」
+    # 图像处理（图坊，自研本地引擎，图坊架构 §5.5/§5.7）也归「内容运营官（content_operator）」——无专有「修图师」
     # 分身，任意分身皆可操作，hasn.imagelab.* 工具面与技能所有分身共享（福仔 2026-07-02 纠正）；默认承接
     # content_operator。一个分身默认服务 deck/designsystem/creator/film/reel/imagelab 等多应用。
     'imagelab': (
@@ -361,7 +361,7 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
             'bundled_deps': ['ffmpeg', 'imagemagick'],
         },
     },
-    # 图像处理（imagelab，图坊，自研本地引擎，doc30 §5.1/§5.5）：确定性像素处理走自研本地引擎（ffmpeg/rembg/
+    # 图像处理（imagelab，图坊，自研本地引擎，图坊架构 §5.1/§5.5）：确定性像素处理走自研本地引擎（ffmpeg/rembg/
     # Pillow/scipy/libwebp/opencv），生成类不自建模型（桥接平台 hasn.image.generate）→ 故 config_json 只承载
     # engine 分发骨架 + 按需下载的 ML 模型清单，**无 image/video 生成模型**（不烧生成 token）。
     #   - engine.bundled_deps=['ffmpeg','libwebp']（图坊本地处理特有依赖，含动画组装 cwebp/webpmux）；

@@ -27,14 +27,14 @@ BEGIN
     
     IF v_menu_id IS NULL THEN
         INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-        VALUES ('', 'HasnImagelabProject', '/hasn_imagelab/hasn_imagelab_project', 1, 'lucide:list', 1, '/hasn_imagelab/hasn_imagelab_project/index', NULL, 1, 1, 1, '', '图坊项目云端轻登记（云端权威 ID 源，模块 14 doc30 §5.9 B1）', v_parent_id, NOW(), NULL)
+        VALUES ('', 'HasnImagelabProject', '/hasn_imagelab/hasn_imagelab_project', 1, 'lucide:list', 1, '/hasn_imagelab/hasn_imagelab_project/index', NULL, 1, 1, 1, '', '历史图坊本地引用兼容登记（当前流程直接使用平台项目 UUID）', v_parent_id, NOW(), NULL)
         RETURNING id INTO v_menu_id;
     ELSE
         UPDATE sys_menu SET
             title = '',
             name = 'HasnImagelabProject',
             component = '/hasn_imagelab/hasn_imagelab_project/index',
-            remark = '图坊项目云端轻登记（云端权威 ID 源，模块 14 doc30 §5.9 B1）',
+            remark = '历史图坊本地引用兼容登记（当前流程直接使用平台项目 UUID）',
             parent_id = v_parent_id,
             updated_time = NOW()
         WHERE id = v_menu_id;
