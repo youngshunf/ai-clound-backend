@@ -21,10 +21,11 @@ from typing import Literal
 
 from fastapi import WebSocket
 
-from backend.app.hasn_im.adapters.routing.redis_presence_store import NODE_GENERATION_KEY
-from backend.app.hasn_im.adapters.routing.redis_realtime_wakeup_bus import (
-    RedisRealtimeWakeupBus,
+from backend.app.hasn_im.adapters.routing.realtime_wakeup_factory import (
+    build_realtime_wakeup_bus,
+    wait_realtime_wakeup_ready,
 )
+from backend.app.hasn_im.adapters.routing.redis_presence_store import NODE_GENERATION_KEY
 from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     get_connection,
     get_connection_id,
@@ -83,9 +84,16 @@ async def _move_pending_to_processing(
 class WsDeliveryBus:
     """WS 跨 worker 投递总线（单例）。"""
 
-    _wakeup_bus: RealtimeWakeupBus = RedisRealtimeWakeupBus()
+    _wakeup_bus: RealtimeWakeupBus | None = None
     _retry_task: asyncio.Task[None] | None = None
     _drain_locks: dict[str, asyncio.Lock] = {}
+
+    @classmethod
+    def _get_wakeup_bus(cls) -> RealtimeWakeupBus:
+        """在 worker 进程内惰性构造，避免预加载后复制相同 RabbitMQ instance ID。"""
+        if cls._wakeup_bus is None:
+            cls._wakeup_bus = build_realtime_wakeup_bus()
+        return cls._wakeup_bus
 
     @classmethod
     async def publish_to_node(cls, node_id: str, payload_json: str) -> bool:
@@ -99,7 +107,7 @@ class WsDeliveryBus:
             return False
 
         try:
-            await cls._wakeup_bus.publish_node_wakeup(node_id)
+            await cls._get_wakeup_bus().publish_node_wakeup(node_id)
         except Exception as exc:
             # 唤醒失败不等于消息丢失：周期 drain 和节点重连都会继续消费待投队列。
             log.warning(f'[WsDeliveryBus] 投递唤醒失败，等待周期重试 node={node_id}: {exc!r}')
@@ -112,7 +120,7 @@ class WsDeliveryBus:
         用于全局 ``hasn.sync.invalidate``（builtin_catalog/common_skills/platform_config）。
         """
         try:
-            await cls._wakeup_bus.publish_broadcast(payload_json)
+            await cls._get_wakeup_bus().publish_broadcast(payload_json)
         except Exception as exc:
             log.warning(f'[WsDeliveryBus] publish_broadcast 失败: {exc!r}')
 
@@ -228,14 +236,22 @@ class WsDeliveryBus:
     @classmethod
     def start_listener(cls) -> None:
         """启动订阅任务（每个 worker 进程一份）。"""
-        cls._wakeup_bus.start(cls._deliver_local)
+        cls._get_wakeup_bus().start(cls._deliver_local)
         if cls._retry_task is None or cls._retry_task.done():
             cls._retry_task = asyncio.create_task(cls.retry_pending_forever())
 
     @classmethod
+    async def wait_listener_ready(cls) -> None:
+        """在 RabbitMQ active 模式等待每 worker 临时队列完成绑定。"""
+        await wait_realtime_wakeup_ready(cls._get_wakeup_bus())
+
+    @classmethod
     async def stop_listener(cls) -> None:
         """停止订阅任务。"""
-        await cls._wakeup_bus.stop()
+        wakeup_bus = cls._wakeup_bus
+        if wakeup_bus is not None:
+            await wakeup_bus.stop()
+        cls._wakeup_bus = None
         if cls._retry_task is not None and not cls._retry_task.done():
             cls._retry_task.cancel()
             await asyncio.gather(cls._retry_task, return_exceptions=True)
