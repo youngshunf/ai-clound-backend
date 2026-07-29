@@ -108,7 +108,7 @@ services:
       - host.docker.internal:host-gateway
     networks:
       observability:
-        ipv4_address: 172.24.0.2
+        ipv4_address: 172.24.0.250
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     volumes:
