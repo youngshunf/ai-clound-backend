@@ -134,7 +134,7 @@ def test_production_observability_containers_use_least_privilege() -> None:
     ]
     assert compose['services']['prometheus']['networks'] == {
         'observability': {
-            'ipv4_address': '172.24.0.2',
+            'ipv4_address': '172.24.0.250',
         }
     }
 
