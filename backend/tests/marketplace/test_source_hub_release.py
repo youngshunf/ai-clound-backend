@@ -7,10 +7,13 @@ import io
 import zipfile
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_task.service.workflow_template_service import (
     apply_builtin_template_updates,
@@ -225,7 +228,7 @@ async def test_mark_template_history_not_latest_allows_multiple_versions(
         'update_model_by_column',
         update_many,
     )
-    session = SimpleNamespace()
+    session = cast(AsyncSession, SimpleNamespace())
 
     updated = await marketplace_template_version_dao.mark_all_not_latest(
         session,
