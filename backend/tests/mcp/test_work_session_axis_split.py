@@ -1,28 +1,23 @@
-"""会话轴分流（设计 02 §4.3）云端提取点守卫（真实本地 PostgreSQL，零 mock 收窄查询）。
+"""会话轴分流（设计 02 §4.3）云端提取点守卫（真实本地 PostgreSQL 不需要——收窄查询已退役）。
 
 守三条不变量：
 
 1. `trust_gate.pop_work_session_id` 把系统注入的 `_hasn_work_session_id` 从入参剥离（工具体永不见）。
-2. `coalesce_legacy_work_session_id` 的「在册 task 收窄」判据：只有确实在册的工作会话（kind=task）
-   才回落；interactive/查无一律 None（IM 主会话 runtime id 绝不落工作会话轴）。
-3. `server.call_tool` 工作会话 ContextVar 的三级权威：auth 绑定（CLI header）> `_hasn_work_session_id`
-   保留参数（Hermes 盖章）> 旧节点 `session_id` 收窄；且只进不退（重入不覆写）。
+2. 混合语义 `_hasn_session_id` **绝不**落工作会话轴（P2-8d 起旧「在册 task 收窄」回落退役：
+   即使值恰好是在册 task 会话 id 也不回填——工作会话轴只认两级显式权威，运行时/逻辑会话 id
+   只落 `AgentContext.session_id` 溯源轴）。
+3. `server.call_tool` 工作会话 ContextVar 的两级权威：auth 绑定（CLI header）> `_hasn_work_session_id`
+   保留参数（Hermes 盖章）；且只进不退（重入不覆写）。
 """
 
 from __future__ import annotations
 
 import uuid
+
 from typing import Any
 
 import pytest
-import pytest_asyncio
-import sqlalchemy as sa
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-
-from backend.app.hasn.model import HasnSessions
-from backend.app.hasn.service.hasn_artifacts_service import coalesce_legacy_work_session_id
 from backend.app.mcp import trust_gate
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.context import (
@@ -32,29 +27,8 @@ from backend.app.mcp.context import (
 )
 from backend.app.mcp.server import HasnCloudMcpServer
 from backend.app.mcp.tools.base import BaseTool
-from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio(loop_scope='session')
-
-
-@pytest_asyncio.fixture
-async def pg_session():
-    """真实本地 PG AsyncSession：flush 不 commit，结束 rollback（PG 侧不留残留）。"""
-    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(sa.select(1))
-    except Exception as exc:
-        await engine.dispose()
-        pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
-
-    sess = async_sessionmaker(engine, expire_on_commit=False)()
-    try:
-        yield sess
-    finally:
-        await sess.rollback()
-        await sess.close()
-        await engine.dispose()
 
 
 # ─── pop_work_session_id 纯函数 ───
@@ -75,49 +49,7 @@ def test_pop_work_session_id_absent_or_blank_is_none() -> None:
     assert sid is None, '空白工作会话 id 按缺省处理（never over-block）'
 
 
-# ─── 在册 task 收窄（真实 PG）───
-
-
-async def _make_session(db, *, owner_hasn_id: str, agent_hasn_id: str, session_id: str, kind: str) -> None:
-    """种一条 hasn_sessions 会话行（kind=task 是工作会话，interactive 是主会话逻辑会话）。"""
-    db.add(
-        HasnSessions(
-            session_id=session_id,
-            owner_id=owner_hasn_id,
-            hasn_id=agent_hasn_id,
-            session_kind=kind,
-            session_scope='summary_only',
-            session_status='active',
-            origin_type='app' if kind == 'task' else 'ui',
-        )
-    )
-    await db.flush()
-
-
-async def test_coalesce_legacy_work_session_id_narrowing(pg_session) -> None:
-    tag = uuid.uuid4().hex[:12]
-    owner = f'h_axis_{tag}'
-    task_id = f'sess_task_{tag}'
-    interactive_id = f'sess_im_{tag}'
-    await _make_session(pg_session, owner_hasn_id=owner, agent_hasn_id=f'a_{tag}', session_id=task_id, kind='task')
-    await _make_session(
-        pg_session, owner_hasn_id=owner, agent_hasn_id=f'a_{tag}', session_id=interactive_id, kind='interactive'
-    )
-
-    assert await coalesce_legacy_work_session_id(pg_session, owner_hasn_id=owner, session_id=task_id) == task_id, (
-        '在册 task 行必须收窄命中（旧节点工作会话派发零断裂）'
-    )
-    assert await coalesce_legacy_work_session_id(pg_session, owner_hasn_id=owner, session_id=interactive_id) is None, (
-        'interactive 行不是工作会话，绝不落工作会话轴'
-    )
-    assert await coalesce_legacy_work_session_id(pg_session, owner_hasn_id=owner, session_id=f'sess_ghost_{tag}') is None, (
-        '查无的行（runtime 值）绝不落工作会话轴'
-    )
-    # 他人 owner 的同 id 行不得命中（owner 隔离）。
-    assert await coalesce_legacy_work_session_id(pg_session, owner_hasn_id=f'h_other_{tag}', session_id=task_id) is None
-
-
-# ─── server.call_tool 三级权威（真实 PG 收窄 + stub 捕获 ContextVar）───
+# ─── server.call_tool 两级权威（stub 捕获 ContextVar）───
 
 
 class _CtxVarRecorderTool(BaseTool):
@@ -149,19 +81,6 @@ class _CtxVarRecorderTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         self._sink.append(get_current_work_session_id())
         return {'ok': True, 'args': arguments}
-
-
-class _SharedSessionCtx:
-    """把测试 session 共享给 call_tool 内部自开的 `async_db_session()`（退出不 close）。"""
-
-    def __init__(self, session: Any) -> None:
-        self._session = session
-
-    async def __aenter__(self) -> Any:
-        return self._session
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
 
 
 def _ctx(tag: str) -> AgentContext:
@@ -225,33 +144,23 @@ async def test_call_tool_adopts_stamped_work_session_arg(monkeypatch: pytest.Mon
         clear_current_work_session_id()
 
 
-async def test_call_tool_legacy_session_id_narrowed_to_registered_task(
-    monkeypatch: pytest.MonkeyPatch, pg_session
+async def test_call_tool_legacy_session_id_never_lands_on_work_session_axis(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧节点（只发混合语义 `_hasn_session_id`）：在册 task 值收窄落轴，runtime 值不落。"""
-    tag = uuid.uuid4().hex[:12]
-    task_id = f'sess_task_{tag}'
-    runtime_id = f'sess_im_{tag}'
-    await _make_session(pg_session, owner_hasn_id=f'h_axis_{tag}', agent_hasn_id=f'a_axis_{tag}', session_id=task_id, kind='task')
-    monkeypatch.setattr('backend.database.db.async_db_session', lambda: _SharedSessionCtx(pg_session))
+    """混合语义 `_hasn_session_id` 绝不落工作会话轴（P2-8d 收窄回落退役）。
 
+    退役前：值恰好是在册 task 会话 id 时会经「在册收窄」回填 ContextVar（兼容只发混合值的
+    旧节点）。退役后：工作会话轴只认两级显式权威，`_hasn_session_id` 无论取值是什么都只落
+    `AgentContext.session_id` 运行时轴——新写点再想图省事走 session_id 通道绑会话，绑不上。
+    """
     sink: list[str | None] = []
     server = _server(monkeypatch, sink)
-    ctx = _ctx(tag)
+    ctx = _ctx(uuid.uuid4().hex[:12])
     try:
-        # 旧节点工作会话派发：`_hasn_session_id` 值本就是在册 task 行 → 收窄落轴（零断裂）。
-        await server.call_tool(ctx, 'hasn.axis.rec', {trust_gate.RESERVED_SESSION_ID: task_id})
-        assert sink == [task_id], '旧节点在册工作会话必须经收窄回落，不丢会话归属'
-    finally:
-        clear_current_work_session_id()
-
-    sink.clear()
-    ctx2 = _ctx(tag)
-    try:
-        # 旧节点 IM 主会话派发：runtime 值查无 → 不落轴（此前会被直接落列污染工作会话轴）。
-        await server.call_tool(ctx2, 'hasn.axis.rec', {trust_gate.RESERVED_SESSION_ID: runtime_id})
-        assert sink == [None], 'runtime 会话 id 绝不落工作会话轴'
-        assert ctx2.session_id == runtime_id, 'runtime id 仍落 session_id 轴（回灌定位不受影响）'
+        # 形如在册工作会话 id 的值也不回填——收窄查询已不存在，无从命中。
+        await server.call_tool(ctx, 'hasn.axis.rec', {trust_gate.RESERVED_SESSION_ID: 'sess_task_looks_registered'})
+        assert sink == [None], '混合语义 session_id 绝不落工作会话轴（收窄回落已退役）'
+        assert ctx.session_id == 'sess_task_looks_registered', '运行时轴照常沉淀（回灌定位不受影响）'
     finally:
         clear_current_work_session_id()
 

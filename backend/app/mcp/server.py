@@ -335,47 +335,29 @@ class HasnCloudMcpServer:
             arguments, origin_session_id = _tg.pop_session_id(arguments)
             if origin_session_id:
                 agent_context.session_id = origin_session_id
-            # 工作会话 id 的三级权威（设计 02 §4.3，只进不退）：
+            # 工作会话 id 的两级权威（设计 02 §4.3，只进不退；P2-8d 起旧节点 session_id
+            # 收窄回落退役——混合语义 `session_id` 只落 AgentContext.session_id 运行时轴，
+            # 绝不再经「在册 task」查询回填工作会话轴；现行节点全部由 ①② 显式供给）：
             # ① auth 绑定（CLI 直连面 streamable 已从 `X-Hasn-Work-Session-Id` header 落
             #    `agent_context.work_session_id`，per-dispatch、分身不可伪造）——最优先；
-            # ② 保留参数 `_hasn_work_session_id`（Hermes fork 逐调用盖章）——次优；
-            # ③ 旧节点兼容：对混合语义 `session_id` 做「在册 task」收窄——IM 主会话派发的
-            #    runtime id 查无 → 不落 ContextVar（此前会被直接落列污染工作会话轴）。
+            # ② 保留参数 `_hasn_work_session_id`（Hermes fork 逐调用盖章）——次优。
             # 重入只进不退：内层 tool.call 入参无 stamp（只打在最外层），ContextVar 已落非
             # None 时绝不覆写（防丢外层会话归属）。
-            from backend.app.mcp.context import get_current_work_session_id, set_current_work_session_id
+            from backend.app.mcp.context import set_current_work_session_id
 
             arguments, origin_work_session_id = _tg.pop_work_session_id(arguments)
             bound_work_session_id = agent_context.work_session_id or origin_work_session_id
             if bound_work_session_id:
                 set_current_work_session_id(bound_work_session_id)
-            elif (
-                get_current_work_session_id() is None
-                and agent_context.session_id
-                and agent_context.owner_hasn_id
-            ):
-                from backend.app.hasn.service.hasn_artifacts_service import (
-                    coalesce_legacy_work_session_id,
-                )
-                from backend.database.db import async_db_session
-
-                async with async_db_session() as db:
-                    narrowed = await coalesce_legacy_work_session_id(
-                        db,
-                        owner_hasn_id=agent_context.owner_hasn_id,
-                        session_id=agent_context.session_id,
-                    )
-                if narrowed:
-                    set_current_work_session_id(narrowed)
 
             # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
             # （`_hasn_project_id`，分身不可伪造）→ ContextVar，供 register-on-write 公共接缝把产物
             # 自动打标进 hasn_artifacts.project_id（只进不退）。缺省=不在项目中工作，产物不挂项目。
             from backend.app.mcp.context import set_current_project_id
 
-            arguments, _origin_project_id = _tg.pop_project_id(arguments)
-            if _origin_project_id:
-                set_current_project_id(_origin_project_id)
+            arguments, origin_project_id = _tg.pop_project_id(arguments)
+            if origin_project_id:
+                set_current_project_id(origin_project_id)
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游

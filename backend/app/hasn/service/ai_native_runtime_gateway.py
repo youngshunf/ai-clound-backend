@@ -220,39 +220,29 @@ class AiNativeRuntimeGateway:
         # register-on-write 会话通道（doc31·产物自动登记铁律 + 设计 02 §4.3 会话轴分流）：
         # 剥离系统注入保留参数 → ContextVar，供 handler 登记产物时挂进工作会话资源栏。
         # 须在 bind_tool_input 前剥离（保留参未在 input_schema 声明，留着会原样透传给 handler）。
-        # 分键语义：`_hasn_work_session_id` 只承载工作会话 id（新节点双键同发，直接采信）；
-        # `_hasn_session_id` 是运行时/逻辑会话语义，只在「在册 task 收窄」命中时才回填
-        # ContextVar（兼容只发混合值的旧节点；IM 主会话 runtime id 查无 → 不落，防误绑会话）。
+        # 分键语义：`_hasn_work_session_id` 只承载工作会话 id（现行节点双键同发，直接采信）；
+        # `_hasn_session_id` 是运行时/逻辑会话语义，P2-8d 起绝不再经「在册 task 收窄」回填
+        # ContextVar（旧回落只服务混合语义时期的旧节点，退役后 runtime id 天然不可能误绑会话）。
         # 到达面：daemon 代理面（FastAPI 路由）daemon `ai_native.rs` 把两键重注入进 input → 本处
         # 剥离；MCP 直连面（AppTool shim）`server.call_tool` 已剥离并落 ContextVar，input 里没有
         # → 已落非 None 时不覆写（只进不退）。
-        from backend.app.hasn.service.hasn_artifacts_service import coalesce_legacy_work_session_id
         from backend.app.mcp import trust_gate as _tg
         from backend.app.mcp.context import (
-            get_current_work_session_id,
             set_current_project_id,
             set_current_work_session_id,
         )
 
         input_payload, _relay_session_id = _tg.pop_session_id(input_payload)
-        input_payload, _relay_work_session_id = _tg.pop_work_session_id(input_payload)
-        if _relay_work_session_id:
-            set_current_work_session_id(_relay_work_session_id)
-        elif get_current_work_session_id() is None and _relay_session_id:
-            narrowed = await coalesce_legacy_work_session_id(
-                db,
-                owner_hasn_id=agent.owner_hasn_id,
-                session_id=_relay_session_id,
-            )
-            if narrowed:
-                set_current_work_session_id(narrowed)
+        input_payload, relay_work_session_id = _tg.pop_work_session_id(input_payload)
+        if relay_work_session_id:
+            set_current_work_session_id(relay_work_session_id)
 
         # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
         # （`_hasn_project_id`）→ ContextVar，供 handler 登记产物时自动打标进 hasn_artifacts.project_id。
         # mcp_face 面 server.call_tool 已剥离并落 ContextVar、input 里没有 → guard 不覆盖。
-        input_payload, _relay_project_id = _tg.pop_project_id(input_payload)
-        if _relay_project_id:
-            set_current_project_id(_relay_project_id)
+        input_payload, relay_project_id = _tg.pop_project_id(input_payload)
+        if relay_project_id:
+            set_current_project_id(relay_project_id)
 
         # 入参绑定接缝（候选①）：按 capability.input_schema 校验 + 强转 + 回填默认，使 manifest
         # 成为工具入参的唯一事实源——下游授权闸门与 handler 都拿到规范化 typed 入参（也让

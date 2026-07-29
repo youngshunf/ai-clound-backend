@@ -24,8 +24,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, get_args
 
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
-from backend.app.hasn_core.app_platform import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.hasn_core.app_platform import ai_native_app_registry
 from backend.app.mcp.context import get_current_project_id, get_current_work_session_id
 from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.database.db import async_db_session
@@ -221,8 +221,8 @@ class ArtifactRecordTool(BaseTool):
             asset_id=asset_id,
             resource_uri=resource_uri,
             origin_ref=_str('origin_ref'),
-            # 绑当次工作会话（设计 02 §4.3 会话轴分流）：取工作会话权威——分发入口三级权威
-            # 已落 ContextVar（auth 绑定 > `_hasn_work_session_id` 盖章 > 旧节点在册收窄），
+            # 绑当次工作会话（设计 02 §4.3 会话轴分流）：取工作会话权威——分发入口两级权威
+            # 已落 ContextVar（auth 绑定 > `_hasn_work_session_id` 盖章），
             # auth 绑定字段兜底。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在
             # 会话里看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，
             # 资源栏却空）。

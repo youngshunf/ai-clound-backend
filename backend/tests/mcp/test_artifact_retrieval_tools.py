@@ -216,9 +216,8 @@ async def _seed_extra_agent(owner: str, agent: str) -> None:
 async def _seed_work_session(owner: str, agent: str, session_id: str) -> None:
     """种一条 hasn_sessions kind=task 工作会话行（设计 02 §4.3 分流）。
 
-    真实世界工作会话派发前 AppCollab launch 已把会话上云；契约收紧后只发 `session_id`
-    的旧路径（本文件 `_record` 即此形态）必须在册才收窄落工作会话列，查无则挪
-    metadata.runtime_session_id 溯源、绝污染不了工作会话轴。
+    真实世界工作会话派发前 AppCollab launch 已把会话上云；本夹具照此贴近真实在册状态。
+    P2-8d 起登记绑定不再依赖本种子（工作会话轴只认显式 `work_session_id`，无在册收窄查询）。
     """
     from backend.app.hasn.model import HasnSessions
     from backend.database.db import async_db_session
@@ -251,6 +250,9 @@ async def _record(
 ) -> str:
     """经 service 真登记一条产物，返回 artifact_id。
 
+    `session_id` 形参表示产物所属**工作会话**（P2-8d 起工作会话轴只认显式
+    `work_session_id`，旧 `session_id` 收窄回落已退役；形参名保留只为少动调用点）。
+
     `source_kind` 不传则按产出者推导，与 `source_tool` 保持同一口径（doc35 §5）：
     图片走平台工具 `hasn.image.generate`→`platform_tool`，其余是分身自撰
     `hasn.artifact.record`→`agent_note`。旧的统一缺省 `tool_output` 是垃圾桶值，已砍。
@@ -266,7 +268,7 @@ async def _record(
         summary=summary,
         body=body,
         asset_id=asset_id,
-        session_id=session_id,
+        work_session_id=session_id,
         source_kind=source_kind or ('platform_tool' if is_platform_media else 'agent_note'),
         source_tool='hasn.image.generate' if kind == 'image' else 'hasn.artifact.record',
     )

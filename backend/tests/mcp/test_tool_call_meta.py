@@ -299,8 +299,8 @@ async def test_call_tool_direct_stamp_binds_session(monkeypatch: pytest.MonkeyPa
 async def test_call_tool_legacy_runtime_session_id_never_lands_on_work_session_axis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧节点只发混合语义 `_hasn_session_id`：值不是在册 task（runtime id）→ 收窄查无，
-    工作会话 ContextVar 保持 None（不再被直接落列污染）；运行时轴照常沉淀。"""
+    """混合语义 `_hasn_session_id` 绝不落工作会话 ContextVar（P2-8d 起旧「在册 task 收窄」
+    回落退役，runtime id 天然无从误绑）；运行时轴照常沉淀。"""
     server = _session_server(monkeypatch)
     result = await server.call_tool(
         _ctx(), 'hasn.stub.session_echo', {'_hasn_session_id': 'sess_guard_runtime_only'}
