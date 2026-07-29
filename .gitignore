@@ -13,6 +13,9 @@ venv/
 .agents/
 .logs/
 
+# 误落在仓库根目录的本地运行时 HOME（含凭据与 SQLite 数据）
+/~/
+
 # FBA CLI config (contains API keys)
 .fba.yaml
 .fba.yml

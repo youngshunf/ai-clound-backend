@@ -16,37 +16,49 @@ Tauri 客户端持公钥自行验签才是安全执行点。云端只**存储 + 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
 
 from pathlib import PurePosixPath
+from urllib.parse import quote
 
 import httpx
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_release.model import AppRelease, ReleaseAsset, ReleaseBuild
 from backend.app.hasn_release.schema.release import (
+    REQUIRED_DESKTOP_PLATFORMS,
     BuildDetail,
     CiCallbackRequest,
     CiUploadResponse,
+    ConfirmReleaseTagRequest,
     GithubBuildRequest,
     LatestReleaseResponse,
+    PrepareReleaseRequest,
     PublishReleaseRequest,
     ReleaseAssetDetail,
+    ReleaseBatchResponse,
+    ReleaseCommitInput,
     ReleaseDetail,
     TauriPlatformEntry,
     TauriUpdaterManifest,
     UpdateReleaseMetaRequest,
 )
 from backend.common.exception import errors
+from backend.common.llm import LLMError, llm_client
 from backend.core.conf import settings
 from backend.plugin.s3.service.storage_service import StorageService
 from backend.utils.timezone import timezone
 
 _SEMVER_CORE = re.compile(r'^(\d+)\.(\d+)\.(\d+)')
+_RELEASE_NOTES_MAX_CHARS = 200
+_MAX_RELEASE_COMMITS = 5000
+_RELEASE_COMMIT_CHUNK_CHARS = 12000
 
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
@@ -62,10 +74,366 @@ def _is_newer(candidate: str, current: str) -> bool:
     return _semver_tuple(candidate) > _semver_tuple(current)
 
 
+def _next_patch_version(versions: list[str]) -> str:
+    """从已经分配过的最高 semver 生成下一个补丁版本。"""
+    highest = max((_semver_tuple(version) for version in versions), default=(0, 0, 0))
+    return f'{highest[0]}.{highest[1]}.{highest[2] + 1}'
+
+
+def _normalize_release_notes(raw: str) -> str:
+    """把 LLM 输出收敛成官网可直接展示的 200 字以内纯文本。"""
+    text_value = (raw or '').strip()
+    text_value = re.sub(r'\A```(?:markdown|md|text)?\s*', '', text_value, flags=re.IGNORECASE)
+    text_value = re.sub(r'\s*```\Z', '', text_value)
+    text_value = text_value.strip('`"“”')
+    text_value = re.sub(r'\s+', ' ', text_value).strip()
+    return text_value[:_RELEASE_NOTES_MAX_CHARS]
+
+
+def _completed_platforms(
+    required_platforms: list[str],
+    asset_keys: set[tuple[str, str]],
+) -> list[str]:
+    """只有 installer 与 updater 都存在的平台才算完成。"""
+    return sorted(
+        platform
+        for platform in required_platforms
+        if (platform, 'installer') in asset_keys and (platform, 'updater') in asset_keys
+    )
+
+
 class ReleaseService:
+    # --------- 云端发布批次（跨机器版本与 tag 单一事实源） ---------
+
+    @staticmethod
+    def _to_batch(release: AppRelease) -> ReleaseBatchResponse:
+        if not release.release_tag or not release.source_commit:
+            raise errors.ServerError(msg='发布批次缺少 release_tag/source_commit')
+        return ReleaseBatchResponse(
+            id=release.id,
+            version=release.version,
+            channel=release.channel,
+            release_tag=release.release_tag,
+            previous_release_tag=release.previous_release_tag,
+            source_commit=release.source_commit,
+            tag_status=release.tag_status,
+            release_notes_status=release.release_notes_status,
+            release_notes_md=release.release_notes_md,
+            release_notes_error=release.release_notes_error,
+            required_platforms=list(release.required_platforms or []),
+            completed_platforms=list(release.completed_platforms or []),
+            status=release.status,
+            published_time=release.published_time,
+        )
+
+    async def prepare_release(
+        self,
+        db: AsyncSession,
+        req: PrepareReleaseRequest,
+    ) -> ReleaseBatchResponse:
+        """创建或加入当前频道唯一的发布批次。
+
+        PostgreSQL 事务级 advisory lock 保证两台打包机器并发请求时只增加一次 patch。
+        已有草稿批次时忽略后来机器的 HEAD，统一返回云端锁定的 commit 与 tag。
+        """
+        channel = (req.channel or 'stable').strip()
+        if channel not in ('stable', 'beta'):
+            raise errors.RequestError(msg=f'非法 channel: {channel}')
+        source_commit = req.source_commit.lower()
+
+        await db.execute(
+            text('SELECT pg_advisory_xact_lock(hashtext(:lock_key))'),
+            {'lock_key': f'hasn_release:desktop:{channel}'},
+        )
+        active = (
+            await db.execute(
+                select(AppRelease)
+                .where(
+                    AppRelease.channel == channel,
+                    AppRelease.status == 'draft',
+                    AppRelease.release_tag.is_not(None),
+                )
+                .order_by(AppRelease.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if active is not None:
+            return self._to_batch(active)
+
+        versions = list(
+            (await db.execute(select(AppRelease.version).where(AppRelease.channel == channel))).scalars().all()
+        )
+        version = _next_patch_version(versions)
+        release_tag = f'v{version}'
+        previous = (
+            await db.execute(
+                select(AppRelease)
+                .where(
+                    AppRelease.channel == channel,
+                    AppRelease.status == 'published',
+                    AppRelease.release_tag.is_not(None),
+                )
+                .order_by(AppRelease.published_time.desc().nullslast(), AppRelease.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        release = AppRelease(
+            version=version,
+            channel=channel,
+            release_notes_md=None,
+            release_notes_en_md=None,
+            status='draft',
+            is_latest=False,
+            source='github',
+            github_run_id=None,
+            release_tag=release_tag,
+            previous_release_tag=previous.release_tag if previous else None,
+            source_commit=source_commit,
+            tag_status='pending',
+            tag_created_time=None,
+            required_platforms=list(REQUIRED_DESKTOP_PLATFORMS),
+            completed_platforms=[],
+            release_commits=[],
+            release_notes_status='pending',
+            release_notes_error=None,
+            published_time=None,
+        )
+        db.add(release)
+        await db.flush()
+        return self._to_batch(release)
+
+    async def get_release_batch(self, db: AsyncSession, release_id: int) -> ReleaseBatchResponse:
+        release = (await db.execute(select(AppRelease).where(AppRelease.id == release_id))).scalar_one_or_none()
+        if release is None or not release.release_tag:
+            raise errors.NotFoundError(msg='发布批次不存在')
+        return self._to_batch(release)
+
+    async def _resolve_remote_tag_commit(self, release_tag: str) -> str:
+        """解析轻量或附注 tag 最终指向的 commit；无 REST token 时使用只读 deploy key。"""
+        repo = (settings.RELEASE_GITHUB_REPO or '').strip()
+        if not repo:
+            raise errors.ServerError(msg='未配置 RELEASE_GITHUB_REPO，无法核验 release tag')
+        token = (settings.RELEASE_GITHUB_TOKEN or '').strip()
+        if not token:
+            return await self._resolve_remote_tag_commit_via_ssh(repo, release_tag)
+        headers = {
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Authorization': f'Bearer {token}',
+        }
+        base_url = f'https://api.github.com/repos/{repo}'
+        ref_url = f'{base_url}/git/ref/tags/{quote(release_tag, safe="")}'
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
+            response = await client.get(ref_url, headers=headers)
+            if response.status_code == 404:
+                raise errors.RequestError(msg=f'远端 release tag 尚不存在：{release_tag}')
+            if response.status_code != 200:
+                raise errors.ServerError(msg=f'GitHub tag 核验失败 HTTP {response.status_code}: {response.text[:300]}')
+            obj = (response.json() or {}).get('object') or {}
+            for _ in range(3):
+                object_type = str(obj.get('type') or '')
+                object_sha = str(obj.get('sha') or '').lower()
+                if object_type == 'commit' and object_sha:
+                    return object_sha
+                if object_type != 'tag' or not object_sha:
+                    break
+                tag_response = await client.get(f'{base_url}/git/tags/{object_sha}', headers=headers)
+                if tag_response.status_code != 200:
+                    raise errors.ServerError(
+                        msg=f'GitHub 附注 tag 解析失败 HTTP {tag_response.status_code}: {tag_response.text[:300]}'
+                    )
+                obj = (tag_response.json() or {}).get('object') or {}
+        raise errors.ServerError(msg=f'无法解析 release tag 指向的 commit：{release_tag}')
+
+    async def _resolve_remote_tag_commit_via_ssh(
+        self,
+        repo: str,
+        release_tag: str,
+    ) -> str:
+        """通过生产机现有 GitHub 只读 deploy key 校验私有仓 tag，不接触写权限。"""
+        direct_ref = f'refs/tags/{release_tag}'
+        peeled_ref = f'{direct_ref}^{{}}'
+        env = os.environ.copy()
+        env['GIT_TERMINAL_PROMPT'] = '0'
+        env['GIT_SSH_COMMAND'] = (
+            'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes'
+        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'git',
+                'ls-remote',
+                '--tags',
+                f'git@github.com:{repo}.git',
+                direct_ref,
+                peeled_ref,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                raise errors.ServerError(msg='GitHub SSH tag 校验超时') from None
+        except FileNotFoundError:
+            raise errors.ServerError(msg='生产环境缺少 git，无法通过 deploy key 校验 release tag') from None
+
+        if process.returncode != 0:
+            detail = stderr.decode('utf-8', errors='replace').strip()[:300]
+            raise errors.ServerError(msg=f'GitHub SSH tag 校验失败：{detail or process.returncode}')
+
+        refs: dict[str, str] = {}
+        for raw_line in stdout.decode('utf-8', errors='replace').splitlines():
+            parts = raw_line.split()
+            if len(parts) == 2:
+                refs[parts[1]] = parts[0].lower()
+        commit = refs.get(peeled_ref) or refs.get(direct_ref)
+        if not commit:
+            raise errors.RequestError(msg=f'远端 release tag 尚不存在：{release_tag}')
+        return commit
+
+    async def _generate_release_notes(
+        self,
+        *,
+        version: str,
+        previous_release_tag: str | None,
+        release_tag: str,
+        commits: list[ReleaseCommitInput],
+    ) -> str:
+        """调用统一 LLM 客户端，把 Git 历史整理成 200 字以内用户更新说明。"""
+        if not llm_client.is_configured:
+            raise LLMError('统一 LLM 网关未配置')
+        commit_lines: list[str] = []
+        for commit in commits[:_MAX_RELEASE_COMMITS]:
+            subject = re.sub(r'\s+', ' ', commit.subject).strip()
+            commit_lines.append(f'- {commit.sha[:12]} {subject}')
+        if not commit_lines:
+            commit_lines = ['（该 tag 相比上一 release tag 没有新的 Git 提交）']
+
+        chunks: list[str] = []
+        current_lines: list[str] = []
+        current_length = 0
+        for line in commit_lines:
+            if current_lines and current_length + len(line) + 1 > _RELEASE_COMMIT_CHUNK_CHARS:
+                chunks.append('\n'.join(current_lines))
+                current_lines = []
+                current_length = 0
+            current_lines.append(line)
+            current_length += len(line) + 1
+        if current_lines:
+            chunks.append('\n'.join(current_lines))
+
+        summary_source = chunks[0]
+        if len(chunks) > 1:
+            chunk_summaries: list[str] = []
+            for index, chunk in enumerate(chunks, start=1):
+                chunk_summary = await llm_client.complete(
+                    [
+                        {
+                            'role': 'system',
+                            'content': (
+                                '你是版本历史整理助手。仅依据Git提交，合并重复项并提取用户可感知的'
+                                '功能、修复、性能和安全变化；忽略merge、chore和纯工程噪音。'
+                                '输出不超过400字的中文要点，不写commit哈希。'
+                            ),
+                        },
+                        {
+                            'role': 'user',
+                            'content': f'提交分段 {index}/{len(chunks)}：\n{chunk}',
+                        },
+                    ],
+                    max_tokens=800,
+                    temperature=0.1,
+                )
+                chunk_summaries.append(_normalize_release_notes(chunk_summary)[:400])
+            summary_source = '\n'.join(
+                f'- 分段{index}：{summary}' for index, summary in enumerate(chunk_summaries, start=1)
+            )
+        notes = await llm_client.complete(
+            [
+                {
+                    'role': 'system',
+                    'content': (
+                        '你是唤星AI桌面端的版本说明编辑。只能依据提供的Git提交事实，'
+                        '合并重复内容，优先概括用户可感知的新功能、问题修复、性能与安全改进。'
+                        '忽略merge、chore、版本号调整和纯工程噪音。输出一段自然中文纯文本，'
+                        '不写标题、版本号、commit哈希、发布方式或“本机自动发布”，总长度不超过200个汉字。'
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': (
+                        f'版本：{version}\n'
+                        f'范围：{previous_release_tag or "仓库最早可用release tag"}..{release_tag}\n'
+                        f'Git历史{"分段摘要" if len(chunks) > 1 else "提交"}：\n{summary_source}'
+                    ),
+                },
+            ],
+            max_tokens=400,
+            temperature=0.2,
+        )
+        normalized = _normalize_release_notes(notes)
+        if not normalized:
+            raise LLMError('LLM 返回空更新说明')
+        return normalized
+
+    async def confirm_release_tag(
+        self,
+        db: AsyncSession,
+        release_id: int,
+        req: ConfirmReleaseTagRequest,
+    ) -> ReleaseBatchResponse:
+        """核验远端 tag，并幂等生成版本说明；LLM 失败时保留批次供原版本重试。"""
+        await db.execute(
+            text('SELECT pg_advisory_xact_lock(hashtext(:lock_key))'),
+            {'lock_key': f'hasn_release:desktop:batch:{release_id}'},
+        )
+        release = (await db.execute(select(AppRelease).where(AppRelease.id == release_id))).scalar_one_or_none()
+        if release is None or not release.release_tag or not release.source_commit:
+            raise errors.NotFoundError(msg='发布批次不存在')
+        if req.source_commit.lower() != release.source_commit.lower():
+            raise errors.RequestError(
+                msg=f'release tag commit 不符：云端={release.source_commit}，本机={req.source_commit}'
+            )
+
+        remote_commit = await self._resolve_remote_tag_commit(release.release_tag)
+        if remote_commit != release.source_commit.lower():
+            raise errors.RequestError(
+                msg=f'远端 {release.release_tag} 指向 {remote_commit}，不是云端锁定的 {release.source_commit}'
+            )
+        release.tag_status = 'ready'
+        release.tag_created_time = release.tag_created_time or timezone.now()
+
+        normalized_commits = [
+            {'sha': commit.sha.lower(), 'subject': re.sub(r'\s+', ' ', commit.subject).strip()}
+            for commit in req.commits[:_MAX_RELEASE_COMMITS]
+        ]
+        if normalized_commits:
+            release.release_commits = normalized_commits
+        if req.previous_release_tag:
+            release.previous_release_tag = req.previous_release_tag.strip()
+
+        if release.release_notes_status != 'ready':
+            release.release_notes_status = 'pending'
+            release.release_notes_error = None
+            try:
+                release.release_notes_md = await self._generate_release_notes(
+                    version=release.version,
+                    previous_release_tag=release.previous_release_tag,
+                    release_tag=release.release_tag,
+                    commits=[ReleaseCommitInput.model_validate(commit) for commit in (release.release_commits or [])],
+                )
+                release.release_notes_status = 'ready'
+            except LLMError as exc:
+                release.release_notes_status = 'failed'
+                release.release_notes_error = str(exc)[:1000]
+        await db.flush()
+        return self._to_batch(release)
+
     # --------- 发布 / 上传（管理端手动 + CI 回调共用核心） ---------
 
-    async def publish(
+    async def publish(  # noqa: C901
         self,
         db: AsyncSession,
         req: PublishReleaseRequest,
@@ -97,9 +465,7 @@ class ReleaseService:
 
         # upsert 版本行
         existing = (
-            await db.execute(
-                select(AppRelease).where(AppRelease.version == req.version, AppRelease.channel == channel)
-            )
+            await db.execute(select(AppRelease).where(AppRelease.version == req.version, AppRelease.channel == channel))
         ).scalar_one_or_none()
 
         now = timezone.now()
@@ -161,14 +527,119 @@ class ReleaseService:
         return await self.get_detail(db, release.id)
 
     async def ci_callback(self, db: AsyncSession, req: CiCallbackRequest) -> ReleaseDetail:
-        """CI 构建完成回调：source 固定 github；附带回填关联 build 状态为 success。"""
-        detail = await self.publish(db, req, source='github')
+        """CI 构建完成回调。
+
+        新流程携 release_id：按平台幂等 upsert，全部平台完成后原子发布。
+        旧 CI 未携 release_id 时继续走原发布接口，保证存量 workflow 可用。
+        """
+        if req.release_id is not None:
+            detail = await self._submit_batch_assets(db, req)
+        else:
+            detail = await self.publish(db, req, source='github')
         if req.build_id is not None:
             await self._set_build_status(
                 db, req.build_id, status='success', version=req.version, run_id=req.github_run_id
             )
             await db.flush()  # 同上：外层事务自动提交，这里只 flush
         return detail
+
+    async def _submit_batch_assets(  # noqa: C901
+        self,
+        db: AsyncSession,
+        req: CiCallbackRequest,
+    ) -> ReleaseDetail:
+        """把单台机器产物写入发布批次，不删除其它平台已有资产。"""
+        release = (await db.execute(select(AppRelease).where(AppRelease.id == req.release_id))).scalar_one_or_none()
+        if release is None or not release.release_tag:
+            raise errors.NotFoundError(msg='发布批次不存在')
+        if req.version != release.version or req.channel != release.channel:
+            raise errors.RequestError(
+                msg=f'发布批次不匹配：云端={release.channel}/{release.version}，回调={req.channel}/{req.version}'
+            )
+        if req.release_tag and req.release_tag != release.release_tag:
+            raise errors.RequestError(msg=f'release tag 不匹配：云端={release.release_tag}，回调={req.release_tag}')
+        if release.status not in ('draft', 'published'):
+            raise errors.RequestError(msg=f'发布批次状态不允许上传：{release.status}')
+        if not req.assets:
+            raise errors.RequestError(msg='至少需要一个发布资产')
+
+        allowed_platforms = set(release.required_platforms or [])
+        for asset in req.assets:
+            if asset.platform_target not in allowed_platforms:
+                raise errors.RequestError(msg=f'资产平台不属于当前发布批次：{asset.platform_target}')
+            if asset.asset_kind not in ('installer', 'updater'):
+                raise errors.RequestError(msg=f'非法 asset_kind: {asset.asset_kind}')
+            if asset.asset_kind == 'updater' and not (asset.signature or '').strip():
+                raise errors.RequestError(msg=f'updater 资产 {asset.platform_target} 缺 minisign 签名（拒收）')
+            if not (asset.download_url or '').lower().startswith('https://'):
+                raise errors.RequestError(
+                    msg=f'资产 {asset.platform_target}/{asset.asset_kind} 下载地址必须是 https CDN 直链'
+                )
+            existing_asset = (
+                await db.execute(
+                    select(ReleaseAsset).where(
+                        ReleaseAsset.release_id == release.id,
+                        ReleaseAsset.platform_target == asset.platform_target,
+                        ReleaseAsset.asset_kind == asset.asset_kind,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_asset is None:
+                db.add(
+                    ReleaseAsset(
+                        release_id=release.id,
+                        platform_target=asset.platform_target,
+                        asset_kind=asset.asset_kind,
+                        download_url=asset.download_url,
+                        file_name=asset.file_name,
+                        file_size=asset.file_size or 0,
+                        sha256=asset.sha256,
+                        signature=asset.signature,
+                        download_count=0,
+                    )
+                )
+            else:
+                existing_asset.download_url = asset.download_url
+                existing_asset.file_name = asset.file_name
+                existing_asset.file_size = asset.file_size or 0
+                existing_asset.sha256 = asset.sha256
+                existing_asset.signature = asset.signature
+        await db.flush()
+
+        keys = set(
+            (
+                await db.execute(
+                    select(ReleaseAsset.platform_target, ReleaseAsset.asset_kind).where(
+                        ReleaseAsset.release_id == release.id
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        release.completed_platforms = _completed_platforms(
+            list(release.required_platforms or []),
+            keys,
+        )
+        ready = (
+            set(release.required_platforms or []).issubset(release.completed_platforms)
+            and release.tag_status == 'ready'
+            and release.release_notes_status == 'ready'
+        )
+        if ready:
+            await db.execute(
+                update(AppRelease)
+                .where(AppRelease.channel == release.channel, AppRelease.id != release.id)
+                .values(is_latest=False)
+            )
+            release.status = 'published'
+            release.is_latest = True
+            release.published_time = release.published_time or timezone.now()
+        else:
+            release.status = 'draft'
+            release.is_latest = False
+        await db.flush()
+        return await self.get_detail(db, release.id)
 
     async def ci_upload_asset(
         self,
@@ -178,6 +649,7 @@ class ReleaseService:
         filename: str,
         version: str,
         channel: str = 'stable',
+        release_id: int | None = None,
         content_type: str | None = None,
     ) -> CiUploadResponse:
         """CI 把桌面端产物交云端入**公共桶**（复用云端既有七牛存储，CI 零额外凭据）。
@@ -193,6 +665,10 @@ class ReleaseService:
         version = (version or '').strip()
         if not version:
             raise errors.RequestError(msg='version 不能为空')
+        if release_id is not None:
+            release = (await db.execute(select(AppRelease).where(AppRelease.id == release_id))).scalar_one_or_none()
+            if release is None or release.version != version or release.channel != channel:
+                raise errors.RequestError(msg='上传目标与云端发布批次不匹配')
         object_key = f'desktop/{channel}/{version}/{name}'
         ref = await StorageService.upload(
             db,
@@ -231,12 +707,16 @@ class ReleaseService:
             return LatestReleaseResponse(channel=channel)
 
         assets = (
-            await db.execute(
-                select(ReleaseAsset).where(
-                    ReleaseAsset.release_id == release.id, ReleaseAsset.asset_kind == 'installer'
+            (
+                await db.execute(
+                    select(ReleaseAsset).where(
+                        ReleaseAsset.release_id == release.id, ReleaseAsset.asset_kind == 'installer'
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         installers = {a.platform_target: ReleaseAssetDetail.model_validate(a) for a in assets}
         return LatestReleaseResponse(
             version=release.version,
@@ -292,9 +772,7 @@ class ReleaseService:
 
     async def resolve_download(self, db: AsyncSession, asset_id: int) -> str:
         """下载计数重定向：累加 download_count，返回 CDN 直链（端点 302 跳转）。"""
-        asset = (
-            await db.execute(select(ReleaseAsset).where(ReleaseAsset.id == asset_id))
-        ).scalar_one_or_none()
+        asset = (await db.execute(select(ReleaseAsset).where(ReleaseAsset.id == asset_id))).scalar_one_or_none()
         if asset is None:
             raise HTTPException(status_code=404, detail='资产不存在')
         await db.execute(
@@ -308,15 +786,26 @@ class ReleaseService:
     # --------- 版本管理（管理端） ---------
 
     async def list_releases(
-        self, db: AsyncSession, *, channel: str | None = None, limit: int = 50
+        self,
+        db: AsyncSession,
+        *,
+        channel: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        published_only: bool = False,
     ) -> list[ReleaseDetail]:
-        stmt = select(AppRelease).order_by(AppRelease.id.desc()).limit(limit)
+        stmt = (
+            select(AppRelease)
+            .order_by(AppRelease.published_time.desc().nullslast(), AppRelease.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
         if channel:
             stmt = stmt.where(AppRelease.channel == channel)
+        if published_only:
+            stmt = stmt.where(AppRelease.status == 'published')
         releases = (await db.execute(stmt)).scalars().all()
-        result: list[ReleaseDetail] = []
-        for r in releases:
-            result.append(await self._to_detail(db, r))
+        result: list[ReleaseDetail] = [await self._to_detail(db, r) for r in releases]
         return result
 
     async def get_detail(self, db: AsyncSession, pk: int) -> ReleaseDetail:
@@ -326,9 +815,7 @@ class ReleaseService:
         return await self._to_detail(db, release)
 
     async def _to_detail(self, db: AsyncSession, release: AppRelease) -> ReleaseDetail:
-        assets = (
-            await db.execute(select(ReleaseAsset).where(ReleaseAsset.release_id == release.id))
-        ).scalars().all()
+        assets = (await db.execute(select(ReleaseAsset).where(ReleaseAsset.release_id == release.id))).scalars().all()
         detail = ReleaseDetail.model_validate(release)
         detail.assets = [ReleaseAssetDetail.model_validate(a) for a in assets]
         return detail
@@ -355,9 +842,7 @@ class ReleaseService:
         release = (await db.execute(select(AppRelease).where(AppRelease.id == pk))).scalar_one_or_none()
         if release is None:
             raise errors.NotFoundError(msg='版本不存在')
-        await db.execute(
-            update(AppRelease).where(AppRelease.channel == release.channel).values(is_latest=False)
-        )
+        await db.execute(update(AppRelease).where(AppRelease.channel == release.channel).values(is_latest=False))
         release.is_latest = True
         release.status = 'published'
         release.published_time = release.published_time or timezone.now()
@@ -368,15 +853,14 @@ class ReleaseService:
         release = (await db.execute(select(AppRelease).where(AppRelease.id == pk))).scalar_one_or_none()
         if release is None:
             raise errors.NotFoundError(msg='版本不存在')
-        # release_asset 经 FK ON DELETE CASCADE 随之清理
+        # 显式删除可让同一事务已加载的资产查询立即一致；FK CASCADE 仍承担库级兜底。
+        await db.execute(delete(ReleaseAsset).where(ReleaseAsset.release_id == pk))
         await db.execute(delete(AppRelease).where(AppRelease.id == pk))
         await db.flush()  # 外层事务自动提交，这里只 flush
 
     # --------- CI 构建任务 ---------
 
-    async def trigger_github_build(
-        self, db: AsyncSession, req: GithubBuildRequest, *, actor: str
-    ) -> BuildDetail:
+    async def trigger_github_build(self, db: AsyncSession, req: GithubBuildRequest, *, actor: str) -> BuildDetail:
         """创建构建任务行 + 触发 GitHub Actions workflow_dispatch。
 
         配置齐（token + repo + workflow）才真触发；缺配置则落 queued 行并写明原因（不 fake 成功）。
@@ -420,16 +904,14 @@ class ReleaseService:
             else:
                 build.status = 'failed'
                 build.error_message = f'GitHub dispatch 失败 HTTP {resp.status_code}: {resp.text[:300]}'
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             build.status = 'failed'
             build.error_message = f'GitHub dispatch 异常: {exc}'
         await db.flush()  # 外层事务自动提交，这里只 flush
         return BuildDetail.model_validate(build)
 
     async def list_builds(self, db: AsyncSession, *, limit: int = 50) -> list[BuildDetail]:
-        builds = (
-            await db.execute(select(ReleaseBuild).order_by(ReleaseBuild.id.desc()).limit(limit))
-        ).scalars().all()
+        builds = (await db.execute(select(ReleaseBuild).order_by(ReleaseBuild.id.desc()).limit(limit))).scalars().all()
         return [BuildDetail.model_validate(b) for b in builds]
 
     async def _set_build_status(

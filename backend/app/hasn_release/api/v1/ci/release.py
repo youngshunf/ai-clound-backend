@@ -11,9 +11,16 @@ import hmac
 
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, Path, Query, Request
 
-from backend.app.hasn_release.schema.release import CiCallbackRequest, CiUploadResponse, ReleaseDetail
+from backend.app.hasn_release.schema.release import (
+    CiCallbackRequest,
+    CiUploadResponse,
+    ConfirmReleaseTagRequest,
+    PrepareReleaseRequest,
+    ReleaseBatchResponse,
+    ReleaseDetail,
+)
 from backend.app.hasn_release.service.release_service import release_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -34,6 +41,52 @@ def _verify_ci_bearer(authorization: str | None) -> None:
         raise errors.ForbiddenError(msg='CI 回调鉴权失败')
 
 
+@router.post(
+    '/prepare',
+    summary='创建或加入云端桌面端发布批次',
+    name='hasn_release_ci_prepare',
+)
+async def prepare_release(
+    db: CurrentSessionTransaction,
+    obj: PrepareReleaseRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[ReleaseBatchResponse]:
+    _verify_ci_bearer(authorization)
+    data = await release_service.prepare_release(db, obj)
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/batches/{release_id}',
+    summary='查询云端桌面端发布批次状态',
+    name='hasn_release_ci_get_batch',
+)
+async def get_release_batch(
+    db: CurrentSessionTransaction,
+    release_id: Annotated[int, Path(gt=0)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[ReleaseBatchResponse]:
+    _verify_ci_bearer(authorization)
+    data = await release_service.get_release_batch(db, release_id)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/batches/{release_id}/confirm-tag',
+    summary='核验 release tag 并由 LLM 生成更新说明',
+    name='hasn_release_ci_confirm_tag',
+)
+async def confirm_release_tag(
+    db: CurrentSessionTransaction,
+    release_id: Annotated[int, Path(gt=0)],
+    obj: ConfirmReleaseTagRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[ReleaseBatchResponse]:
+    _verify_ci_bearer(authorization)
+    data = await release_service.confirm_release_tag(db, release_id, obj)
+    return response_base.success(data=data)
+
+
 @router.post('/upload', summary='CI 上传产物到公共桶（Bearer CI 密钥）', name='hasn_release_ci_upload')
 async def ci_upload(
     request: Request,
@@ -41,7 +94,8 @@ async def ci_upload(
     version: Annotated[str, Query(description='semver，如 1.2.0')],
     file_name: Annotated[str, Query(description='原始文件名，如 唤星_1.2.0_aarch64.dmg')],
     channel: Annotated[str, Query(description='stable/beta')] = 'stable',
-    authorization: str | None = Header(default=None),
+    release_id: Annotated[int | None, Query(gt=0, description='云端发布批次 app_release.id')] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> ResponseSchemaModel[CiUploadResponse]:
     """CI 出包后把二进制交云端，复用云端已配置的七牛公共桶（CI 无需任何七牛凭据）。
 
@@ -57,6 +111,7 @@ async def ci_upload(
         filename=file_name,
         version=version,
         channel=channel,
+        release_id=release_id,
         content_type=request.headers.get('content-type'),
     )
     return response_base.success(data=data)
@@ -66,7 +121,7 @@ async def ci_upload(
 async def ci_callback(
     db: CurrentSessionTransaction,
     obj: CiCallbackRequest,
-    authorization: str | None = Header(default=None),
+    authorization: Annotated[str | None, Header()] = None,
 ) -> ResponseSchemaModel[ReleaseDetail]:
     _verify_ci_bearer(authorization)
     data = await release_service.ci_callback(db, obj)

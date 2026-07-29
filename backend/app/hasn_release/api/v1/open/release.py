@@ -40,8 +40,15 @@ async def list_releases(
     db: CurrentSession,
     channel: Annotated[str | None, Query(description='stable/beta，空=全部')] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ResponseSchemaModel[list[ReleaseDetail]]:
-    data = await release_service.list_releases(db, channel=channel, limit=limit)
+    data = await release_service.list_releases(
+        db,
+        channel=channel,
+        limit=limit,
+        offset=offset,
+        published_only=True,
+    )
     return response_base.success(data=data)
 
 
