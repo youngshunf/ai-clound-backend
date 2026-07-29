@@ -11,6 +11,7 @@ from fastapi import APIRouter
 
 from backend.app.hasn_publish.api.v1.agent.site import router as site_agent_router
 from backend.app.hasn_publish.api.v1.app.site import router as site_app_router
+from backend.app.hasn_publish.api.v1.internal.forms import router as forms_internal_router
 from backend.app.hasn_publish.api.v1.open.hosting import router as hosting_router
 from backend.app.hasn_publish.api.v1.open.meta import router as meta_open_router
 from backend.core.conf import settings
@@ -28,3 +29,6 @@ hosting.include_router(hosting_router)
 # 公开元数据面 /api/v1/publish/open/*（带前缀走 CORS，供 website /s/{slug} SPA 查看器 fetch 判定态）
 open_meta = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/open', tags=['网页发布-公开元数据'])
 open_meta.include_router(meta_open_router)
+
+internal = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/internal', tags=['网页发布-内部服务'])
+internal.include_router(forms_internal_router)

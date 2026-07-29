@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -181,22 +181,24 @@ class CloseDealParam(SchemaBase):
 class FormSubmitParam(SchemaBase):
     """落地页表单回流（open，无鉴权）。"""
 
-    company_name: str | None = Field(default=None, max_length=255)
+    model_config = ConfigDict(extra='forbid')
+
+    company_name: str | None = Field(default=None, max_length=200)
     contact_name: str | None = Field(default=None, max_length=100)
-    email: str | None = Field(default=None, max_length=255)
-    phone: str | None = Field(default=None, max_length=50)
-    wechat: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=32)
+    wechat: str | None = Field(default=None, max_length=64)
     message: str | None = Field(default=None, max_length=2000)
-    extra: dict[str, Any] = Field(default_factory=dict)
+    utm: dict[str, str] = Field(default_factory=dict)
     privacy_notice_version: str = Field(
         min_length=1,
         max_length=64,
         pattern=r'^[A-Za-z0-9][A-Za-z0-9._-]*$',
     )
-    consent_purpose: Literal['sales_followup']
-    consent_granted: Literal[True]
+    consent_purpose: Literal['sales_contact']
+    consent: Literal[True]
     # 蜜罐字段：人类不可见，被填充即判 spam（反滥用，§8.4）。
-    website_url: str | None = Field(default=None, description='蜜罐字段，正常用户应留空')
+    website_url: str | None = Field(default=None, max_length=2048, description='蜜罐字段，正常用户应留空')
 
 
 class OptoutParam(SchemaBase):

@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import html
+import json
 
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -85,6 +87,24 @@ def _content_csp(origin: str) -> str:
         "base-uri 'none'; "
         "form-action 'none'"
     )
+
+
+def _growth_form_api_origin(request: Request) -> str:
+    """解析受信任表单 broker 的 API origin，拒绝可注入 CSP/脚本的非 origin 配置。"""
+    configured = (settings.GROWTH_PUBLIC_FORM_API_ORIGIN or '').strip()
+    raw = configured or _share_origin(request)
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {'', '/'}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError('GROWTH_PUBLIC_FORM_API_ORIGIN 必须是合法的 http(s) origin')
+    return f'{parsed.scheme}://{parsed.netloc}'
 
 
 def _noindex_headers(site) -> dict[str, str]:  # noqa: ANN001
@@ -156,8 +176,23 @@ async def viewer_shell(
         ),
         **_noindex_headers(site),
     }
+    form_api_origin = (
+        _growth_form_api_origin(request) if site.source_app == 'growth' and site.source_ref else None
+    )
+    if form_api_origin:
+        headers['Content-Security-Policy'] += f'; connect-src {form_api_origin}'
     vt_qs = f'?vt={html.escape(vt)}' if vt else ''
-    return HTMLResponse(content=_viewer_shell_html(slug, site.title, site.allow_present, vt_qs), headers=headers)
+    return HTMLResponse(
+        content=_viewer_shell_html(
+            slug,
+            site.title,
+            site.allow_present,
+            vt_qs,
+            form_api_origin=form_api_origin,
+            form_view_ticket=vt,
+        ),
+        headers=headers,
+    )
 
 
 @router.post('/s/{slug}/unlock', summary='口令解锁（发短时访问票）')
@@ -341,10 +376,130 @@ document.getElementById('pw').addEventListener('keydown',function(e){{if(e.key==
 </script></body></html>"""
 
 
-def _viewer_shell_html(slug: str, title: str, allow_present: bool, vt_qs: str) -> str:
+def _growth_form_broker_script(
+    *,
+    slug: str,
+    api_origin: str,
+    view_ticket: str | None,
+) -> str:
+    """生成受信任外壳表单 broker；不可信制品只能 postMessage，不能读取 token 或访问父页。"""
+    config = json.dumps(
+        {
+            'apiOrigin': api_origin,
+            'slug': slug,
+            'formRef': 'growth-lead-v1',
+            'viewTicket': view_ticket,
+        },
+        ensure_ascii=True,
+        separators=(',', ':'),
+    )
+    return f"""
+var growthFormBroker={config};
+var growthFormKeys=new Map();
+function growthFormReply(event,requestId,result){{
+  event.source.postMessage({{type:'hasn:growth-form-result',requestId:requestId,...result}},'*');
+}}
+async function growthFormJson(response){{
+  try{{return await response.json();}}catch(_error){{return null;}}
+}}
+window.addEventListener('message',async function(event){{
+  if(event.source!==frame.contentWindow||!event.data||event.data.type!=='hasn:growth-form-submit')return;
+  var requestId=typeof event.data.requestId==='string'?event.data.requestId:'';
+  var payload=event.data.payload;
+  if(!requestId||requestId.length>128||!payload||typeof payload!=='object'||Array.isArray(payload)){{
+    growthFormReply(event,requestId,{{ok:false,status:422,message:'表单请求格式无效'}});
+    return;
+  }}
+  var idempotencyKey=growthFormKeys.get(requestId);
+  if(!idempotencyKey){{
+    if(!globalThis.crypto||typeof globalThis.crypto.randomUUID!=='function'){{
+      growthFormReply(event,requestId,{{ok:false,status:503,message:'当前浏览器无法生成幂等标识'}});
+      return;
+    }}
+    idempotencyKey=globalThis.crypto.randomUUID();
+    if(growthFormKeys.size>=100)growthFormKeys.delete(growthFormKeys.keys().next().value);
+    growthFormKeys.set(requestId,idempotencyKey);
+  }}
+  var base=growthFormBroker.apiOrigin;
+  var slug=encodeURIComponent(growthFormBroker.slug);
+  try{{
+    var tokenResponse=await fetch(
+      base+'/api/v1/publish/open/sites/'+slug+'/forms/'+growthFormBroker.formRef+'/access-token',
+      {{
+        method:'POST',
+        credentials:'omit',
+        referrerPolicy:'no-referrer',
+        headers:{{'Content-Type':'application/json'}},
+        body:JSON.stringify({{view_ticket:growthFormBroker.viewTicket}})
+      }}
+    );
+    var tokenPayload=await growthFormJson(tokenResponse);
+    var token=tokenPayload&&tokenPayload.data&&tokenPayload.data.form_access_token;
+    if(!tokenResponse.ok||typeof token!=='string'){{
+      growthFormReply(event,requestId,{{
+        ok:false,
+        status:tokenResponse.status,
+        message:(tokenPayload&&tokenPayload.msg)||'无法取得表单访问令牌'
+      }});
+      return;
+    }}
+    var submitResponse=await fetch(
+      base+'/api/v1/growth/open/forms/'+slug+'/submit',
+      {{
+        method:'POST',
+        credentials:'omit',
+        referrerPolicy:'no-referrer',
+        headers:{{
+          'Content-Type':'application/json',
+          'Idempotency-Key':idempotencyKey,
+          'X-Publish-Form-Token':token
+        }},
+        body:JSON.stringify(payload)
+      }}
+    );
+    var submitPayload=await growthFormJson(submitResponse);
+    if(!submitResponse.ok){{
+      growthFormReply(event,requestId,{{
+        ok:false,
+        status:submitResponse.status,
+        message:(submitPayload&&submitPayload.msg)||'留资提交失败',
+        retryAfter:submitResponse.headers.get('Retry-After')
+      }});
+      return;
+    }}
+    growthFormReply(event,requestId,{{
+      ok:true,
+      status:submitResponse.status,
+      receiptRef:submitPayload&&submitPayload.data&&submitPayload.data.receipt_ref
+    }});
+  }}catch(_error){{
+    growthFormReply(event,requestId,{{ok:false,status:0,message:'网络不可用，请稍后重试'}});
+  }}
+}});
+"""
+
+
+def _viewer_shell_html(
+    slug: str,
+    title: str,
+    allow_present: bool,
+    vt_qs: str,
+    *,
+    form_api_origin: str | None = None,
+    form_view_ticket: str | None = None,
+) -> str:
     t = html.escape(title or '分享')
     s = html.escape(slug)
     present = 'true' if allow_present else 'false'
+    form_broker = (
+        _growth_form_broker_script(
+            slug=slug,
+            api_origin=form_api_origin,
+            view_ticket=form_view_ticket,
+        )
+        if form_api_origin
+        else ''
+    )
     # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在 `sandbox="allow-scripts"`
     # 的 opaque origin 子帧里跑，内置查看运行时点「放映」会 `element.requestFullscreen()`。沙箱本身不含
     # fullscreen flag、不拦全屏，但**全屏须经 Permissions-Policy 委派**——没有 allow，浏览器静默拒绝内层
@@ -363,11 +518,12 @@ border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer}}
 <iframe id="frame" sandbox="allow-scripts" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
 <div id="bar"><span>{t}</span><button onclick="fs()">全屏</button></div>
 <script>
-var presentable={present};var bar=document.getElementById('bar');var idle;
+var presentable={present};var bar=document.getElementById('bar');var frame=document.getElementById('frame');var idle;
 function show(){{if(!presentable)return;bar.classList.add('show');clearTimeout(idle);
 idle=setTimeout(function(){{bar.classList.remove('show');}},2000);}}
 document.addEventListener('mousemove',show);show();
 function fs(){{var el=document.documentElement;if(document.fullscreenElement){{document.exitFullscreen();}}
 else if(el.requestFullscreen){{el.requestFullscreen();}}}}
 document.addEventListener('keydown',function(e){{if(e.key==='f'||e.key==='F')fs();}});
+{form_broker}
 </script></body></html>"""
