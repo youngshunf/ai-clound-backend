@@ -56,9 +56,9 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     raw = await (await session.connection()).get_raw_connection()
-    connection = raw.driver_connection
-    assert connection is not None
-    await connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
+    driver_connection = raw.driver_connection
+    assert driver_connection is not None
+    await driver_connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
     key_fence = (
         await session.execute(
             sa.text(

@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.growth_project import GrowthProject
@@ -185,8 +185,7 @@ async def test_s3_quarantine_sql_is_additive_and_idempotent(
     await _apply_sql(session)
     actual_schema = await session.scalar(
         sa.text(
-            'SELECT table_schema FROM information_schema.tables '
-            "WHERE table_name='growth_project_migration_quarantine'"
+            "SELECT table_schema FROM information_schema.tables WHERE table_name='growth_project_migration_quarantine'"
         )
     )
     assert actual_schema == 'hasn_growth'
@@ -204,9 +203,7 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
         opportunity,
         message,
     ) = await _seed_personal_chain(session)
-    task_count_before = await session.scalar(
-        sa.text('SELECT count(*) FROM hasn_task.task')
-    )
+    task_count_before = await session.scalar(sa.text('SELECT count(*) FROM hasn_task.task'))
     notification_count_before = await session.scalar(
         sa.text('SELECT count(*) FROM hasn_notification_im_command_outbox')
     )
@@ -226,9 +223,7 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
     assert dry_run.next_cursor == user_id
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
-            .select_from(HasnProject)
-            .where(HasnProject.owner_id == owner_hasn_id)
+            sa.select(sa.func.count()).select_from(HasnProject).where(HasnProject.owner_id == owner_hasn_id)
         )
         == 0
     )
@@ -245,23 +240,19 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
         await session.execute(
             sa.select(HasnProject).where(
                 HasnProject.owner_id == owner_hasn_id,
-                HasnProject.client_request_id
-                == f'growth-migrate:personal:{owner_hasn_id}',
+                HasnProject.client_request_id == f'growth-migrate:personal:{owner_hasn_id}',
             )
         )
     ).scalar_one()
     growth_project = (
-        await session.execute(
-            sa.select(GrowthProject).where(
-                GrowthProject.platform_project_id == platform_project.id
-            )
-        )
+        await session.execute(sa.select(GrowthProject).where(GrowthProject.platform_project_id == platform_project.id))
     ).scalar_one()
     assert growth_project.status == 'paused'
     assert growth_project.provision_status == 'pending'
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(GrowthProjectLead)
             .where(
                 GrowthProjectLead.growth_project_id == growth_project.id,
@@ -283,7 +274,8 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
     assert message.replied_at is not None
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(OutreachMessageEvent)
             .where(OutreachMessageEvent.outreach_message_id == message.id)
         )
@@ -291,7 +283,8 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
     )
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(Activity)
             .where(
                 Activity.kind == 'reply',
@@ -311,18 +304,17 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
     assert replay.comparable_counts() == dry_run.comparable_counts()
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(HasnProject)
-            .where(
-                HasnProject.client_request_id
-                == f'growth-migrate:personal:{owner_hasn_id}'
-            )
+            .where(HasnProject.client_request_id == f'growth-migrate:personal:{owner_hasn_id}')
         )
         == 1
     )
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(GrowthProjectLead)
             .where(GrowthProjectLead.growth_project_id == growth_project.id)
         )
@@ -330,7 +322,8 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
     )
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(OutreachMessageEvent)
             .where(OutreachMessageEvent.outreach_message_id == message.id)
         )
@@ -338,9 +331,7 @@ async def test_personal_migration_dry_run_apply_and_replay_are_consistent(
     )
     assert await session.scalar(sa.text('SELECT count(*) FROM hasn_task.task')) == task_count_before
     assert (
-        await session.scalar(
-            sa.text('SELECT count(*) FROM hasn_notification_im_command_outbox')
-        )
+        await session.scalar(sa.text('SELECT count(*) FROM hasn_notification_im_command_outbox'))
         == notification_count_before
     )
 
@@ -350,11 +341,12 @@ async def test_unknown_outreach_and_enterprise_rows_enter_quarantine(
     session: AsyncSession,
     legacy_status: str,
 ) -> None:
-    user_id, _owner, _contact, _ref, customer, _opportunity, message = (
-        await _seed_personal_chain(session, legacy_status=legacy_status)
+    user_id, _owner, _contact, _ref, customer, _opportunity, message = await _seed_personal_chain(
+        session, legacy_status=legacy_status
     )
     await session.execute(
-        sa.update(OutreachMessage)
+        sa
+        .update(OutreachMessage)
         .where(OutreachMessage.id == message.id)
         .values(approval_status=None, delivery_status=None)
     )
@@ -409,9 +401,7 @@ async def test_unknown_outreach_and_enterprise_rows_enter_quarantine(
 async def test_dual_write_new_read_and_audited_legacy_fallback(
     session: AsyncSession,
 ) -> None:
-    user_id, _owner, contact, lead_ref, _customer, _opportunity, _message = (
-        await _seed_personal_chain(session)
-    )
+    user_id, _owner, contact, lead_ref, _customer, _opportunity, _message = await _seed_personal_chain(session)
     await growth_project_migration_service.migrate_owner(
         session,
         user_id=user_id,
@@ -419,9 +409,7 @@ async def test_dual_write_new_read_and_audited_legacy_fallback(
         change_ticket='TEST-S3-COMPAT',
     )
     growth_project = (
-        await session.execute(
-            sa.select(GrowthProject).where(GrowthProject.user_id == user_id)
-        )
+        await session.execute(sa.select(GrowthProject).where(GrowthProject.user_id == user_id))
     ).scalar_one()
 
     previous_dual = settings.GROWTH_PROJECT_DUAL_WRITE_ENABLED
@@ -459,6 +447,7 @@ async def test_dual_write_new_read_and_audited_legacy_fallback(
             lead_contact_id=contact.id,
             growth_project_id=growth_project.id,
         )
+        assert new_read is not None
         assert new_read.source_table == 'growth_project_lead'
         assert new_read.status == 'dismissed'
 
@@ -470,10 +459,12 @@ async def test_dual_write_new_read_and_audited_legacy_fallback(
             lead_contact_id=contact.id,
             growth_project_id=growth_project.id,
         )
+        assert fallback is not None
         assert fallback.source_table == 'lead_ref'
         assert (
             await session.scalar(
-                sa.select(sa.func.count())
+                sa
+                .select(sa.func.count())
                 .select_from(LeadAuditLog)
                 .where(
                     LeadAuditLog.event_type == 'project_read_fallback',
@@ -537,9 +528,7 @@ async def test_enterprise_only_owner_is_quarantined_without_personal_project(
     assert result.project_created == 0
     assert (
         await session.scalar(
-            sa.select(sa.func.count())
-            .select_from(HasnProject)
-            .where(HasnProject.owner_id == owner_hasn_id)
+            sa.select(sa.func.count()).select_from(HasnProject).where(HasnProject.owner_id == owner_hasn_id)
         )
         == 0
     )
@@ -548,9 +537,7 @@ async def test_enterprise_only_owner_is_quarantined_without_personal_project(
 async def test_shadow_report_covers_boundaries_pii_and_associations(
     session: AsyncSession,
 ) -> None:
-    user_id, _owner, _contact, _ref, _customer, _opportunity, _message = (
-        await _seed_personal_chain(session)
-    )
+    user_id, _owner, _contact, _ref, _customer, _opportunity, _message = await _seed_personal_chain(session)
     await growth_project_migration_service.migrate_owner(
         session,
         user_id=user_id,
@@ -580,9 +567,7 @@ async def test_shadow_report_covers_boundaries_pii_and_associations(
 async def test_legacy_manual_write_reaches_project_read_when_dual_write_enabled(
     session: AsyncSession,
 ) -> None:
-    user_id, _owner, _contact, _ref, _customer, _opportunity, _message = (
-        await _seed_personal_chain(session)
-    )
+    user_id, _owner, _contact, _ref, _customer, _opportunity, _message = await _seed_personal_chain(session)
     await growth_project_migration_service.migrate_owner(
         session,
         user_id=user_id,
@@ -590,9 +575,7 @@ async def test_legacy_manual_write_reaches_project_read_when_dual_write_enabled(
         change_ticket='TEST-S3-WRITE-PATH',
     )
     growth_project = (
-        await session.execute(
-            sa.select(GrowthProject).where(GrowthProject.user_id == user_id)
-        )
+        await session.execute(sa.select(GrowthProject).where(GrowthProject.user_id == user_id))
     ).scalar_one()
 
     previous_dual = settings.GROWTH_PROJECT_DUAL_WRITE_ENABLED
@@ -606,7 +589,8 @@ async def test_legacy_manual_write_reaches_project_read_when_dual_write_enabled(
         lead_contact_id = int(created['lead_contact_id'])
         assert (
             await session.scalar(
-                sa.select(sa.func.count())
+                sa
+                .select(sa.func.count())
                 .select_from(LeadRef)
                 .where(
                     LeadRef.user_id == user_id,
@@ -617,7 +601,8 @@ async def test_legacy_manual_write_reaches_project_read_when_dual_write_enabled(
         )
         assert (
             await session.scalar(
-                sa.select(sa.func.count())
+                sa
+                .select(sa.func.count())
                 .select_from(GrowthProjectLead)
                 .where(
                     GrowthProjectLead.growth_project_id == growth_project.id,
@@ -641,9 +626,7 @@ async def test_legacy_manual_write_reaches_project_read_when_dual_write_enabled(
 async def test_project_search_rejects_cross_owner_even_when_requester_has_no_leads(
     session: AsyncSession,
 ) -> None:
-    user_id, _owner, _contact, _ref, _customer, _opportunity, _message = (
-        await _seed_personal_chain(session)
-    )
+    user_id, _owner, _contact, _ref, _customer, _opportunity, _message = await _seed_personal_chain(session)
     await growth_project_migration_service.migrate_owner(
         session,
         user_id=user_id,
@@ -651,9 +634,7 @@ async def test_project_search_rejects_cross_owner_even_when_requester_has_no_lea
         change_ticket='TEST-S3-READ-ACL',
     )
     growth_project = (
-        await session.execute(
-            sa.select(GrowthProject).where(GrowthProject.user_id == user_id)
-        )
+        await session.execute(sa.select(GrowthProject).where(GrowthProject.user_id == user_id))
     ).scalar_one()
 
     with pytest.raises(errors.NotFoundError):

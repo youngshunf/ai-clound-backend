@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -15,7 +16,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_growth.model.growth_attribution_event import (
     GrowthAttributionEvent,
 )
@@ -47,7 +48,9 @@ _PROFILE_SQL = _REPO / 'backend/sql/hasn_growth/010_create_growth_profile_tables
 
 async def _apply_profile_sql(db: AsyncSession) -> None:
     raw = await (await db.connection()).get_raw_connection()
-    await raw.driver_connection.execute(_PROFILE_SQL.read_text(encoding='utf-8'))
+    driver_connection = raw.driver_connection
+    assert driver_connection is not None
+    await driver_connection.execute(_PROFILE_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -428,7 +431,7 @@ async def test_project_overview_distinguishes_unrecorded_cost_from_zero(
         GrowthAttributionEvent(
             growth_project_id=ctx.growth.id,
             event_type='cost',
-            amount=123.45,
+            amount=Decimal('123.45'),
             currency='CNY',
             idempotency_key=f'cost-{uuid.uuid4()}',
         )
