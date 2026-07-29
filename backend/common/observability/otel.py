@@ -16,9 +16,6 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from redis.observability.config import OTelConfig
-from redis.observability.providers import get_observability_instance
-
 from backend.common.log import log, request_id_filter
 from backend.common.observability.prometheus import PROMETHEUS_APP_NAME
 from backend.core.conf import settings
@@ -109,12 +106,10 @@ def init_otel(app: FastAPI) -> None:
     init_metrics(resource)
     init_logging(resource)
 
-    redis_otel = get_observability_instance()
-    redis_otel.init(OTelConfig())
-
     AsyncioInstrumentor().instrument()
     LoggingInstrumentor().instrument(set_logging_format=True)
     SQLAlchemyInstrumentor().instrument(engine=async_engine.sync_engine)
+    # redis-py 7.2 的原生指标不支持异步连接池，保留标准链路追踪以避免周期性回调报错。
     RedisInstrumentor.instrument_client(redis_client)  # type: ignore
     HTTPXClientInstrumentor().instrument()
     FastAPIInstrumentor.instrument_app(app)
