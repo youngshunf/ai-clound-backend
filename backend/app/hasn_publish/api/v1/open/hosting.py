@@ -1,7 +1,7 @@
 """通用网页发布与分享 公开查看面 /s/{slug}（模块 18，P3）。
 
 > 整个 /s/* 落独立分享域名（usercontent 模式，[04] §5）：API 主域 cookie 在该域不可见。
-> /content 响应恒带 `Content-Security-Policy: sandbox allow-scripts`——直开导航也被沙箱；
+> /content 响应恒带 `Content-Security-Policy: sandbox allow-scripts allow-forms`——直开导航也被沙箱；
 >   资源指令用**显式 host-source**（opaque origin 下 'self' 永不匹配，会拦死制品自己的 assets）。
 > connect-src 'none' 阻断数据外联（打包期已收敛外链，[02]）。
 
@@ -74,9 +74,9 @@ def _share_origin(request: Request) -> str:
 
 
 def _content_csp(origin: str) -> str:
-    """/content 的 CSP：sandbox allow-scripts（opaque origin）+ 显式 host-source 资源指令 + 断外联。"""
+    """/content 的 CSP：允许受控 submit 事件，仍以 opaque origin、form-action 与断外联约束。"""
     return (
-        'sandbox allow-scripts; '
+        'sandbox allow-scripts allow-forms; '
         "default-src 'none'; "
         f'img-src {origin} data: blob:; '
         f"style-src {origin} 'unsafe-inline'; "
@@ -166,7 +166,7 @@ async def viewer_shell(
     # 查看器外壳是本服务生成的**可信** HTML（title 经 html.escape，无用户脚本注入面）：
     # 必须允许它**自身的内联 style/script**，否则 `#frame{width/height:100%}` 等内联样式被 CSP
     # 拦掉 → iframe 退化成浏览器默认 ~300×150、外壳脚本（全屏/底栏）也失效 → 演示只剩一小块。
-    # 真正不可信的发布制品在 /content 子 iframe，自带 `sandbox allow-scripts` 的独立 CSP，
+    # 真正不可信的发布制品在 /content 子 iframe，自带 `sandbox allow-scripts allow-forms` 的独立 CSP，
     # 与本外壳 CSP 互不影响（见 _content_csp）。
     headers = {
         'X-Frame-Options': 'SAMEORIGIN',
@@ -500,7 +500,8 @@ def _viewer_shell_html(
         if form_api_origin
         else ''
     )
-    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在 `sandbox="allow-scripts"`
+    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在
+    # `sandbox="allow-scripts allow-forms"`
     # 的 opaque origin 子帧里跑，内置查看运行时点「放映」会 `element.requestFullscreen()`。沙箱本身不含
     # fullscreen flag、不拦全屏，但**全屏须经 Permissions-Policy 委派**——没有 allow，浏览器静默拒绝内层
     # requestFullscreen → 只剩运行时的 CSS 放映态（铺满 iframe=铺满浏览器视口），用户看到「只是浏览器全屏、
@@ -515,7 +516,7 @@ opacity:0;transition:opacity .2s;pointer-events:none}}
 #bar.show{{opacity:1;pointer-events:auto}}#bar button{{background:transparent;border:1px solid #3f3f46;color:#e5e7eb;
 border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer}}
 </style></head><body>
-<iframe id="frame" sandbox="allow-scripts" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
+<iframe id="frame" sandbox="allow-scripts allow-forms" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
 <div id="bar"><span>{t}</span><button onclick="fs()">全屏</button></div>
 <script>
 var presentable={present};var bar=document.getElementById('bar');var frame=document.getElementById('frame');var idle;
