@@ -150,6 +150,20 @@ def test_m2_new_models_map_to_hasn_growth_schema() -> None:
         assert model.__table__.schema == 'hasn_growth', model.__name__
 
 
+def test_s5_profile_tables_use_codegen_artifacts_without_generic_routes() -> None:
+    """画像历史与建议表由 codegen 生成，业务读写只走 Owner/Agent 专用契约。"""
+    app_root = ROOT / 'backend/app/hasn_growth'
+    for table in ('growth_profile_version', 'growth_profile_suggestion'):
+        assert (app_root / f'model/{table}.py').exists()
+        assert (app_root / f'schema/{table}.py').exists()
+        assert (app_root / f'crud/crud_{table}.py').exists()
+        assert (app_root / f'service/{table}_service.py').exists()
+        source = (app_root / f'model/{table}.py').read_text(encoding='utf-8')
+        assert 'HasnGrowthAppBase' in source
+        for scope in ('admin', 'app', 'agent', 'open'):
+            assert not (app_root / f'api/v1/{scope}/{table}.py').exists()
+
+
 def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
     sql = (ROOT / 'backend/sql/hasn_growth/002_create_growth_tables.sql').read_text(encoding='utf-8')
     for table in _GROWTH_TABLES:
@@ -205,8 +219,8 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    # 26 = 既有 22 + project.get/create/update/pause 四个项目生命周期工具。
-    assert len(caps) == 26
+    # 27 = 既有 22 + project.get/create/update/update_profile/pause 五个项目工具。
+    assert len(caps) == 27
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表
     for c in caps:

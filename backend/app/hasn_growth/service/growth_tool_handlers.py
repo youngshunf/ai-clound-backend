@@ -23,6 +23,9 @@ from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.growth_profile_service import (
+    growth_profile_service,
+)
 from backend.app.hasn_growth.service.growth_project_app_service import (
     growth_project_app_service,
 )
@@ -177,6 +180,51 @@ async def handle_growth_project_update(
         source_tool='hasn.growth.project.update',
     )
     return merge_resource_uri(project, registration)
+
+
+async def handle_growth_project_update_profile(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """分身只提交待确认画像建议；Owner 接受前不改写当前画像。"""
+    document_ids = input_payload.get('knowledge_document_ids')
+    if not isinstance(document_ids, list) or not all(
+        isinstance(document_id, int) and document_id > 0
+        for document_id in document_ids
+    ):
+        raise errors.RequestError(msg='knowledge_document_ids 必须是非空正整数数组')
+    suggestion = await growth_profile_service.submit_suggestion(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        expected_version=_int(input_payload, 'expected_version'),
+        product_profile=dict(input_payload.get('product_profile') or {}),
+        icp_profile=dict(input_payload.get('icp_profile') or {}),
+        knowledge_document_ids=document_ids,
+        trace_id=_required_str(input_payload, 'trace_id'),
+        idempotency_key=_required_str(input_payload, 'idempotency_key'),
+    )
+    project = await growth_project_app_service.get_by_id(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+    )
+    registration = await _register_growth_project(
+        db,
+        agent,
+        project,
+        source_tool='hasn.growth.project.update_profile',
+    )
+    return merge_resource_uri(
+        {
+            'suggestion': suggestion,
+            'profile_version': project['profile_version'],
+            'current_profile_unchanged': True,
+        },
+        registration,
+    )
 
 
 async def handle_growth_project_pause(

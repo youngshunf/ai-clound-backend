@@ -49,6 +49,7 @@ _SQL_FILES = (
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-playbook-trace-columns.sql',
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-project-association-uniques.sql',
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-30-growth-project-provision-state-machine.sql',
+    _REPO / 'backend/sql/hasn_growth/010_create_growth_profile_tables.sql',
 )
 
 
@@ -551,9 +552,13 @@ async def test_growth_enable_creates_reliable_steps_and_lifecycle_is_explicit(
     growth = await session.get(GrowthProject, UUID(growth_id))
     assert growth is not None
     growth.provision_status = 'ready'
-    resumed = await growth_project_app_service.resume(
-        session,
-        owner_hasn_id=owner,
-        growth_project_id=growth_id,
+    with pytest.raises(errors.ConflictError) as readiness_blocked:
+        await growth_project_app_service.resume(
+            session,
+            owner_hasn_id=owner,
+            growth_project_id=growth_id,
+        )
+    assert (
+        readiness_blocked.value.data['error_code']
+        == 'GROWTH_PROJECT_READINESS_BLOCKED'
     )
-    assert resumed['status'] == 'active'

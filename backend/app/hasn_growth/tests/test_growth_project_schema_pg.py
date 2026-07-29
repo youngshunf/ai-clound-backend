@@ -39,6 +39,7 @@ pytestmark = pytest.mark.asyncio
 _REPO = Path(__file__).resolve().parents[4]
 _SCHEMA_SQL = _REPO / 'backend/sql/hasn_growth/007_create_growth_project_v4_tables.sql'
 _KEY_STATE_SQL = _REPO / 'backend/sql/hasn_growth/008_create_growth_pii_key_state.sql'
+_PROFILE_SQL = _REPO / 'backend/sql/hasn_growth/010_create_growth_profile_tables.sql'
 _MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-project-v4-columns.sql'
 _KEY_FENCE_SQL = (
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-pii-key-fence-triggers.sql'
@@ -63,6 +64,8 @@ _NEW_TABLES = {
     'growth_pii_key_state',
     'growth_pii_migration_quarantine',
     'contact_private_access_audit',
+    'growth_profile_version',
+    'growth_profile_suggestion',
 }
 
 
@@ -77,6 +80,7 @@ async def _apply_sql(session: AsyncSession) -> None:
     await connection.execute(_KEY_FENCE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_PLAYBOOK_TRACE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_ASSOCIATION_UNIQUES_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_PROFILE_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture

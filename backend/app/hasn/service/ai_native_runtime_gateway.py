@@ -654,6 +654,7 @@ class AiNativeRuntimeGateway:
             'growth.project_get': growth_handlers.handle_growth_project_get,
             'growth.project_create': growth_handlers.handle_growth_project_create,
             'growth.project_update': growth_handlers.handle_growth_project_update,
+            'growth.project_update_profile': growth_handlers.handle_growth_project_update_profile,
             'growth.project_pause': growth_handlers.handle_growth_project_pause,
             'growth.lead_request': growth_handlers.handle_growth_lead_request,
             # 企业数据读穿中台（GROWTH-QCC-4）：内部调通用网关 call_system_tool(hasn.ext.qcc_*) + read-through 入池。
