@@ -71,10 +71,10 @@ def install_mcp_sdk_stub(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, **kwargs) -> None:
             self.__dict__.update(kwargs)
 
-    mcp_module = types.ModuleType('mcp')
-    server_module = types.ModuleType('mcp.server')
-    streamable_module = types.ModuleType('mcp.server.streamable_http_manager')
-    types_module = types.ModuleType('mcp.types')
+    mcp_module: Any = types.ModuleType('mcp')
+    server_module: Any = types.ModuleType('mcp.server')
+    streamable_module: Any = types.ModuleType('mcp.server.streamable_http_manager')
+    types_module: Any = types.ModuleType('mcp.types')
 
     server_module.Server = StubServer
     streamable_module.StreamableHTTPSessionManager = StubStreamableHTTPSessionManager
