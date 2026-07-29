@@ -22,7 +22,8 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.api.v1.agent.hasn_assets import router as agent_assets_router
+from backend.app.hasn.api.v1.agent.hasn_assets import router as agent_asset_delivery_router
+from backend.app.hasn.api.v1.agent.hasn_assets_agent import router as agent_asset_upload_router
 from backend.app.hasn.model import (
     HasnAgents,
     HasnAssetGrants,
@@ -33,11 +34,13 @@ from backend.app.hasn.model import (
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt import create_agent_access_token, revoke_agent_token
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.plugin.s3.service.storage_service import StorageService
 
 pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _APP = FastAPI()
-_APP.include_router(agent_assets_router, prefix='/api/v1/hasn/agent/assets')
+_APP.include_router(agent_asset_upload_router, prefix='/api/v1/hasn/agent/assets')
+_APP.include_router(agent_asset_delivery_router, prefix='/api/v1/hasn/agent/assets')
 
 
 @_APP.exception_handler(BaseExceptionError)
@@ -65,7 +68,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
                 hasn_id=owner_hasn_id,
                 star_id=f's_upload_{tag}',
                 user_id=owner_user_id,
-                nickname='图坊上传测试主人',
+                nickname=f'图坊上传测试主人-{tag}',
                 status='active',
             ),
             HasnAgents(
@@ -73,7 +76,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
                 star_id=f'sa_upload_{tag}',
                 owner_id=owner_hasn_id,
                 display_name='图坊上传测试分身',
-                agent_name='imagelab-upload-e2e',
+                agent_name=f'img4-e2e-{tag}',
                 status='active',
             ),
         ])
@@ -116,6 +119,22 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         await session.rollback()
         await session.close()
         await revoke_agent_token(agent_hasn_id, token.session_uuid)
+        async with maker() as cleanup_storage:
+            objects = (
+                await cleanup_storage.execute(
+                    text(
+                        'SELECT storage_id, object_key FROM public.hasn_storage_objects '
+                        'WHERE owner_hasn_id = :owner'
+                    ),
+                    {'owner': owner_hasn_id},
+                )
+            ).mappings().all()
+            for obj in objects:
+                await StorageService.delete_object(
+                    cleanup_storage,
+                    storage_id=int(obj['storage_id']),
+                    object_key=str(obj['object_key']),
+                )
         async with maker.begin() as cleanup:
             conversation_ids = (
                 await cleanup.execute(
@@ -158,9 +177,18 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
                     text('DELETE FROM public.hasn_asset_grants WHERE asset_id = ANY(:ids)'),
                     {'ids': asset_ids},
                 )
+            for table in (
+                'hasn_storage_entries',
+                'hasn_asset_bindings',
+                'hasn_assets',
+                'hasn_storage_objects',
+                'hasn_storage_reservations',
+                'hasn_storage_jobs',
+                'hasn_storage_accounts',
+            ):
                 await cleanup.execute(
-                    text('DELETE FROM public.hasn_assets WHERE asset_id = ANY(:ids)'),
-                    {'ids': asset_ids},
+                    text(f'DELETE FROM public.{table} WHERE owner_hasn_id = :owner'),
+                    {'owner': owner_hasn_id},
                 )
             await cleanup.execute(
                 text('DELETE FROM public.hasn_agents WHERE hasn_id = :agent'),
@@ -173,14 +201,18 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         await engine.dispose()
 
 
-async def test_agent_upload_uses_token_owner_and_is_idempotent(e2e: SimpleNamespace) -> None:
-    """请求体不能冒充 owner；同内容改名重试仍只上传登记一次。"""
+async def test_agent_upload_uses_token_owner_and_deduplicates_physical_object(
+    e2e: SimpleNamespace,
+) -> None:
+    """请求体不能冒充 owner；幂等复放稳定，改名只新增逻辑资产。"""
     content = b'huanxing-imagelab-agent-upload-http-live-e2e-v1'
+    upload_key = f'imagelab-upload:{uuid.uuid4().hex}'
 
     first = await e2e.client.post(
         '/api/v1/hasn/agent/assets/upload',
         files={'file': ('first.png', content, 'image/png')},
         data={'width': '2', 'height': '3', 'owner_hasn_id': 'h_attacker'},
+        headers={'Idempotency-Key': upload_key},
     )
     assert first.status_code == 200, first.text
     first_data = first.json()['data']
@@ -188,29 +220,48 @@ async def test_agent_upload_uses_token_owner_and_is_idempotent(e2e: SimpleNamesp
     assert first_data['asset_uri'] == f'hasn://asset/{first_data["asset_id"]}'
     assert len(first_data['content_sha256']) == 64
 
-    retry = await e2e.client.post(
+    replay = await e2e.client.post(
+        '/api/v1/hasn/agent/assets/upload',
+        files={'file': ('first.png', content, 'image/png')},
+        data={'width': '2', 'height': '3'},
+        headers={'Idempotency-Key': upload_key},
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()['data']['asset_id'] == first_data['asset_id']
+
+    renamed = await e2e.client.post(
         '/api/v1/hasn/agent/assets/upload',
         files={'file': ('renamed.png', content, 'image/png')},
         data={'width': '2', 'height': '3'},
+        headers={'Idempotency-Key': f'imagelab-upload:{uuid.uuid4().hex}'},
     )
-    assert retry.status_code == 200, retry.text
-    assert retry.json()['data']['asset_id'] == first_data['asset_id']
+    assert renamed.status_code == 200, renamed.text
+    renamed_data = renamed.json()['data']
+    e2e.asset_ids.append(renamed_data['asset_id'])
+    assert renamed_data['asset_id'] != first_data['asset_id']
 
-    row = (
-        await e2e.session.execute(select(HasnAssets).where(HasnAssets.asset_id == first_data['asset_id']))
-    ).scalar_one()
-    assert row.owner_hasn_id == e2e.owner_hasn_id
-    count = (
+    rows = (
         await e2e.session.execute(
-            select(func.count())
-            .select_from(HasnAssets)
-            .where(
-                HasnAssets.owner_hasn_id == e2e.owner_hasn_id,
-                HasnAssets.content_sha256 == first_data['content_sha256'],
-            )
+            text(
+                'SELECT asset_id, owner_hasn_id, object_id FROM public.hasn_assets '
+                'WHERE asset_id = ANY(:ids) ORDER BY asset_id'
+            ),
+            {'ids': [first_data['asset_id'], renamed_data['asset_id']]},
+        )
+    ).mappings().all()
+    assert len(rows) == 2
+    assert {str(row['owner_hasn_id']) for row in rows} == {e2e.owner_hasn_id}
+    assert len({str(row['object_id']) for row in rows}) == 1
+    object_count = (
+        await e2e.session.execute(
+            text(
+                'SELECT COUNT(*) FROM public.hasn_storage_objects '
+                'WHERE owner_hasn_id = :owner AND sha256 = :sha256'
+            ),
+            {'owner': e2e.owner_hasn_id, 'sha256': first_data['content_sha256']},
         )
     ).scalar_one()
-    assert count == 1
+    assert object_count == 1
 
 
 async def test_agent_delivers_private_snapshot_once_with_stable_asset_uri(e2e: SimpleNamespace) -> None:
@@ -219,6 +270,7 @@ async def test_agent_delivers_private_snapshot_once_with_stable_asset_uri(e2e: S
         '/api/v1/hasn/agent/assets/upload',
         files={'file': ('source.png', b'imagelab-delivery-live-e2e', 'image/png')},
         data={'width': '4', 'height': '5'},
+        headers={'Idempotency-Key': f'imagelab-upload:{uuid.uuid4().hex}'},
     )
     assert upload.status_code == 200, upload.text
     asset = upload.json()['data']
@@ -294,6 +346,7 @@ async def test_agent_delivery_returns_deterministic_failure_for_missing_target(e
     upload = await e2e.client.post(
         '/api/v1/hasn/agent/assets/upload',
         files={'file': ('source.bin', b'imagelab-missing-target-live-e2e', 'application/octet-stream')},
+        headers={'Idempotency-Key': f'imagelab-upload:{uuid.uuid4().hex}'},
     )
     assert upload.status_code == 200, upload.text
     asset = upload.json()['data']
@@ -340,6 +393,7 @@ async def test_agent_cannot_deliver_another_owners_snapshot(e2e: SimpleNamespace
     upload = await e2e.client.post(
         '/api/v1/hasn/agent/assets/upload',
         files={'file': ('private.png', b'imagelab-foreign-owner-live-e2e', 'image/png')},
+        headers={'Idempotency-Key': f'imagelab-upload:{uuid.uuid4().hex}'},
     )
     assert upload.status_code == 200, upload.text
     asset_id = upload.json()['data']['asset_id']
