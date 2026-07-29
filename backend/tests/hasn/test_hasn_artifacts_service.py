@@ -662,14 +662,15 @@ async def test_list_by_session_filter_and_isolation() -> None:
     async with async_db_session() as db:
         try:
             await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
-            # 真实世界工作会话派发前 AppCollab launch 已把会话上云（hasn_sessions task 行）；
-            # 契约收紧后只发 session_id 的旧路径必须在册才回落绑会话（设计 §4.3 分流）。
+            # P2-8d 起工作会话轴只认显式 `work_session_id`（旧 session_id 收窄回落已退役）；
+            # 真实世界工作会话派发前 AppCollab launch 已把会话上云（hasn_sessions task 行），
+            # 本用例照此播种，使夹具贴近真实在册状态。
             await _make_work_session(db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=session, kind='task')
             await _make_work_session(
                 db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=other_session, kind='task'
             )
 
-            # 本会话产出两条：deck 应用资源 + publish 站点应用资源，同一 session_id。
+            # 本会话产出两条：deck 应用资源 + publish 站点应用资源，同一工作会话。
             # doc35：两者的 artifact_kind 都是 `resource`（怎么打开都是「据 URI 域跳应用」），
             # 「是什么」交给 resource_kind、「哪个应用」交给 source_app_id——旧的 kind='deck'/'webpage'
             # 是拿应用名当类型，恰是本次要根除的冗余。
@@ -684,7 +685,7 @@ async def test_list_by_session_filter_and_isolation() -> None:
                         source_kind='app_write',
                     title='季度汇报',
                     resource_uri='hasn://deck/d_srv_1',
-                    session_id=session,
+                    work_session_id=session,
                 ),
             )
             aid_web = await hasn_artifacts_service.record(
@@ -698,7 +699,7 @@ async def test_list_by_session_filter_and_isolation() -> None:
                         source_kind='app_write',
                     title='产品官网',
                     resource_uri='hasn://publish/w_srv_1',
-                    session_id=session,
+                    work_session_id=session,
                 ),
             )
             # 另一会话产出一条 → 反查本会话时不应出现。
@@ -713,7 +714,7 @@ async def test_list_by_session_filter_and_isolation() -> None:
                         source_kind='app_write',
                     title='别的会话',
                     resource_uri='hasn://deck/d_srv_2',
-                    session_id=other_session,
+                    work_session_id=other_session,
                 ),
             )
 
@@ -736,6 +737,44 @@ async def test_list_by_session_filter_and_isolation() -> None:
                 db, owner_hasn_id=owner, session_id=session
             )
             assert after_total == 1 and after_items[0].artifact_id == aid_deck
+        finally:
+            await db.rollback()
+
+
+async def test_session_id_never_binds_work_session_and_lands_in_metadata() -> None:
+    """P2-8d 回落退役钉子：只发混合语义 `session_id`（即使值恰好是在册 task 会话 id）
+    绝不绑工作会话列，一律挪 `metadata.runtime_session_id` 溯源。"""
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    session = _short_id('sess')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            await _make_work_session(db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=session, kind='task')
+
+            aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='旧通道登记',
+                    body='只发 session_id 的旧节点产物',
+                    source_kind='agent_note',
+                    session_id=session,
+                ),
+            )
+
+            # 工作会话轴不绑：按会话反查必须为空（收窄查询已不存在，无从命中）。
+            items, total = await hasn_artifacts_service.list_by_session(
+                db, owner_hasn_id=owner, session_id=session
+            )
+            assert total == 0 and items == [], 'session_id 绝不再回落占用工作会话列'
+
+            # 运行时 id 进 metadata 溯源（诚实留痕，不丢事实）。
+            detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=aid)
+            assert detail.metadata.get('runtime_session_id') == session
         finally:
             await db.rollback()
 
@@ -927,8 +966,10 @@ async def test_detail_and_soft_delete(monkeypatch: pytest.MonkeyPatch) -> None:
             await db.rollback()
 
 
-async def test_record_legacy_session_id_promotes_only_real_work_session() -> None:
-    """过渡兼容：旧节点只发 `session_id` 时，在册工作会话（task）照常回落绑上（设计 §4.3）。"""
+async def test_record_legacy_session_id_never_binds_even_when_task_registered() -> None:
+    """P2-8d 回落退役：只发 `session_id` 时，即使值恰好是在册工作会话（task）id 也绝不绑
+    工作会话列——一律挪 `metadata.runtime_session_id` 溯源（设计 §4.3：工作会话轴只认显式
+    `work_session_id`，现行节点全部显式直发，回落只服务混合语义时期的旧节点）。"""
     owner = _short_id('hasnOwner')
     agent = _short_id('aAgent')
     work_session = _short_id('sessWork')
@@ -955,15 +996,15 @@ async def test_record_legacy_session_id_promotes_only_real_work_session() -> Non
             artifact = (
                 await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid))
             ).scalar_one()
-            assert artifact.session_id == work_session
+            assert artifact.session_id is None, 'session_id 通道绝不再落当前态工作会话列'
             contribution = (
                 await db.execute(
                     select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == aid)
                 )
             ).scalar_one()
-            assert contribution.work_session_id == work_session
-            assert 'runtime_session_id' not in (contribution.meta_data or {}), (
-                '回落命中的就是工作会话本身，不得再标 runtime 溯源'
+            assert contribution.work_session_id is None, 'session_id 通道绝不再落参与记录工作会话列'
+            assert (contribution.meta_data or {}).get('runtime_session_id') == work_session, (
+                '混合语义值必须保留为 metadata 溯源'
             )
         finally:
             await db.rollback()

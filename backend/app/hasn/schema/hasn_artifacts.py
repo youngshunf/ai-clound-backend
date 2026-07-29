@@ -112,6 +112,8 @@ class RecordArtifactParam(SchemaBase):
     # 工作会话轴与运行时 session 是两回事（设计 §4.3）：前者是主人在工作会话页看到的那条会话，
     # 后者只是本次派发的运行时标识。历史上两者共用 `session_id` 入参，主会话派发时写进去的其实是
     # 运行时 ID，于是工作会话筛选里长期混着一批永远筛不出东西的值。新调用点一律用本字段。
+    # P2-8d 起旧「session_id 在册收窄」回落退役：`session_id` 只进 metadata.runtime_session_id
+    # 溯源，绝不再占工作会话列——工作会话归属只认本字段。
     work_session_id: str | None = Field(None, description='所属工作会话 id（只接受工作会话，不接受运行时 session）')
     tool_call_id: str | None = Field(
         None,

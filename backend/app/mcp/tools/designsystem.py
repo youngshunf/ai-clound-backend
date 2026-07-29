@@ -431,8 +431,8 @@ class DesignSystemSaveTool(BaseTool):
                     resource_kind='designsystem.spec',
                     server_id=str(ds_id),
                     # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`agent_context.session_id`
-                    # 是运行时/逻辑会话语义，直传会绕过在册收窄把工作会话列污染；缺省走
-                    # ContextVar 三级权威。
+                    # 是运行时/逻辑会话语义，直传会污染工作会话列；缺省走
+                    # ContextVar 两级权威。
                     agent_hasn_id=agent_context.agent_hasn_id,
                     owner_hasn_id=_owner_hasn_id(agent_context),
                     title=(title or '').strip() or '设计系统',
@@ -441,6 +441,7 @@ class DesignSystemSaveTool(BaseTool):
         except Exception as e:  # 独立事务本身开/提交失败（接缝内部已吞登记错），仍 best-effort
             log.warning('[designsystem] register-on-write 事务失败（非致命）: %s', e)
             return None
+
 
 class DesignSystemListTool(BaseTool):
     """`hasn.designsystem.list`：列出分身可见的设计系统（builtin∪owner∪企业∪共享，cloud-hosted）。"""
