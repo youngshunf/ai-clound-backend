@@ -551,18 +551,18 @@ uv run prek run --files <B3-02 变更文件>
 本机没有 Docker，因此 Compose 真实启动和 RDB 恢复只允许在生产蓝绿窗口执行，未以
 替代服务伪造结果。
 
-### 6.2 生产 Redis 精确归属
+### 6.2 生产 Redis 精确归属纠偏
 
-2026-07-30 04:45 CST 只读盘点确认生产有两个不同实例：
+2026-07-30 04:45 CST 的首次只读盘点确认生产有两个不同实例：
 
-- 项目实例为 systemd `redis-server.service`，进程
+- 应用当前配置指向 systemd `redis-server.service`，进程
   `/usr/bin/redis-server 127.0.0.1:9396`，数据目录 `/var/lib/redis`，
   Redis 6.0.16；
 - `*:6379` 实际可执行文件为 `/usr/local/bin/valkey-server`，属于另一服务，
   本方案不触碰。
 
-项目配置使用 `127.0.0.1:9396`、DB 3 和独立密码；当前协议仍为 RESP2，LIST
-移动仍为 Lua。项目 Redis 的关键只读状态为：
+应用配置使用 `127.0.0.1:9396`、DB 3；当前协议仍为 RESP2，LIST 移动仍为 Lua。
+首次盘点的实例级只读状态为：
 
 ```text
 memory = 6.00 MiB / peak 96.57 MiB
@@ -575,6 +575,20 @@ nonempty_db = 0, 1, 3, 5, 6, 10
 db3 = 196 keys（hash 3 / list 1 / set 3 / string 188 / zset 1）
 ```
 
+蓝绿冻结窗口进一步按 `CLIENT LIST` 的数据库、进程和工作目录核对后，确认
+`127.0.0.1:9396` 并不是本项目独占实例，而是至少被以下现存服务共享：
+
+- `/www/wwwroot/java/dc_star`、`java/jpay/merchant`、`java/llf`、
+  `java/tongyu`、`java/engineer`；
+- lottery 项目的 Celery/API；
+- `api.xingya.dcfuture.cn`；
+- 本项目 API/worker/beat/Flower/IM/sync 服务。
+
+核对时约有 242 个客户端，连接分布于 DB 0、1、3、5、6、8、10；同一 DB 3
+也存在其他应用使用的通用 FBA 前缀。仅凭本项目 `.env` 的 DB 3 无法证明 key
+命名空间归属，更不能把整个实例升级解释为“只迁移本项目”。此前“项目实例”的表述
+不准确，以本节纠偏结论为准。
+
 生产部署前快照位于：
 
 ```text
@@ -582,7 +596,51 @@ db3 = 196 keys（hash 3 / list 1 / set 3 / string 188 / zset 1）
 ```
 
 其中 PostgreSQL dump、代码归档和 env 快照均为权限 `0600`，`SHA256SUMS` 已校验。
-Redis 8.8 的 `9397` 端口尚未启动，B3-02 生产蓝绿切换仍为待执行。
+
+### 6.3 Redis 8.8 真实恢复、核验与安全中止
+
+2026-07-30 05:45 CST 在停止本项目精确服务后生成最终冻结快照：
+
+```text
+/data2/backups/redis8-cutover-20260730-054538
+```
+
+`redis6-final.rdb` 为 63,792 bytes，使用真实 `redis-check-rdb` 校验通过并读取
+223 个 key。首次生产 bootstrap 暴露并修复了两个真实问题：
+
+1. 官方 Redis 镜像 entrypoint 会把 `redis-check-rdb` 当作 `redis-server`
+   参数；改为显式 `--entrypoint redis-check-rdb`，实现提交 `64de3d0a`，
+   主分支合入提交 `afd64f1de`；
+2. 初始即启用 AOF 会生成空 AOF 并优先于导入 RDB，导致目标实例空载启动；改为
+   先以 RDB 启动并强制 `loaded_keys > 0`，再在线启用 AOF、等待 rewrite、持久化
+   配置、重启并复核 key 数，实现提交 `e4b116d8`，主分支合入提交
+   `2e609889d`。
+
+首次空载产物没有删除，已隔离到可追溯目录：
+
+```text
+/data2/backups/redis8-failed-empty-import-20260730-054923
+```
+
+修复后真实 Redis 8.8.0 容器 `huanxing-redis8` 在回环端口 `9397` 健康运行，
+恢复时载入 192 个尚未过期的 key，随后开启 AOF 并通过重启验证。快照核验对所有
+可比较的 190 个 key 做了跨 DB 类型、值摘要和 TTL 对比，全部一致；源端多出的
+3 个 key 均为仍在刷新或临近过期的短 TTL key，分别位于 DB 0 和 DB 6。这一持续
+写入现象与 `CLIENT LIST` 共同暴露了共享实例事实。
+
+因为无法证明 DB 3 及通用前缀为本项目独占，继续分批切换会造成跨应用双写分叉；
+把所有共享调用方一并迁移又超出本任务授权范围。因此 B3-02 在写入任何应用 `.env`
+之前安全中止：
+
+- 本项目六个精确服务全部恢复到 Redis 6 并为 `RUNNING`；
+- API 路径恢复，RabbitMQ Celery queue 为 `ready=0/unacked=0`；
+- 生产 `.env` 仍指向 `127.0.0.1:9396`；
+- Redis 8.8 保持隔离、不接生产应用流量，供后续真实测试与重新规划使用；
+- 未停止、重启或迁移任何其他共享调用方。
+
+B3-02 当前不是“待执行”，而是“已完成恢复验证、生产切换被共享实例归属门禁阻断”。
+解除门禁必须先获得共享 Redis 全部调用方的迁移授权，或完成可证明无交叉读写的
+独立命名空间迁移方案；不能为了勾选任务而绕过该安全边界。
 
 ## 7. B4-01 Socket.IO 消息管理器工厂
 
@@ -609,9 +667,22 @@ uv run prek run --files <B4-01 变更文件>
 => 全部 hooks 通过
 ```
 
-跳过项是必须连接真实 RabbitMQ 的双 Uvicorn、双 Socket.IO 客户端互通测试；该测试已
-入库，须在生产服务器使用现有 `huanxing_realtime` 凭据执行。生产
-`SOCKETIO_MANAGER` 仍为 `redis`，尚未切换。
+2026-07-30 在生产服务器使用真实 RabbitMQ、两个独立 API 进程、两个真实 WebSocket
+客户端和同步 publisher 执行该 E2E：
+
+```text
+RABBITMQ_SOCKETIO_E2E=1 uv run --frozen --env-file .env pytest \
+  backend/tests/socketio/test_manager_factory_rabbitmq_e2e.py -q
+=> 1 passed, 60 warnings in 7.61s
+```
+
+依赖同步还暴露出 `aio-pika` 只位于可选 `server` dependency group，导致生产
+`uv sync --frozen` 后运行时缺包。已把它移入项目运行时依赖，测试覆盖冻结安装契约；
+实现提交为 `8f1ffa15`，主分支合入提交为 `60dd788c7`。修复部署后 API、worker、
+beat、Flower、IM consumer 和 sync worker 均恢复 `RUNNING`。
+
+这证明 Redis/RabbitMQ 两种 factory 路径与 RabbitMQ 跨进程互通真实可用。生产
+`SOCKETIO_MANAGER` 仍为 `redis`，按 B2 观察门槛尚未提前切换。
 
 ## 8. B5-01 realtime wake-up port 与 Redis adapter
 
@@ -641,16 +712,134 @@ uv run prek run --files <B5-01 变更文件>
 => 全部 hooks 通过
 ```
 
-B5-01 仅完成零行为变化抽象；RabbitMQ realtime adapter、shadow 和生产切换属于
-B5-02/B5-03，尚未提前启用。
+B5-01 仅完成零行为变化抽象；生产默认配置保持 Redis active。
 
-## 9. 后续证据索引
+## 9. B5-02/B5-03 RabbitMQ realtime 与 shadow 对账
+
+### 9.1 实现与静态验证
+
+实现提交为 `7db54fe8`，主分支合入提交为 `9a098a1d4`。新增实现满足以下契约：
+
+- robust fanout exchange 固定为 `huanxing.realtime`；
+- 每个 worker 使用稳定、受限字符集的 instance ID 声明
+  `huanxing.realtime.worker.<instance_id>`，queue 为 exclusive、auto-delete，
+  并设置 5 分钟 `x-expires`；
+- 消息只含严格版本、`event_id`、`sent_at_ms`、事件类型及最小唤醒字段，使用
+  non-persistent delivery；畸形 schema 告警并 ACK，不 requeue；
+- Redis active / RabbitMQ shadow 以同一业务意图双发，shadow consumer 只观测
+  `event_id`，不调用用户 handler；
+- RabbitMQ active 与 shadow 同时开启属于非法组合，启动阶段显式失败；
+- 发布、消费、schema 错误和端到端延迟均接入低基数 Prometheus 指标；
+- bus 在 worker 内惰性构造，避免 prefork 前复制连接或 instance ID；关闭时按
+  consumer、channel、connection 顺序释放。
+
+本地验证结果：
+
+```text
+uv run pytest backend/tests/hasn/test_rabbitmq_realtime_bus.py \
+  backend/tests/hasn/test_ws_delivery_bus.py \
+  backend/app/hasn_im/tests/test_routing_delivery_bus.py \
+  backend/tests/test_rabbitmq_settings.py -q
+=> 53 passed, 2 skipped, 96 warnings
+
+uv run mypy backend/app/hasn_im/ports/ \
+  backend/app/hasn_im/adapters/routing/ \
+  backend/app/hasn_im/observability/metrics.py backend/core/registrar.py
+=> Success: no issues found in 22 source files
+
+uv run prek run --files <B5-02/B5-03 变更文件>
+=> 全部 hooks 通过
+```
+
+### 9.2 生产 RabbitMQ 四 worker 与重连
+
+2026-07-30 使用生产 RabbitMQ 和 `huanxing_realtime` 最小权限账号启动四个独立
+realtime bus。真实定向、广播和单 worker 原位停止/重启共 3 个事件均向四个
+consumer 各投递一次；重启前后临时 queue 名保持稳定，每个 worker 观测到的
+`event_id` 集合与发布集合严格相等：
+
+```text
+RABBITMQ_REALTIME_E2E=1 uv run --frozen --env-file .env pytest \
+  backend/tests/hasn/test_rabbitmq_realtime_bus.py::\
+test_real_rabbitmq_fanout_to_four_workers_and_restart -q
+=> 1 passed, 60 warnings in 0.44s
+```
+
+### 9.3 十万条真实 shadow 对账
+
+shadow E2E 使用隔离 Redis 8.8 的 DB 15 作为 active、生产 RabbitMQ 作为
+observe-only shadow；凭据仅以测试进程环境注入，没有写入生产 `.env`。
+
+第一次真实运行在首批并发 200 个 Redis publish 时触发 redis-py 8 默认连接池上限
+100 的 `MaxConnectionsError`。失败没有被重试掩盖：测试驱动改为读取真实连接池上限，
+并把并发限制在“最多 50 且不超过连接池一半”，为订阅与同进程操作保留容量。修复提交
+为 `559a6bca`，主分支合入提交为 `c63249ed9`；本地 `20 passed, 2 skipped`、
+mypy 与 prek 全部通过。
+
+修复后的生产真实结果：
+
+```text
+RABBITMQ_REALTIME_SHADOW_STRESS_E2E=1 \
+HASN_REALTIME_BUS=redis HASN_REALTIME_SHADOW_RABBITMQ=true \
+uv run --frozen --env-file .env pytest \
+  backend/tests/hasn/test_rabbitmq_realtime_bus.py::\
+test_real_shadow_reconciles_one_hundred_thousand_event_ids -q
+=> 1 passed, 60 warnings in 61.47s
+```
+
+断言覆盖：
+
+```text
+published_event_ids = 100000
+rabbitmq_consumed_event_ids = published_event_ids
+redis_active_user_handler_calls = 100000
+rabbitmq_shadow_user_handler_calls = 0
+```
+
+退出后 RabbitMQ 没有遗留 `huanxing.realtime.worker.*` queue，Redis 8 DB 15
+`DBSIZE=0` 且 `hasn:ws:deliver` 订阅数为 0；Celery 默认 queue 仍为
+`ready=0/unacked=0`，六个精确生产服务均为 `RUNNING`。生产
+`HASN_REALTIME_BUS` 仍为 `redis`，`HASN_REALTIME_SHADOW_RABBITMQ` 仍关闭；
+正式 shadow 观察窗受 B3-02 依赖门禁约束，尚未提前开启。
+
+### 9.4 隔离 broker 真实重启恢复
+
+2026-07-30 在生产服务器额外启动固定名称
+`huanxing-rabbitmq-realtime-e2e` 的隔离 RabbitMQ 4.3.4 容器，镜像 digest
+与生产锁版一致，仅映射回环固定端口 `35672`。测试先完成一次真实发布与消费，
+再通过 Docker CLI 重启该隔离 broker；全程未停止或重启生产 RabbitMQ。
+
+首次真实重启暴露出 adapter 缓存的 robust exchange 在 broker 重启后已经失效：
+发布会抛出 `ChannelInvalidStateError`。修复后 publisher 会在锁内等待 robust
+channel 恢复；未恢复时原子摘除旧 channel/connection 并重建。若 publish 已取得
+exchange 后失败，则沿用同一 `event_id` 最多重放一次；唤醒消息不承载业务事实，
+可能重复由既有 pending/generation 语义幂等收敛。该修复提交为 `8696e9b6`，
+主分支合入提交为 `2487ae747`。
+
+真实验证结果：
+
+```text
+RABBITMQ_REALTIME_RESTART_E2E=1 \
+RABBITMQ_REALTIME_RESTART_CONTAINER=huanxing-rabbitmq-realtime-e2e \
+uv run --frozen --env-file .env pytest \
+  backend/tests/hasn/test_rabbitmq_realtime_bus.py::\
+test_real_rabbitmq_recovers_after_isolated_broker_restart -q
+=> 1 passed, 60 warnings in 10.18s
+```
+
+断言覆盖重启前后两个定向事件按顺序抵达、queue 名保持稳定，且 API 进程无需重启。
+测试退出后固定容器、数据卷均不存在，端口 `35672` 空闲；生产 RabbitMQ 仍为
+`running/healthy`，六个精确生产服务全部为 `RUNNING`。当前尚未把“真实 Redis
+pending、四个完整 API worker、broker 停机与周期 drain”合并为一个端到端拓扑，
+因此 B5-02 的对应组合验收项保持未勾选。
+
+## 10. 后续证据索引
 
 | 阶段 | 证据 |
 |---|---|
 | B0–B2 | 本文持续补充；生产部署记录另存父仓 `docs/生产部署/部署记录/` |
-| B3 | B3-01 见第 5 节；B3-02 护栏与预检见第 6 节，蓝绿切换待执行 |
-| B4 | 实现见第 7 节，生产真实互通与切换待执行 |
-| B5 | B5-01 见第 8 节；B5-02/B5-03 待执行 |
+| B3 | B3-01 见第 5 节；B3-02 见第 6 节，恢复核验已完成，生产切换被共享实例归属门禁阻断 |
+| B4 | 实现和生产真实互通见第 7 节，正式切换等待观察门槛 |
+| B5 | B5-01 见第 8 节；B5-02/B5-03 实现及生产真实测试见第 9 节 |
 | B6 | 待 offline sync 后端/daemon 分支建立后登记 |
 | B7 | 待可观测与最终生产收口分支建立后登记 |
