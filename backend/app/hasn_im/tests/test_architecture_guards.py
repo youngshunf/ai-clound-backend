@@ -211,6 +211,24 @@ def test_relation_gateway_never_falls_back_to_python_session():
     assert 'im_service_db_session' in source
 
 
+def test_contacts_presence_audience_query_uses_im_role():
+    """联系人在线态受众查询必须使用 IM role，不能借普通 Python 会话跨域读表。"""
+    path = _BACKEND_ROOT / 'app/hasn_im/api/ws_node.py'
+    tree = _parse(path)
+    assert tree is not None
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == '_push_contacts_presence_invalidation'
+    )
+    source = ast.get_source_segment(path.read_text(encoding='utf-8'), handler)
+
+    assert source is not None
+    assert 'async with im_service_db_session() as db:' in source
+    assert 'async with async_db_session() as db:' not in source
+
+
 def test_relation_writes_are_closed_behind_gateway():
     """联系人业务入口不得再直接调用 DAO/service 写方法。"""
     business_paths = (
