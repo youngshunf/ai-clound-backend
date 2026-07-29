@@ -517,16 +517,140 @@ uv run prek run --files <B3-01 变更文件>
 固定中文 nickname 撞唯一约束，与本阶段 Redis/WS 文件无关；未删除未知归属测试数据
 来伪造全绿。
 
-B3-01 已完成。B3-02 仍须先精确识别生产主机上的项目 Redis 实例，再执行新端口
-部署、RDB 恢复、逐服务切换和 24 小时观察，本文不提前标记生产升级完成。
+B3-01 已完成。B3-02 仍须执行新端口部署、RDB 恢复、逐服务切换和 24 小时观察，
+本文不提前标记生产升级完成。
 
-## 6. 后续证据索引
+## 6. B3-02 Redis 8.8 蓝绿部署护栏与生产预检
+
+### 6.1 可复现部署与快照核验
+
+实现提交为 `29a6defe`，主分支合入提交为 `3db58a822`。`deploy/redis8/`
+新增以下可执行护栏：
+
+- 使用 digest 锁定官方 Redis 8.8.0 镜像，只监听回环地址 `9397`；
+- 启用强密码、RDB、AOF `everysec`、`noeviction` 和 512 MiB 上限；
+- bootstrap 在启动前校验 secret 文件权限、RDB 可读性和目录边界；
+- healthcheck 不把密码放入进程参数；
+- 只读快照核验覆盖 16 个 DB、全部 Redis 数据类型、TTL、DBSIZE 和
+  `MEMORY STATS`，只输出摘要和 digest，不输出原始 key、URL 或业务值；
+- 双 Redis 真实测试验证源实例不被修改、目标实例恢复后摘要一致。
+
+验证结果：
+
+```text
+REDIS8_E2E=1 uv run pytest backend/tests/test_redis8_integration.py -q
+=> 7 passed
+
+uv run mypy backend/
+=> Success: no issues found in 3003 source files
+
+uv run prek run --files <B3-02 变更文件>
+=> 全部 hooks 通过
+```
+
+本机没有 Docker，因此 Compose 真实启动和 RDB 恢复只允许在生产蓝绿窗口执行，未以
+替代服务伪造结果。
+
+### 6.2 生产 Redis 精确归属
+
+2026-07-30 04:45 CST 只读盘点确认生产有两个不同实例：
+
+- 项目实例为 systemd `redis-server.service`，进程
+  `/usr/bin/redis-server 127.0.0.1:9396`，数据目录 `/var/lib/redis`，
+  Redis 6.0.16；
+- `*:6379` 实际可执行文件为 `/usr/local/bin/valkey-server`，属于另一服务，
+  本方案不触碰。
+
+项目配置使用 `127.0.0.1:9396`、DB 3 和独立密码；当前协议仍为 RESP2，LIST
+移动仍为 Lua。项目 Redis 的关键只读状态为：
+
+```text
+memory = 6.00 MiB / peak 96.57 MiB
+connected_clients = 249
+evicted_keys = 0
+rejected_connections = 0
+rdb_last_bgsave_status = ok
+aof_enabled = 0
+nonempty_db = 0, 1, 3, 5, 6, 10
+db3 = 196 keys（hash 3 / list 1 / set 3 / string 188 / zset 1）
+```
+
+生产部署前快照位于：
+
+```text
+/data2/backups/方案B-B3B4预部署-20260730-044937
+```
+
+其中 PostgreSQL dump、代码归档和 env 快照均为权限 `0600`，`SHA256SUMS` 已校验。
+Redis 8.8 的 `9397` 端口尚未启动，B3-02 生产蓝绿切换仍为待执行。
+
+## 7. B4-01 Socket.IO 消息管理器工厂
+
+实现提交为 `732f05e8`，主分支合入提交为 `356c45e67`。默认
+`SOCKETIO_MANAGER=redis` 保持既有 `AsyncRedisManager` / `RedisManager`；
+RabbitMQ 模式使用 `AsyncAioPikaManager` / `KombuManager`，统一 channel
+`huanxing.socketio`，并为每个进程声明符合生产权限边界的
+`python-socketio.<uuid>` exclusive、auto-delete queue。API 与 Celery 启动均执行
+连接预检，失败显式阻断启动，不回退到 Redis。
+
+本地验证结果：
+
+```text
+uv run pytest backend/tests/socketio/ -q
+=> 21 passed, 1 skipped
+
+uv run pytest <B3/B4 相关测试> -q
+=> 46 passed, 1 skipped, 140 warnings
+
+uv run mypy backend/
+=> Success: no issues found in 3003 source files
+
+uv run prek run --files <B4-01 变更文件>
+=> 全部 hooks 通过
+```
+
+跳过项是必须连接真实 RabbitMQ 的双 Uvicorn、双 Socket.IO 客户端互通测试；该测试已
+入库，须在生产服务器使用现有 `huanxing_realtime` 凭据执行。生产
+`SOCKETIO_MANAGER` 仍为 `redis`，尚未切换。
+
+## 8. B5-01 realtime wake-up port 与 Redis adapter
+
+实现提交为 `0e323c25`，主分支合入提交为 `7da98542e`。新增
+`RealtimeWakeupBus`，只暴露 `publish_node_wakeup`、`publish_broadcast`、
+`start`、`stop`；Redis Pub/Sub 的连接、频道、消息编解码、重连和资源释放全部移入
+`RedisRealtimeWakeupBus`。`WsDeliveryBus` 继续原位负责 pending/processing LIST、
+generation 校验、发送确认和周期补偿，不再创建 Redis Pub/Sub 连接。
+
+真实 Redis 8.8 测试使用两个独立真实客户端验证 adapter 的定向唤醒、广播、订阅就绪
+和停止释放；既有定向、广播、generation、processing 恢复语义未改。
+
+```text
+uv run pytest backend/tests/hasn/test_realtime_wakeup_bus_port.py \
+  backend/tests/hasn/test_ws_delivery_bus.py \
+  backend/app/hasn_im/tests/test_routing_delivery_bus.py -q
+=> 19 passed, 96 warnings
+
+REDIS8_E2E=1 uv run pytest backend/tests/test_redis8_integration.py -q
+=> 8 passed, 60 warnings
+
+uv run mypy backend/app/hasn_im/ports/ \
+  backend/app/hasn_im/adapters/routing/
+=> Success: no issues found in 18 source files
+
+uv run prek run --files <B5-01 变更文件>
+=> 全部 hooks 通过
+```
+
+B5-01 仅完成零行为变化抽象；RabbitMQ realtime adapter、shadow 和生产切换属于
+B5-02/B5-03，尚未提前启用。
+
+## 9. 后续证据索引
 
 | 阶段 | 证据 |
 |---|---|
 | B0–B2 | 本文持续补充；生产部署记录另存父仓 `docs/生产部署/部署记录/` |
-| B3 | B3-01 见本文第 5 节；B3-02 蓝绿切换待执行 |
-| B4 | 待 Socket.IO 分支建立后登记 |
-| B5 | 待 realtime 分支建立后登记 |
+| B3 | B3-01 见第 5 节；B3-02 护栏与预检见第 6 节，蓝绿切换待执行 |
+| B4 | 实现见第 7 节，生产真实互通与切换待执行 |
+| B5 | B5-01 见第 8 节；B5-02/B5-03 待执行 |
 | B6 | 待 offline sync 后端/daemon 分支建立后登记 |
 | B7 | 待可观测与最终生产收口分支建立后登记 |
