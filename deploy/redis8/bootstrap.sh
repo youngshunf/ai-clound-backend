@@ -66,8 +66,9 @@ docker run --rm \
   --security-opt no-new-privileges:true \
   --cap-drop ALL \
   --mount "type=bind,src=$staged_rdb,dst=/input/dump.rdb,readonly" \
+  --entrypoint redis-check-rdb \
   "$image" \
-  redis-check-rdb /input/dump.rdb
+  /input/dump.rdb
 
 mv "$staged_rdb" "$data_root/data/dump.rdb"
 trap - EXIT
