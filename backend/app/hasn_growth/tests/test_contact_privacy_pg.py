@@ -883,6 +883,7 @@ async def test_owner_reveal_http_uses_real_jwt_and_enterprise_acl() -> None:
         channel_id = int(private['channels'][0]['id'])
         setup.add(
             Customer(
+                customer_no=f'PII-{marker[:16]}',
                 user_id=manager.id,
                 lead_contact_id=lead_contact_id,
                 source_kind='manual',
