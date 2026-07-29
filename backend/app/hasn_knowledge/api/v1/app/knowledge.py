@@ -417,6 +417,17 @@ async def get_document(request: Request, db: CurrentSession, doc_id: int) -> Res
     return response_base.success(data=await knowledge_service.get_document(db, kb.owner_id, doc_id))
 
 
+@router.get(
+    '/documents/{doc_id}/edit-access',
+    summary='确认当前主人可编辑文档（只判权，不修改）',
+    dependencies=[DependsJwtAuth],
+)
+async def check_document_edit_access(request: Request, db: CurrentSession, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    await knowledge_service.authorize_doc(db, subject=Subject.human(owner_id), doc_id=doc_id, need='editor')
+    return response_base.success(data={'doc_id': doc_id})
+
+
 @router.delete('/documents/{doc_id}', summary='删文档（引擎副本删净）', dependencies=[DependsJwtAuth])
 async def delete_document(request: Request, db: CurrentSessionTransaction, doc_id: int) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
@@ -473,7 +484,14 @@ async def create_native_document(
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_kb(db, subject=Subject.human(owner_id), kb_id=kb_id, need='editor')
     data = await knowledge_service.create_native_document(
-        db, kb.owner_id, kb_id, title=body.title, content=body.content, folder_id=body.folder_id, source='ui'
+        db,
+        kb.owner_id,
+        kb_id,
+        title=body.title,
+        content=body.content,
+        folder_id=body.folder_id,
+        source='ui',
+        asset_actor_id=owner_id,
     )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.create_native_doc',
@@ -497,6 +515,7 @@ async def update_document(
         folder_id=body.folder_id,
         move_to_root=body.move_to_root,
         source='ui',
+        asset_actor_id=owner_id,
     )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.update_document',
@@ -536,7 +555,14 @@ async def restore_version(
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_doc(db, subject=Subject.human(owner_id), doc_id=doc_id, need='editor')
-    data = await knowledge_service.restore_version(db, kb.owner_id, doc_id, version_no, source='ui')
+    data = await knowledge_service.restore_version(
+        db,
+        kb.owner_id,
+        doc_id,
+        version_no,
+        source='ui',
+        asset_actor_id=owner_id,
+    )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.restore_version',
         context={'doc_id': doc_id, 'version_no': version_no, 'actor': owner_id},

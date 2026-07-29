@@ -5522,6 +5522,16 @@ class OwnerStorageService:
         asset_uri = f'hasn://asset/{asset_id}'
         for reference in references:
             resource_uri = reference['resource_uri']
+            if reference['role'] == 'inline_image':
+                # 正文图片可能同时存在于当前正文和不可变历史版本，通用 file-source 墓碑不能安全改写。
+                # 要回收该资产，必须先删除引用它的知识文档；文档删除会原子停用全部 inline binding。
+                raise errors.ConflictError(
+                    msg='STORAGE_INLINE_IMAGE_IN_USE',
+                    data={
+                        'resource_uri': resource_uri,
+                        'action': '请先删除引用该图片的知识文档，再彻底删除资产',
+                    },
+                )
             updated = 0
             if resource_uri.startswith('hasn://messages/c/'):
                 message_location = resource_uri.removeprefix('hasn://messages/c/')
