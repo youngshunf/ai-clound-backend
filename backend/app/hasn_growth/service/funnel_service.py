@@ -126,7 +126,9 @@ def _apply_masked_private_contact(
     if private_contact is None:
         return lead
     lead['contact_name'] = private_contact.get('contact_name')
-    for channel in private_contact.get('channels', []):
+    channels = private_contact.get('channels', [])
+    lead['channels'] = channels
+    for channel in channels:
         channel_name = channel.get('channel')
         if channel_name in {'email', 'phone', 'wechat'}:
             lead[channel_name] = channel.get('masked_value')
@@ -735,16 +737,27 @@ class GrowthFunnelService:
         # 单条轻量 SELECT，免去把 scope 透传到每个调用点（DRY）。
         cust = (
             await db.execute(
-                sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(
-                    Customer.id == customer_id
+                sa
+                .select(
+                    Customer.growth_project_id,
+                    Customer.owner_scope,
+                    Customer.enterprise_id,
+                    Customer.assignee,
                 )
+                .where(Customer.id == customer_id)
             )
         ).first()
-        o_scope, ent_id, assignee = cust or ('personal', None, None)
+        project_id, o_scope, ent_id, assignee = cust or (
+            None,
+            'personal',
+            None,
+            None,
+        )
         activity = Activity(
             customer_id=customer_id,
             opportunity_id=opportunity_id,
             user_id=user_id,
+            growth_project_id=project_id,
             kind=kind,
             content=redact_pii_value(content),
             actor_kind=actor_kind,

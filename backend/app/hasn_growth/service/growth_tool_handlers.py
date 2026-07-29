@@ -43,6 +43,9 @@ from backend.app.hasn_growth.service.opportunity_flow_service import growth_oppo
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.pii import redact_pii_value
 from backend.app.hasn_growth.service.pii_boundary import assert_growth_pii_payload_safe
+from backend.app.hasn_growth.service.project_customer_service import (
+    project_customer_service,
+)
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
@@ -543,27 +546,25 @@ async def handle_growth_customer_list(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent, view=str(input_payload.get('view', 'team')))
-    items = await growth_funnel_service.list_customers(
+    return await project_customer_service.list_customers(
         db,
-        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        scope=scope,
+        page=int(input_payload.get('page', 1)),
+        size=int(input_payload.get('size', 20)),
         lifecycle_status=input_payload.get('lifecycle_status'),
         assignee=input_payload.get('assignee'),
-        limit=int(input_payload.get('limit', 20)),
-        reveal_pii=_reveal(agent),
-        scope=scope,
     )
-    return {'items': items, 'scope': scope.to_meta()}
 
 
 async def handle_growth_customer_get(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
-    return await growth_funnel_service.get_customer(
+    return await project_customer_service.get_customer_detail(
         db,
-        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
         customer_id=_int(input_payload, 'customer_id'),
-        reveal_pii=_reveal(agent),
         scope=scope,
     )
 
@@ -572,19 +573,31 @@ async def handle_growth_customer_timeline(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> list[dict[str, Any]]:
     scope = await _scope(db, agent)
-    return await growth_funnel_service.customer_timeline(
-        db, user_id=agent.owner_user_id, customer_id=_int(input_payload, 'customer_id'), scope=scope
+    detail = await project_customer_service.get_customer_detail(
+        db,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        customer_id=_int(input_payload, 'customer_id'),
+        scope=scope,
     )
+    return detail['activities']
 
 
 async def handle_growth_customer_update_profile(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    customer_id = _int(input_payload, 'customer_id')
+    await project_customer_service.get_customer(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
     result = await growth_funnel_service.update_customer_profile(
         db,
         user_id=agent.owner_user_id,
-        customer_id=_int(input_payload, 'customer_id'),
+        customer_id=customer_id,
         profile=input_payload.get('profile'),
         intent_score=input_payload.get('intent_score'),
         tags=input_payload.get('tags'),
@@ -600,7 +613,14 @@ async def handle_growth_activity_log(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
     customer_id = _int(input_payload, 'customer_id')
+    await project_customer_service.get_customer(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
     result = await growth_funnel_service.log_activity(
         db,
         user_id=agent.owner_user_id,
@@ -674,13 +694,28 @@ async def handle_growth_customer_reassign(
 ) -> dict[str, Any]:
     # 分身代经理主人分配负责人；非经理由 service can_manage_assignment 拒。
     scope = await _scope(db, agent, view='team')
-    return await growth_funnel_service.reassign_customer(
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    customer_id = _int(input_payload, 'customer_id')
+    await project_customer_service.get_customer(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    result = await growth_funnel_service.reassign_customer(
         db,
         user_id=agent.owner_user_id,
-        customer_id=_int(input_payload, 'customer_id'),
+        customer_id=customer_id,
         new_assignee=str(input_payload['assignee']),
         scope=scope,
     )
+    registration = await _register_growth_customer(
+        db,
+        agent,
+        result,
+        source_tool='hasn.growth.customer.reassign',
+    )
+    return merge_resource_uri(result, registration)
 
 
 # ---------------- 触达 ----------------
@@ -719,13 +754,13 @@ async def handle_growth_outreach_status(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> list[dict[str, Any]]:
     scope = await _scope(db, agent)
-    return await growth_outreach_service.list_customer_outreach(
+    detail = await project_customer_service.get_customer_detail(
         db,
-        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
         customer_id=_int(input_payload, 'customer_id'),
-        limit=int(input_payload.get('limit', 50)),
         scope=scope,
     )
+    return detail['outreach'][: int(input_payload.get('limit', 50))]
 
 
 # ---------------- 商机 / 成交 ----------------

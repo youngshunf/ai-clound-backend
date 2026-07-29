@@ -98,7 +98,11 @@ class GrowthFormService:
     """表单回流：门禁 → 去标识提交 → 私有联系人 → 客户。"""
 
     @staticmethod
-    async def _resolve_owner(db: AsyncSession, *, publish_ref: str) -> tuple[int, str, Site]:
+    async def _resolve_owner(
+        db: AsyncSession,
+        *,
+        publish_ref: str,
+    ) -> tuple[int, str, Site, GrowthProject]:
         """按服务端 Growth 绑定解析落地页；普通公开制品不能伪装成获客表单。"""
         site = (
             await db.execute(
@@ -134,7 +138,7 @@ class GrowthFormService:
         ).scalar_one_or_none()
         if not human or human.user_id != project.user_id:
             raise errors.NotFoundError(msg='落地页归属主人不存在')
-        return human.user_id, site.owner_id, site
+        return human.user_id, site.owner_id, site, project
 
     @staticmethod
     async def _find_private_contact_id(
@@ -238,6 +242,7 @@ class GrowthFormService:
         db: AsyncSession,
         *,
         user_id: int,
+        growth_project_id: str,
         company: str | None,
         lead_contact_id: int,
     ) -> Customer:
@@ -246,6 +251,7 @@ class GrowthFormService:
         insert = pg_insert(Customer).values(
             customer_no=_gen_no('CUS'),
             user_id=user_id,
+            growth_project_id=growth_project_id,
             lead_contact_id=lead_contact_id,
             source_kind='inbound_form',
             company_name=company,
@@ -268,9 +274,12 @@ class GrowthFormService:
             (
                 await db.execute(
                     insert.on_conflict_do_update(
-                        index_elements=[Customer.user_id, Customer.lead_contact_id],
+                        index_elements=[
+                            Customer.growth_project_id,
+                            Customer.lead_contact_id,
+                        ],
                         index_where=sa.and_(
-                            Customer.owner_scope == 'personal',
+                            Customer.growth_project_id.is_not(None),
                             Customer.lead_contact_id.is_not(None),
                         ),
                         set_={
@@ -314,7 +323,10 @@ class GrowthFormService:
             )
         keyring = require_growth_pii_keyring()
         await ensure_growth_pii_key_write_fence(db, keyring=keyring)
-        user_id, _owner, site = await cls._resolve_owner(db, publish_ref=publish_ref)
+        user_id, _owner, site, project = await cls._resolve_owner(
+            db,
+            publish_ref=publish_ref,
+        )
 
         email = _clean_optional(data.get('email'), max_length=255)
         phone = _clean_optional(data.get('phone'), max_length=50)
@@ -396,6 +408,8 @@ class GrowthFormService:
 
         submission = FormSubmission(
             user_id=user_id,
+            growth_project_id=project.id,
+            platform_project_id=project.platform_project_id,
             publish_ref=publish_ref,
             publish_site_id=site.id,
             submission_fingerprint=fingerprint,
@@ -465,6 +479,7 @@ class GrowthFormService:
         customer = await cls._upsert_inbound_customer(
             db,
             user_id=user_id,
+            growth_project_id=str(project.id),
             company=company,
             lead_contact_id=contact.id,
         )

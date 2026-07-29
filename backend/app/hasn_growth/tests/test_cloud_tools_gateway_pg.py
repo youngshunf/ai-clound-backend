@@ -391,18 +391,36 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleName
     assert contribution_count == 1
 
     # 列客户：返回 items + scope 元数据（个人模式 owner_scope=personal，无企业）
-    listed = await _REG['growth.customer_list'](s, agent, {'view': 'team'})
+    project_customer_scope = {'growth_project_id': str(ctx.growth_project_id)}
+    listed = await _REG['growth.customer_list'](s, agent, {**project_customer_scope, 'view': 'team'})
     assert any(it['id'] == cid for it in listed['items'])
     assert listed['scope']['enterprise_id'] is None and listed['scope']['owner_scope'] == 'personal'
 
     # 客户详情 + 时间线
-    got = await _REG['growth.customer_get'](s, agent, {'customer_id': cid})
-    assert got['id'] == cid
-    tl = await _REG['growth.customer_timeline'](s, agent, {'customer_id': cid})
+    got = await _REG['growth.customer_get'](
+        s,
+        agent,
+        {**project_customer_scope, 'customer_id': cid},
+    )
+    assert got['customer']['id'] == cid
+    tl = await _REG['growth.customer_timeline'](
+        s,
+        agent,
+        {**project_customer_scope, 'customer_id': cid},
+    )
     assert isinstance(tl, (list, dict))
 
     # 记一条活动
-    await _REG['growth.activity_log'](s, agent, {'customer_id': cid, 'kind': 'note', 'content': '电话沟通良好'})
+    await _REG['growth.activity_log'](
+        s,
+        agent,
+        {
+            **project_customer_scope,
+            'customer_id': cid,
+            'kind': 'note',
+            'content': '电话沟通良好',
+        },
+    )
 
     # 触达：首触达必 pending_approval（不可豁免）
     sent = await _REG['growth.outreach_send'](
@@ -457,7 +475,15 @@ async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace
         },
     )
     with pytest.raises(ForbiddenError):
-        await _REG['growth.customer_reassign'](s, agent, {'customer_id': cust['id'], 'assignee': 'h_other'})
+        await _REG['growth.customer_reassign'](
+            s,
+            agent,
+            {
+                'growth_project_id': str(ctx.growth_project_id),
+                'customer_id': cust['id'],
+                'assignee': 'h_other',
+            },
+        )
 
 
 async def test_lead_request_pool_hit_delivers_without_backfill(ctx: SimpleNamespace) -> None:

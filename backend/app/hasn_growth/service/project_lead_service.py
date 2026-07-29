@@ -172,6 +172,22 @@ def _serialize_datetime(value: datetime | None) -> str | None:
 class ProjectLeadService:
     """项目线索批次入池、分页读取和状态流转。"""
 
+    async def require_project(
+        self,
+        db: AsyncSession,
+        *,
+        growth_project_id: str | UUID,
+        scope: GrowthScope,
+        require_writable: bool = False,
+    ) -> GrowthProject:
+        """按当前主人或企业边界加载项目，供项目化下游服务复用。"""
+        return await self._require_project(
+            db,
+            growth_project_id=growth_project_id,
+            scope=scope,
+            require_writable=require_writable,
+        )
+
     @staticmethod
     async def _require_project(
         db: AsyncSession,

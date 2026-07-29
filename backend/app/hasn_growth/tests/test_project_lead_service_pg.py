@@ -28,6 +28,11 @@ from backend.app.hasn_growth.model.growth_attribution_event import (
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.opportunity import Opportunity
+from backend.app.hasn_growth.model.outreach_message import OutreachMessage
+from backend.app.hasn_growth.service.project_customer_service import (
+    project_customer_service,
+)
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope
 from backend.app.hasn_project.model.hasn_project import HasnProject
@@ -616,3 +621,101 @@ async def test_qualify_is_one_idempotent_transaction_for_customer_task_activity_
         )
     )
     assert customer_count == activity_count == task_count == attribution_count == 1
+
+
+async def test_project_customer_detail_is_scoped_masked_and_aggregated(
+    ctx: SimpleNamespace,
+) -> None:
+    """客户详情只聚合当前项目事实，并保留可审计的单渠道 reveal 引用。"""
+    scope = _personal_scope(
+        user_id=ctx.first_user,
+        owner_hasn_id=ctx.first_owner,
+    )
+    imported = await project_lead_service.ingest_batch(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        batch_id=f's7-detail-{uuid.uuid4()}',
+        items=[
+            _item(
+                client_ref='s7-detail',
+                email='private.owner@xinghai.example',
+            )
+        ],
+        scope=scope,
+        actor_kind='owner',
+        actor_id=ctx.first_owner,
+    )
+    qualified = await project_lead_service.qualify_project_lead(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        project_lead_id=imported['items'][0]['project_lead_id'],
+        scope=scope,
+        profile={'痛点': '需要统一跟进'},
+        intent_score=88,
+        actor_kind='owner',
+        actor_id=ctx.first_owner,
+    )
+    customer_id = qualified['id']
+
+    current_opportunity = Opportunity(
+        opportunity_no=f'OPP-{uuid.uuid4().hex[:8]}',
+        customer_id=customer_id,
+        user_id=ctx.first_user,
+        growth_project_id=ctx.first_growth.id,
+        name='当前项目商机',
+        stage='contacted',
+        currency='CNY',
+        created_by_kind='owner',
+    )
+    current_outreach = OutreachMessage(
+        customer_id=customer_id,
+        user_id=ctx.first_user,
+        growth_project_id=ctx.first_growth.id,
+        direction='outbound',
+        channel='email',
+        content='当前项目触达',
+        status='draft',
+    )
+    ctx.session.add_all((
+        current_opportunity,
+        current_outreach,
+    ))
+    await ctx.session.flush()
+
+    page = await project_customer_service.list_customers(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        scope=scope,
+        page=1,
+        size=20,
+    )
+    assert page['total'] == 1
+    assert page['items'][0]['id'] == customer_id
+    assert 'private.owner@xinghai.example' not in str(page)
+
+    detail = await project_customer_service.get_customer_detail(
+        ctx.session,
+        growth_project_id=ctx.first_growth.id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    assert detail['customer']['email'] == 'p***@xinghai.example'
+    assert detail['customer']['channels'][0]['channel'] == 'email'
+    assert isinstance(detail['customer']['channels'][0]['id'], int)
+    assert detail['followup_tasks'][0]['task_uuid'] == qualified['followup_task_id']
+    assert {row['kind'] for row in detail['activities']} == {'qualify'}
+    assert [row['name'] for row in detail['opportunities']] == ['当前项目商机']
+    assert [row['content'] for row in detail['outreach']] == ['当前项目触达']
+    assert [row['event_type'] for row in detail['attribution']] == ['qualified']
+    assert 'private.owner@xinghai.example' not in str(detail)
+
+    with pytest.raises(errors.NotFoundError):
+        await project_customer_service.get_customer_detail(
+            ctx.session,
+            growth_project_id=ctx.second_growth.id,
+            customer_id=customer_id,
+            scope=_personal_scope(
+                user_id=ctx.second_user,
+                owner_hasn_id=ctx.second_owner,
+            ),
+        )

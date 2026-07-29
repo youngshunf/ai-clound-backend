@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +34,9 @@ from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_r
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
+from backend.app.hasn_growth.model.contact_private_access_audit import (
+    ContactPrivateAccessAudit,
+)
 from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission
@@ -41,6 +44,8 @@ from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
+from backend.app.hasn_growth.service.project_lead_service import project_lead_service
+from backend.app.hasn_growth.service.scope_context import GrowthScope
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_publish.model.site import Site
 from backend.common.dataclasses import AgentTokenPayload
@@ -58,6 +63,10 @@ _REPO = Path(__file__).resolve().parents[4]
 _S6_MIGRATION_SQL = (
     _REPO
     / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
+)
+_S7_MIGRATION_SQL = (
+    _REPO
+    / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
 )
 
 _APP = FastAPI()
@@ -86,6 +95,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     connection = raw.driver_connection
     assert connection is not None
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
     tag = uuid.uuid4().hex[:8]
     owner = f'h_grw_{tag}'
     owner_uid = 93_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -194,6 +204,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         user_id=owner_uid,
         owner_hasn_id=owner,
         name=f'获客漏斗-{tag}',
+        owner_agent_id=agent_hasn,
         landing_site_ref=f'hasn://publish/sites/{landing_site.id}',
         status='active',
         provision_status='ready',
@@ -875,3 +886,125 @@ async def test_owner_request_leads_via_http(e2e) -> None:
     gap = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 5}))
     assert gap['delivered'] == 1 and gap['requested'] == 5
     assert gap['backfill_job_id'] is None
+
+
+async def test_project_customer_owner_and_agent_reads_are_masked_and_reveal_is_audited(
+    e2e: SimpleNamespace,
+) -> None:
+    """项目客户 API 默认脱敏；Owner 单渠道 reveal 不缓存且留下可追溯审计。"""
+    scope = GrowthScope(user_id=e2e.owner_uid, owner_hasn_id=e2e.owner)
+    imported = await project_lead_service.ingest_batch(
+        e2e.session,
+        growth_project_id=e2e.growth_project_id,
+        batch_id=f's7-api-{uuid.uuid4()}',
+        items=[
+            {
+                'client_ref': 's7-api-private',
+                'company_name': '隐私边界科技',
+                'website': 'https://privacy-boundary.example/about',
+                'industry': '企业软件',
+                'source_kind': 'controlled_import',
+                'source_tool': 'integration_test',
+                'source_ref': 'controlled://growth-s7/private',
+                'match_score': 92,
+                'scoring_version': 'profile-v2/rules-v1',
+                'evidence_fresh_at': datetime.now(UTC).isoformat(),
+                'private_contact': {
+                    'contact_name': '赵敏',
+                    'title': '销售负责人',
+                    'lawful_basis': 'public_business_contact',
+                    'source_ref': 'controlled://growth-s7/private/profile',
+                    'retention_until': (
+                        datetime.now(UTC) + timedelta(days=30)
+                    ).isoformat(),
+                    'channels': [
+                        {
+                            'channel': 'email',
+                            'value': 'zhaomin@privacy-boundary.example',
+                            'lawful_basis': 'public_business_contact',
+                            'source_ref': 'controlled://growth-s7/private/email',
+                        }
+                    ],
+                },
+            }
+        ],
+        scope=scope,
+        actor_kind='owner',
+        actor_id=e2e.owner,
+    )
+    qualified = await project_lead_service.qualify_project_lead(
+        e2e.session,
+        growth_project_id=e2e.growth_project_id,
+        project_lead_id=imported['items'][0]['project_lead_id'],
+        scope=scope,
+        profile={'需求': '统一项目跟进'},
+        intent_score=90,
+        actor_kind='owner',
+        actor_id=e2e.owner,
+    )
+    customer_id = qualified['id']
+    owner_api = '/api/v1/growth/app'
+    agent_api = '/api/v1/growth/agent'
+
+    owner_page = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{e2e.growth_project_id}/customers',
+        )
+    )
+    owner_detail = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{e2e.growth_project_id}/customers/{customer_id}/detail',
+        )
+    )
+    agent_detail = _ok(
+        await e2e.client.get(
+            f'{agent_api}/projects/{e2e.growth_project_id}/customers/{customer_id}/detail',
+        )
+    )
+    assert owner_page['total'] == 1
+    assert owner_detail['customer']['email'] == 'z***@privacy-boundary.example'
+    assert agent_detail['customer']['email'] == 'z***@privacy-boundary.example'
+    assert owner_detail['followup_tasks'][0]['task_uuid'] == qualified['followup_task_id']
+    assert 'zhaomin@privacy-boundary.example' not in str(owner_page)
+    assert 'zhaomin@privacy-boundary.example' not in str(owner_detail)
+    assert 'zhaomin@privacy-boundary.example' not in str(agent_detail)
+
+    channel_id = owner_detail['customer']['channels'][0]['id']
+    revealed_response = await e2e.client.post(
+        f'{owner_api}/contacts/channels/{channel_id}/reveal',
+        json={'purpose': 'contact_verification'},
+    )
+    revealed = _ok(revealed_response)
+    assert revealed == {
+        'channel': 'email',
+        'value': 'zhaomin@privacy-boundary.example',
+        'expires_in_seconds': 30,
+    }
+    assert revealed_response.headers['cache-control'] == 'no-store, max-age=0'
+    audit = (
+        (
+            await e2e.session.execute(
+                select(ContactPrivateAccessAudit)
+                .where(
+                    ContactPrivateAccessAudit.resource_id == str(channel_id),
+                    ContactPrivateAccessAudit.action == 'reveal',
+                )
+                .order_by(ContactPrivateAccessAudit.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.actor_type == 'owner'
+    assert audit.actor_id == e2e.owner
+    assert audit.purpose == 'contact_verification'
+    assert audit.result == 'allowed'
+    assert audit.trace_id
+    assert 'zhaomin@privacy-boundary.example' not in str(audit.request_metadata)
+
+    e2e.state.owner_uid = e2e.other_uid
+    denied = await e2e.client.get(
+        f'{agent_api}/projects/{e2e.growth_project_id}/customers/{customer_id}/detail',
+    )
+    assert denied.status_code == 404
