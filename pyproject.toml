@@ -8,6 +8,7 @@ authors = [
   { name = "Wu Clan", email = "jianhengwu0407@gmail.com" },
 ]
 dependencies = [
+  "aio-pika>=9.5.8",
   "aiosmtplib>=5.0.0",
   "alembic>=1.18.4",
   "asgiref>=3.11.1",
@@ -115,7 +116,6 @@ lint = [
   "prek>=0.3.3",
 ]
 server = [
-  "aio-pika>=9.5.8",
   "wait-for-it>=2.3.0",
 ]
 

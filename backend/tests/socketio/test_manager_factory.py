@@ -7,6 +7,7 @@ import inspect
 from pathlib import Path
 
 import socketio
+import tomllib
 
 from backend.core.conf import Settings
 
@@ -15,6 +16,7 @@ SERVER_FILE = PROJECT_ROOT / 'backend' / 'common' / 'socketio' / 'server.py'
 ACTIONS_FILE = PROJECT_ROOT / 'backend' / 'common' / 'socketio' / 'actions.py'
 REGISTRAR_FILE = PROJECT_ROOT / 'backend' / 'core' / 'registrar.py'
 CELERY_FILE = PROJECT_ROOT / 'backend' / 'app' / 'task' / 'celery.py'
+PYPROJECT_FILE = PROJECT_ROOT / 'pyproject.toml'
 
 
 def _settings(**overrides: object) -> Settings:
@@ -113,3 +115,11 @@ def test_rabbitmq_manager_declares_exclusive_auto_delete_queue() -> None:
     assert 'exclusive=True' in source
     assert 'auto_delete=True' in source
     assert "'x-expires': SOCKETIO_QUEUE_EXPIRES_MS" in source
+
+
+def test_aio_pika_is_a_production_runtime_dependency() -> None:
+    """默认 frozen sync 后 API 仍必须能导入 RabbitMQ manager 工厂。"""
+    pyproject = tomllib.loads(PYPROJECT_FILE.read_text(encoding='utf-8'))
+    dependencies = pyproject['project']['dependencies']
+
+    assert any(item.startswith('aio-pika') for item in dependencies)
