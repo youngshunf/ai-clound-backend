@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -147,21 +147,35 @@ class CreateOpportunityParam(SchemaBase):
     customer_id: int
     name: str = Field(min_length=1, max_length=200)
     amount: float | None = Field(default=None, ge=0)
-    currency: str = Field(default='CNY', max_length=8)
-    stage: str = Field(default='contacted')
+    currency: str = Field(default='CNY', pattern=r'^[A-Z]{3}$')
+    stage: Literal['contacted', 'replied', 'proposal', 'negotiation'] = 'contacted'
     probability: float | None = Field(default=None, ge=0, le=1)
+    idempotency_key: str = Field(min_length=1, max_length=150)
 
 
 class UpdateStageParam(SchemaBase):
-    stage: str = Field(description='contacted/replied/proposal/negotiation')
-    note: str | None = Field(default=None, max_length=500)
+    stage: Literal['contacted', 'replied', 'proposal', 'negotiation']
+    note: str = Field(min_length=1, max_length=500)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=150)
 
 
 class CloseDealParam(SchemaBase):
-    result: str = Field(pattern='^(won|lost)$', description='成交/流失')
-    amount: float | None = Field(default=None, ge=0)
+    result: Literal['won', 'lost']
+    amount: float | None = Field(default=None, gt=0)
+    currency: str | None = Field(default=None, pattern=r'^[A-Z]{3}$')
     close_note: str | None = Field(default=None, max_length=2000)
-    lost_reason: str | None = Field(default=None, max_length=500)
+    lost_reason: str | None = Field(default=None, min_length=1, max_length=500)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=150)
+
+    @model_validator(mode='after')
+    def validate_close_facts(self) -> CloseDealParam:
+        if self.result == 'won' and (self.amount is None or self.currency is None):
+            raise ValueError('成交必须填写金额和币种')
+        if self.result == 'lost' and not (self.lost_reason or '').strip():
+            raise ValueError('流失必须填写结构化原因')
+        return self
 
 
 class FormSubmitParam(SchemaBase):

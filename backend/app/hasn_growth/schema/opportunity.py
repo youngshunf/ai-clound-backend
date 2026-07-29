@@ -12,6 +12,7 @@ class OpportunitySchemaBase(SchemaBase):
     customer_id: int = Field(description='None')
     user_id: int = Field(description='None')
     name: str = Field(description='None')
+    version: int = Field(default=1, ge=1, description='并发控制版本')
     stage: str = Field(description='阶段 (contacted:已触达:blue/replied:已回应:cyan/proposal:已发提案:purple/negotiation:商务洽谈:orange/closed_won:成交:green/closed_lost:流失:red)')
     amount: Decimal | None = Field(None, description='None')
     currency: str = Field(description='None')
@@ -21,6 +22,7 @@ class OpportunitySchemaBase(SchemaBase):
     lost_at: datetime | None = Field(None, description='None')
     lost_reason: str | None = Field(None, description='None')
     close_note: str | None = Field(None, description='None')
+    review_task_id: str | None = Field(None, description='复盘任务 UUID')
     created_by_kind: str = Field(description='创建者 (owner:主人:blue/agent:分身:violet)')
 
 
