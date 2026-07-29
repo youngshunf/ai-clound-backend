@@ -17,6 +17,7 @@ from backend.common.schema import SchemaBase
 PLATFORM_TARGETS = ('darwin-aarch64', 'darwin-x86_64', 'windows-x86_64', 'linux-x86_64')
 ASSET_KINDS = ('installer', 'updater')
 CHANNELS = ('stable', 'beta')
+REQUIRED_DESKTOP_PLATFORMS = ('darwin-aarch64', 'darwin-x86_64', 'windows-x86_64')
 
 
 class ReleaseAssetInput(SchemaBase):
@@ -64,6 +65,58 @@ class CiCallbackRequest(PublishReleaseRequest):
     """CI 构建完成回调（Bearer CI 密钥）——继承 publish 核心，附 build 关联"""
 
     build_id: int | None = Field(default=None, description='关联 release_build.id（回填状态用）')
+    release_id: int | None = Field(default=None, description='云端发布批次 app_release.id')
+    release_tag: str | None = Field(default=None, description='云端锁定的 release tag')
+
+
+class PrepareReleaseRequest(SchemaBase):
+    """创建或加入当前桌面端发布批次。"""
+
+    channel: str = Field(default='stable', description='stable/beta')
+    source_commit: str = Field(
+        min_length=40,
+        max_length=64,
+        pattern=r'^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$',
+        description='第一台机器看到的 origin/main Git commit',
+    )
+
+
+class ReleaseCommitInput(SchemaBase):
+    """用于生成版本说明的单条 Git 提交。"""
+
+    sha: str = Field(min_length=7, max_length=64, pattern=r'^[0-9a-fA-F]+$')
+    subject: str = Field(min_length=1, max_length=500)
+
+
+class ConfirmReleaseTagRequest(SchemaBase):
+    """确认远端 release tag 并提交该版本的 Git 历史。"""
+
+    source_commit: str = Field(
+        min_length=40,
+        max_length=64,
+        pattern=r'^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$',
+    )
+    previous_release_tag: str | None = Field(default=None, max_length=64)
+    commits: list[ReleaseCommitInput] = Field(default_factory=list, max_length=5000)
+
+
+class ReleaseBatchResponse(SchemaBase):
+    """跨平台发布批次状态。"""
+
+    id: int
+    version: str
+    channel: str
+    release_tag: str
+    previous_release_tag: str | None = None
+    source_commit: str
+    tag_status: str
+    release_notes_status: str
+    release_notes_md: str | None = None
+    release_notes_error: str | None = None
+    required_platforms: list[str] = Field(default_factory=list)
+    completed_platforms: list[str] = Field(default_factory=list)
+    status: str
+    published_time: datetime | None = None
 
 
 class CiUploadResponse(SchemaBase):
@@ -114,6 +167,14 @@ class ReleaseDetail(SchemaBase):
     is_latest: bool
     source: str
     github_run_id: str | None = None
+    release_tag: str | None = None
+    previous_release_tag: str | None = None
+    source_commit: str | None = None
+    tag_status: str = 'not_required'
+    tag_created_time: datetime | None = None
+    required_platforms: list[str] = Field(default_factory=list)
+    completed_platforms: list[str] = Field(default_factory=list)
+    release_notes_status: str = 'manual'
     published_time: datetime | None = None
     created_time: datetime
     assets: list[ReleaseAssetDetail] = Field(default_factory=list)
