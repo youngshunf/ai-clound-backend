@@ -442,7 +442,7 @@ async def _push_contacts_presence_invalidation(
 
         from backend.app.hasn.service import sync_invalidate_service
 
-        async with async_db_session() as db:
+        async with im_service_db_session() as db:
             contacts_table = SCHEMA_NAMES.im_table('hasn_contacts')
             rows = (
                 await db.execute(
