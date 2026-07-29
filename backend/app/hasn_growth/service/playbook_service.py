@@ -51,6 +51,18 @@ def _definition(playbook: Playbook) -> dict[str, Any]:
     }
 
 
+def _frozen_definition(version: PlaybookVersion) -> dict[str, Any]:
+    """从不可变版本读取与当前打法相同口径的执行定义。"""
+    return {
+        'name': version.name,
+        'goal': version.goal,
+        'target_profile': version.target_profile,
+        'cadence': version.cadence,
+        'tone_guide': version.tone_guide,
+        'exit_rule': version.exit_rule,
+    }
+
+
 def _definition_hash(definition: dict[str, Any]) -> str:
     canonical = json.dumps(
         definition,
@@ -59,6 +71,18 @@ def _definition_hash(definition: dict[str, Any]) -> str:
         separators=(',', ':'),
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _repair_migration_definition_hash(
+    frozen: PlaybookVersion,
+    definition: dict[str, Any],
+    definition_hash: str,
+) -> bool:
+    """仅在迁移快照字段完全一致时修正旧算法哈希。"""
+    if frozen.created_by_kind != 'migration' or _frozen_definition(frozen) != definition:
+        return False
+    frozen.definition_hash = definition_hash
+    return True
 
 
 def _adoption_to_dict(
@@ -341,7 +365,13 @@ class PlaybookService:
             )
             db.add(frozen)
             await db.flush()
-        elif frozen.definition_hash != definition_hash:
+        elif frozen.definition_hash != definition_hash and not _repair_migration_definition_hash(
+            frozen,
+            definition,
+            definition_hash,
+        ):
+            # 首次引入版本表的 SQL 迁移使用 concat_ws 计算哈希，与运行时规范 JSON 算法不同。
+            # 仅当迁移快照六个定义字段逐项一致时修正哈希元数据；字段不一致仍按未升版本拒绝。
             raise errors.ConflictError(
                 msg='打法当前版本的定义已被修改但未递增版本号',
                 data={'error_code': 'PLAYBOOK_VERSION_HASH_CONFLICT'},
