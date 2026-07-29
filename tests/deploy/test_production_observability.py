@@ -126,6 +126,17 @@ def test_production_observability_containers_use_least_privilege() -> None:
     assert network['driver_opts'] == {
         'com.docker.network.bridge.enable_ip_masquerade': 'false'
     }
+    assert network['ipam']['config'] == [
+        {
+            'subnet': '172.24.0.0/24',
+            'gateway': '172.24.0.1',
+        }
+    ]
+    assert compose['services']['prometheus']['networks'] == {
+        'observability': {
+            'ipv4_address': '172.24.0.2',
+        }
+    }
 
 
 def test_production_grafana_requires_secret_backed_login() -> None:
