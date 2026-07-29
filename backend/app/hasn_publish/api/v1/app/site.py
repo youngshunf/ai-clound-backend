@@ -39,6 +39,7 @@ class CreateSiteRequest(BaseModel):
     allow_indexing: bool = Field(default=False)
     source_app: str | None = Field(default=None, max_length=32)
     source_ref: str | None = Field(default=None, max_length=80)
+    platform_project_id: str | None = Field(default=None, max_length=36)
     publisher_agent_id: str | None = Field(default=None, max_length=40, description='若由 agent 代发布')
 
 
@@ -93,6 +94,7 @@ async def create_site(request: Request, db: CurrentSessionTransaction, body: Cre
         allow_indexing=body.allow_indexing,
         source_app=body.source_app,
         source_ref=body.source_ref,
+        platform_project_id=body.platform_project_id,
     )
     return response_base.success(data=data)
 

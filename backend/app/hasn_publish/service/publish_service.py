@@ -13,12 +13,14 @@ import secrets
 
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from jose import JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
 from sqlalchemy import func, select, update
 
+from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_publish.model import Revision, Site
 from backend.common.exception import errors
 from backend.core.conf import settings
@@ -76,6 +78,7 @@ def site_to_dict(site: Site) -> dict[str, Any]:
         'slug': site.slug,
         'source_app': site.source_app,
         'source_ref': site.source_ref,
+        'platform_project_id': str(site.platform_project_id) if site.platform_project_id else None,
         'current_revision_id': site.current_revision_id,
         'status': site.status,
         'visibility': site.visibility,
@@ -121,6 +124,37 @@ class PublishService:
     def _validate_kind(kind: str) -> str:
         return kind if kind in VALID_KINDS else 'other'
 
+    @staticmethod
+    async def _resolve_owned_project_id(
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        platform_project_id: str | UUID | None,
+    ) -> UUID | None:
+        """校验可选项目挂靠；客户端传值只用于定位，Owner 与状态均由云端权威表判定。"""
+        if platform_project_id is None or not str(platform_project_id).strip():
+            return None
+        try:
+            project_id = UUID(str(platform_project_id))
+        except ValueError as exc:
+            raise errors.RequestError(msg='平台项目 ID 必须是有效 UUID') from exc
+        project = (
+            await db.execute(
+                select(HasnProject).where(
+                    HasnProject.id == project_id,
+                    HasnProject.owner_id == owner_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if project is None:
+            raise errors.NotFoundError(msg='平台项目不存在或不属于你')
+        if project.status != 'active':
+            raise errors.ConflictError(
+                msg='项目已归档，不能创建新的发布站点',
+                data={'error_code': 'PROJECT_ARCHIVED'},
+            )
+        return project.id
+
     # ---------------- slug ----------------
 
     @staticmethod
@@ -155,10 +189,16 @@ class PublishService:
         allow_indexing: bool = False,
         source_app: str | None = None,
         source_ref: str | None = None,
+        platform_project_id: str | UUID | None = None,
     ) -> dict[str, Any]:
         PublishService._validate_visibility(visibility, password)
         if not asset_id:
             raise errors.RequestError(msg='缺少制品 asset_id')
+        resolved_project_id = await PublishService._resolve_owned_project_id(
+            db,
+            owner_id=owner_id,
+            platform_project_id=platform_project_id,
+        )
         slug = await PublishService._alloc_slug(db)
         site = Site(
             owner_id=owner_id,
@@ -168,6 +208,7 @@ class PublishService:
             slug=slug,
             source_app=source_app,
             source_ref=source_ref,
+            platform_project_id=resolved_project_id,
             current_revision_id=None,
             status='active',
             visibility=visibility,
