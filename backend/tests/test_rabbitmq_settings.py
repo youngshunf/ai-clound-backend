@@ -203,6 +203,55 @@ def test_production_celery_rabbitmq_rejects_placeholder_or_wrong_role(
     assert 'too-short-secret' not in message
 
 
+@pytest.mark.parametrize(
+    ('overrides', 'error_fragment'),
+    [
+        (
+            {
+                'REALTIME_RABBITMQ_USERNAME': 'admin',
+                'REALTIME_RABBITMQ_PASSWORD': 'V7rP4mZ2nQ8sK6xD9cT5wL3j',
+                'REALTIME_RABBITMQ_VHOST': 'huanxing',
+            },
+            'huanxing_realtime',
+        ),
+        (
+            {
+                'REALTIME_RABBITMQ_USERNAME': 'huanxing_realtime',
+                'REALTIME_RABBITMQ_PASSWORD': 'too-short-secret',
+                'REALTIME_RABBITMQ_VHOST': 'huanxing',
+            },
+            '24',
+        ),
+        (
+            {
+                'REALTIME_RABBITMQ_USERNAME': 'huanxing_realtime',
+                'REALTIME_RABBITMQ_PASSWORD': 'V7rP4mZ2nQ8sK6xD9cT5wL3j',
+                'REALTIME_RABBITMQ_VHOST': 'shared',
+            },
+            'REALTIME_RABBITMQ_VHOST',
+        ),
+    ],
+)
+def test_production_realtime_rabbitmq_rejects_wrong_role_or_weak_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    error_fragment: str,
+) -> None:
+    """生产 realtime 连接只能使用固定最小权限角色和强凭据。"""
+    with pytest.raises(ValidationError) as exc_info:
+        _settings(
+            monkeypatch,
+            ENVIRONMENT='prod',
+            SOCKETIO_MANAGER='rabbitmq',
+            **overrides,
+        )
+
+    message = str(exc_info.value)
+    assert error_fragment in message
+    assert 'V7rP4mZ2nQ8sK6xD9cT5wL3j' not in message
+    assert 'too-short-secret' not in message
+
+
 def test_amqp_dsn_encodes_credentials_and_vhost() -> None:
     try:
         rabbitmq = importlib.import_module('backend.common.messaging.rabbitmq')

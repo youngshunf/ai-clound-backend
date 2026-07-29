@@ -1,19 +1,9 @@
 """通用 Socket.IO 事件处理。"""
 
-import urllib.parse
-
-import socketio
-
+from backend.common.socketio.manager import build_socketio_sync_publisher
 from backend.common.socketio.server import sio
-from backend.core.conf import settings
 
-_task_notification_manager = socketio.RedisManager(
-    (
-        f'redis://:{urllib.parse.quote(settings.REDIS_PASSWORD)}'
-        f'@{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DATABASE}'
-    ),
-    write_only=True,
-)
+_task_notification_manager = build_socketio_sync_publisher()
 
 
 async def task_notification(msg: str) -> None:
