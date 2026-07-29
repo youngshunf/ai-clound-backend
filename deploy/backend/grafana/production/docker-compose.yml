@@ -106,6 +106,9 @@ services:
       - --enable-feature=native-histograms
     extra_hosts:
       - host.docker.internal:host-gateway
+    networks:
+      observability:
+        ipv4_address: 172.24.0.2
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     volumes:
@@ -132,6 +135,10 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.enable_ip_masquerade: 'false'
+    ipam:
+      config:
+        - subnet: 172.24.0.0/24
+          gateway: 172.24.0.1
 
 secrets:
   grafana_admin_password:
