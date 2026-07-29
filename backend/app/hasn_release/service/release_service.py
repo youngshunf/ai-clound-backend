@@ -80,14 +80,35 @@ def _next_patch_version(versions: list[str]) -> str:
     return f'{highest[0]}.{highest[1]}.{highest[2] + 1}'
 
 
-def _normalize_release_notes(raw: str) -> str:
-    """把 LLM 输出收敛成官网可直接展示的 200 字以内纯文本。"""
+def _normalize_release_notes(raw: str, *, max_chars: int = _RELEASE_NOTES_MAX_CHARS) -> str:
+    """清理 LLM 输出并保留 Markdown 结构，确定性限制源码长度。"""
     text_value = (raw or '').strip()
-    text_value = re.sub(r'\A```(?:markdown|md|text)?\s*', '', text_value, flags=re.IGNORECASE)
-    text_value = re.sub(r'\s*```\Z', '', text_value)
-    text_value = text_value.strip('`"“”')
-    text_value = re.sub(r'\s+', ' ', text_value).strip()
-    return text_value[:_RELEASE_NOTES_MAX_CHARS]
+    text_value = re.sub(
+        r'\A```(?:markdown|md|text)?[^\n]*\n?',
+        '',
+        text_value,
+        flags=re.IGNORECASE,
+    )
+    text_value = re.sub(r'\n?```\s*\Z', '', text_value)
+    if len(text_value) >= 2 and (text_value[0], text_value[-1]) in {
+        ('"', '"'),
+        ('“', '”'),
+    }:
+        text_value = text_value[1:-1]
+    lines = [
+        re.sub(r'[ \t]+', ' ', line.strip())
+        for line in text_value.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        if line.strip()
+    ]
+    normalized = '\n'.join(lines).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return f'{normalized[: max_chars - 1].rstrip()}…'
+
+
+def _should_generate_release_notes(status: str) -> bool:
+    """同一发布批次只生成一次；失败状态允许下一台打包机器重试。"""
+    return status != 'ready'
 
 
 def _completed_platforms(
@@ -341,7 +362,7 @@ class ReleaseService:
         release_tag: str,
         commits: list[ReleaseCommitInput],
     ) -> str:
-        """调用统一 LLM 客户端，把 Git 历史整理成 200 字以内用户更新说明。"""
+        """调用统一 LLM 客户端，把 Git 历史整理成 200 字以内 Markdown 更新说明。"""
         if not llm_client.is_configured:
             raise LLMError('统一 LLM 网关未配置')
         commit_lines: list[str] = []
@@ -386,7 +407,8 @@ class ReleaseService:
                     max_tokens=800,
                     temperature=0.1,
                 )
-                chunk_summaries.append(_normalize_release_notes(chunk_summary)[:400])
+                normalized_chunk = _normalize_release_notes(chunk_summary, max_chars=400)
+                chunk_summaries.append(re.sub(r'\s+', ' ', normalized_chunk))
             summary_source = '\n'.join(
                 f'- 分段{index}：{summary}' for index, summary in enumerate(chunk_summaries, start=1)
             )
@@ -397,8 +419,11 @@ class ReleaseService:
                     'content': (
                         '你是唤星AI桌面端的版本说明编辑。只能依据提供的Git提交事实，'
                         '合并重复内容，优先概括用户可感知的新功能、问题修复、性能与安全改进。'
-                        '忽略merge、chore、版本号调整和纯工程噪音。输出一段自然中文纯文本，'
-                        '不写标题、版本号、commit哈希、发布方式或“本机自动发布”，总长度不超过200个汉字。'
+                        '忽略merge、chore、版本号调整和纯工程噪音。输出可直接展示的Markdown：'
+                        '不要标题、表格、代码块和链接；按实际内容写1至5条无序列表；'
+                        '每条用 **新增**、**优化**、**修复**、**性能**、**安全** 中最贴切的标签开头，'
+                        '格式如“- **新增**：支持……”。同类变化必须合并，不得补写提交中没有的事实。'
+                        'Markdown源码总长度不超过200个字符，不写版本号、commit哈希、发布方式或“本机自动发布”。'
                     ),
                 },
                 {
@@ -410,7 +435,7 @@ class ReleaseService:
                     ),
                 },
             ],
-            max_tokens=400,
+            max_tokens=500,
             temperature=0.2,
         )
         normalized = _normalize_release_notes(notes)
@@ -454,7 +479,7 @@ class ReleaseService:
         if req.previous_release_tag:
             release.previous_release_tag = req.previous_release_tag.strip()
 
-        if release.release_notes_status != 'ready':
+        if _should_generate_release_notes(release.release_notes_status):
             release.release_notes_status = 'pending'
             release.release_notes_error = None
             try:
