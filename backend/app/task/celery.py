@@ -4,6 +4,7 @@ import urllib.parse
 import celery
 import celery_aio_pool
 
+from celery.app import trace as celery_trace
 from celery.signals import worker_process_init
 from opentelemetry.instrumentation.celery import CeleryInstrumentor
 
@@ -52,8 +53,8 @@ def init_celery() -> celery.Celery:
     # TODO: Update this work if celery version >= 6.0.0
     # https://github.com/fastapi-practices/fastapi_best_architecture/issues/321
     # https://github.com/celery/celery/issues/7874
-    celery.app.trace.build_tracer = celery_aio_pool.build_async_tracer
-    celery.app.trace.reset_worker_optimizations()
+    celery_trace.build_tracer = celery_aio_pool.build_async_tracer
+    celery_trace.reset_worker_optimizations()
 
     broker_url = f'amqp://{settings.CELERY_RABBITMQ_USERNAME}:{urllib.parse.quote(settings.CELERY_RABBITMQ_PASSWORD)}@{settings.CELERY_RABBITMQ_HOST}:{settings.CELERY_RABBITMQ_PORT}/{settings.CELERY_RABBITMQ_VHOST}'
     if settings.CELERY_BROKER == 'redis':

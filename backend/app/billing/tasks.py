@@ -20,6 +20,7 @@ from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.app.newapi.apikey.model import UserApiKey
 from backend.common.log import log
 from backend.database.db import async_db_session
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -65,7 +66,7 @@ async def check_expired_api_keys() -> str:
             .values(status=ApiKeyStatus.EXPIRED)
         )
         result = await db.execute(stmt)
-        expired_count = result.rowcount
+        expired_count = affected_rows(result)
 
     result_msg = f'API Key 过期检查完成: {expired_count} 个 Key 已标记为过期'
     log.info(f'[ExpiredKeyCheck] {result_msg}')
@@ -97,7 +98,7 @@ async def expire_overdue_subscriptions() -> str:
             .values(status='expired')
         )
         result = await db.execute(stmt)
-        expired_count = result.rowcount
+        expired_count = affected_rows(result)
 
     result_msg = f'订阅过期检查完成: {expired_count} 个订阅已标记为过期'
     log.info(f'[ExpiredSubscription] {result_msg}')
@@ -121,7 +122,7 @@ def _days_until(when: datetime, now: datetime) -> int:
 
 async def _owner_hasn_for_user(db: AsyncSession, user_id: int) -> str | None:
     """user_id → owner hasn_id（订阅按 user_id 归属，通知/WSPUSH 按 hasn_id 定向）。"""
-    from backend.app.hasn.model.hasn_humans import HasnHumans
+    from backend.app.hasn_core import HasnHumans
 
     return (await db.execute(select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))).scalars().first()
 
@@ -197,7 +198,10 @@ async def _emit_due_reminders(db: AsyncSession, now: datetime, horizon: datetime
         .all()
     )
     for ent in ent_soon:
-        days_left = _days_until(ent.expires_at, now)
+        expires_at = ent.expires_at
+        if expires_at is None:
+            continue
+        days_left = _days_until(expires_at, now)
         if days_left in _EXPIRY_REMINDER_DAYS and ent.subject_id:
             await _emit_expiry_reminder(
                 db,
@@ -226,7 +230,10 @@ async def _emit_due_reminders(db: AsyncSession, now: datetime, horizon: datetime
         .all()
     )
     for sub in sub_soon:
-        days_left = _days_until(sub.subscription_end_date, now)
+        subscription_end_date = sub.subscription_end_date
+        if subscription_end_date is None:
+            continue
+        days_left = _days_until(subscription_end_date, now)
         if days_left in _EXPIRY_REMINDER_DAYS:
             owner_hasn = await _owner_hasn_for_user(db, sub.user_id)
             if owner_hasn:

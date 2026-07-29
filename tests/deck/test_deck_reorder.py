@@ -21,9 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.deck.model.deck import Deck
-from backend.app.deck.model.page import Page
-from backend.app.deck.service.deck_service import deck_service
+from backend.app.hasn_deck.model.deck import Deck
+from backend.app.hasn_deck.model.page import Page
+from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.database.db import uuid4_str
 
 # 本地开发数据库（与 test_deck_model.py 同源，刻意不依赖 .env，避免 worktree 落到 5432）
@@ -80,7 +80,7 @@ async def test_update_page_to_occupied_position_swaps_occupant(db: AsyncSession)
     deck_id, [p0, p1] = await _seed_deck(db, owner, 2)
 
     # Act：把 P0 移到被 P1 占用的 position 1（旧代码会撞唯一约束 500）
-    await deck_service.update_page(db, owner_id=owner, page_id=p0, fields={'position': 1})
+    await deck_service.update_page(db, subject=Subject.human(owner), page_id=p0, fields={'position': 1})
 
     # Assert：两页对调，位置仍唯一、无空缺
     pos = await _positions(db, deck_id)
@@ -99,7 +99,12 @@ async def test_per_page_reorder_push_converges_no_collision(db: AsyncSession) ->
     # 任何中间态都不得撞 (deck_id, position) 唯一约束（旧代码第一步就 500）。
     target = {p0: 1, p1: 2, p2: 0}
     for page_id, new_pos in target.items():
-        await deck_service.update_page(db, owner_id=owner, page_id=page_id, fields={'position': new_pos})
+        await deck_service.update_page(
+            db,
+            subject=Subject.human(owner),
+            page_id=page_id,
+            fields={'position': new_pos},
+        )
 
     # Assert：最终序恰为目标排列，且未删页位置无重复
     pos = await _positions(db, deck_id)
@@ -117,7 +122,12 @@ async def test_full_reverse_reorder_any_push_order(db: AsyncSession) -> None:
     # Act：整体反转 P0→3, P1→2, P2→1, P3→0；刻意打乱推送顺序验证 swap 收敛性
     target = {p0: 3, p1: 2, p2: 1, p3: 0}
     for page_id in (p2, p0, p3, p1):  # 乱序推送
-        await deck_service.update_page(db, owner_id=owner, page_id=page_id, fields={'position': target[page_id]})
+        await deck_service.update_page(
+            db,
+            subject=Subject.human(owner),
+            page_id=page_id,
+            fields={'position': target[page_id]},
+        )
 
     # Assert：最终序正确，位置唯一连续
     pos = await _positions(db, deck_id)
@@ -133,7 +143,10 @@ async def test_update_page_position_with_other_fields(db: AsyncSession) -> None:
 
     # Act：一次 PUT 同时改 position（撞位）+ 其它字段（webui 编辑常见形态）
     await deck_service.update_page(
-        db, owner_id=owner, page_id=p0, fields={'position': 1, 'title': '改名了', 'html': None}
+        db,
+        subject=Subject.human(owner),
+        page_id=p0,
+        fields={'position': 1, 'title': '改名了', 'html': None},
     )
 
     # Assert：位置交换成功 + 其它字段已写 + None 字段不覆盖

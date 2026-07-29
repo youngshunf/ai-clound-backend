@@ -5,8 +5,7 @@
   分身只能读自己主人的消息，绝不跨 owner。
 - **默认倒序 + keyset 翻页**：按 `hasn_messages.id`（BIGINT 自增，与时序同向）`id < cursor` 倒序翻页，
   最新在前；游标就是上一页最后一条的 id，稳定不漂移。修掉旧 message.list「最旧优先 + cursor 假翻页」的坑。
-- **不碰 `HasnMessageHubService.pull_inbox`**：那条是 webui/daemon owner 收件箱链路（ASC + suppressed 合并），
-  改它会回归；这里另起独立只读查询，互不影响。
+- **不复用 owner 同步读取面**：Agent JWT 只能读取自身消息，不能继承 owner 的可见范围。
 - **零 Fake**：读不到就返回空列表 + has_more=False，绝不编造。
 
 content 为 jsonb：文本消息 body={text,...}，卡片 body={title,description,...}。预览/搜索在这几个键上取值，

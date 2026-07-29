@@ -36,6 +36,7 @@ from backend.app.hasn_plan.service.plan_notify import notify_invited
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
+from backend.common.exception import errors
 from backend.database.db import async_db_session
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,22 @@ def _parse_dt(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value))
+
+
+def _require_dt(value: Any, field: str) -> datetime:
+    """解析必填时间字段，空值进入明确的请求错误。"""
+    parsed = _parse_dt(value)
+    if parsed is None:
+        raise errors.RequestError(msg=f'{field} 不能为空')
+    return parsed
+
+
+def _owner(ctx: AgentContext) -> str:
+    """获取凭证中的主人 HASN ID；无主人分身按架构不变量拒绝执行。"""
+    owner_hasn_id = ctx.owner_hasn_id
+    if not owner_hasn_id:
+        raise errors.TokenError(msg='AgentContext 缺少主人 HASN ID')
+    return owner_hasn_id
 
 
 def _without(args: dict[str, Any], *keys: str) -> dict[str, Any]:
@@ -93,7 +110,7 @@ async def _resolve_write_scope(db: Any, ctx: AgentContext, args: dict[str, Any])
     """
     return await resolve_plan_write_scope(
         db,
-        owner_hasn_id=ctx.owner_hasn_id,
+        owner_hasn_id=_owner(ctx),
         owner_user_id=ctx.owner_user_id,
         scope=args.get('scope'),
         snapshot_enterprise_id=args.get('_active_enterprise_id'),
@@ -113,21 +130,21 @@ def _reject_not_in_enterprise() -> dict[str, Any]:
 def _h_list(method: str, *arg_keys: str) -> Handler:
     async def handler(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         kwargs = {k: args.get(k) for k in arg_keys}
-        return await getattr(plan_service, method)(db, owner=ctx.owner_hasn_id, **kwargs)
+        return await getattr(plan_service, method)(db, owner=_owner(ctx), **kwargs)
 
     return handler
 
 
 def _h_get(method: str) -> Handler:
     async def handler(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-        return await getattr(plan_service, method)(db, owner=ctx.owner_hasn_id, pk=int(args['id']))
+        return await getattr(plan_service, method)(db, owner=_owner(ctx), pk=int(args['id']))
 
     return handler
 
 
 def _h_create(method: str) -> Handler:
     async def handler(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-        return await getattr(plan_service, method)(db, owner=ctx.owner_hasn_id, data=args)
+        return await getattr(plan_service, method)(db, owner=_owner(ctx), data=args)
 
     return handler
 
@@ -135,7 +152,7 @@ def _h_create(method: str) -> Handler:
 def _h_update(method: str) -> Handler:
     async def handler(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         return await getattr(plan_service, method)(
-            db, owner=ctx.owner_hasn_id, pk=int(args['id']), data=_without(args, 'id')
+            db, owner=_owner(ctx), pk=int(args['id']), data=_without(args, 'id')
         )
 
     return handler
@@ -143,7 +160,7 @@ def _h_update(method: str) -> Handler:
 
 def _h_delete(method: str) -> Handler:
     async def handler(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-        await getattr(plan_service, method)(db, owner=ctx.owner_hasn_id, pk=int(args['id']))
+        await getattr(plan_service, method)(db, owner=_owner(ctx), pk=int(args['id']))
         return {'deleted': True}
 
     return handler
@@ -155,7 +172,7 @@ def _h_create_child(method: str, parent_key: str, parent_param: str) -> Handler:
     async def handler(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         return await getattr(plan_service, method)(
             db,
-            owner=ctx.owner_hasn_id,
+            owner=_owner(ctx),
             **{parent_param: int(args[parent_key])},
             data=_without(args, parent_key),
         )
@@ -171,23 +188,26 @@ async def _h_capture(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         return _reject_not_in_enterprise()
     data = {**_without(args, 'scope', '_active_enterprise_id'), 'status': 'inbox', 'source': 'chat'}
     return await plan_service.create_todo(
-        db, owner=ctx.owner_hasn_id, data=data, enterprise_id=ws.enterprise_id, dept_id=ws.dept_id
+        db, owner=_owner(ctx), data=data, enterprise_id=ws.enterprise_id, dept_id=ws.dept_id
     )
 
 
 async def _h_triage(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await plan_service.update_todo(db, owner=ctx.owner_hasn_id, pk=int(args['id']), data=_without(args, 'id'))
+    return await plan_service.update_todo(db, owner=_owner(ctx), pk=int(args['id']), data=_without(args, 'id'))
 
 
 async def _h_today(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await plan_service.today_overview(
-        db, owner=ctx.owner_hasn_id, day_start=_parse_dt(args['start']), day_end=_parse_dt(args['end'])
+        db,
+        owner=_owner(ctx),
+        day_start=_require_dt(args['start'], 'start'),
+        day_end=_require_dt(args['end'], 'end'),
     )
 
 
 async def _h_list_events(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await plan_service.list_events(
-        db, owner=ctx.owner_hasn_id, start=_parse_dt(args.get('start')), end=_parse_dt(args.get('end'))
+        db, owner=_owner(ctx), start=_parse_dt(args.get('start')), end=_parse_dt(args.get('end'))
     )
 
 
@@ -220,9 +240,11 @@ async def _register_plan_artifact(
         app_id='plan',
         resource_kind=f'plan.{ref_type}',
         server_id=server_id,
-        session_id=ctx.session_id,
+        # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`ctx.session_id` 是运行时/逻辑会话
+        # 语义，直传会污染工作会话列；缺省走 ContextVar 两级权威（auth 绑定 >
+        # `_hasn_work_session_id` 盖章）。
         agent_hasn_id=ctx.agent_hasn_id,
-        owner_hasn_id=ctx.owner_hasn_id,
+        owner_hasn_id=_owner(ctx),
         title=title,
         source_tool=f'{NAMESPACE}.write',
     )
@@ -230,7 +252,7 @@ async def _register_plan_artifact(
 
 async def _h_create_goal(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """建目标：service 建行后 register-on-write 直登记 hasn_artifacts（doc31 RC-P8 直建半场）。"""
-    result = await plan_service.create_goal(db, owner=ctx.owner_hasn_id, data=args)
+    result = await plan_service.create_goal(db, owner=_owner(ctx), data=args)
     registration = await _register_plan_artifact(db, ctx, ref_type='goal', result=result)
     return merge_resource_uri(result, registration)
 
@@ -245,7 +267,7 @@ async def _h_create_plan(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
         return _reject_not_in_enterprise()
     result = await plan_service.create_plan(
         db,
-        owner=ctx.owner_hasn_id,
+        owner=_owner(ctx),
         data=_without(args, 'scope', '_active_enterprise_id'),
         default_bound_agent=ctx.agent_hasn_id,
         enterprise_id=ws.enterprise_id,
@@ -269,7 +291,7 @@ async def _h_create_todo(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
         return _reject_not_in_enterprise()
     return await plan_service.create_todo(
         db,
-        owner=ctx.owner_hasn_id,
+        owner=_owner(ctx),
         data=_without(args, 'scope', '_active_enterprise_id'),
         enterprise_id=ws.enterprise_id,
         dept_id=ws.dept_id,
@@ -284,7 +306,7 @@ async def _h_create_event(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
     attendees = _as_list(args.get('attendees')) if ws.enterprise_id is not None else None
     return await plan_service.create_event(
         db,
-        owner=ctx.owner_hasn_id,
+        owner=_owner(ctx),
         data=_without(args, 'scope', '_active_enterprise_id', 'attendees'),
         enterprise_id=ws.enterprise_id,
         dept_id=ws.dept_id,
@@ -299,7 +321,7 @@ async def _h_event_invite(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
     """
     result = await plan_service.invite_attendees(
         db,
-        owner=ctx.owner_hasn_id,
+        owner=_owner(ctx),
         event_id=int(args['event_id']),
         add=_as_list(args.get('add')),
         remove=_as_list(args.get('remove')),
@@ -313,7 +335,7 @@ async def _h_event_invite(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
 async def _h_event_rsvp(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """代主人回复参会 RSVP（accepted/declined/tentative）。"""
     return await plan_service.respond_rsvp(
-        db, owner=ctx.owner_hasn_id, event_id=int(args['event_id']), rsvp=str(args['rsvp'])
+        db, owner=_owner(ctx), event_id=int(args['event_id']), rsvp=str(args['rsvp'])
     )
 
 
@@ -321,7 +343,7 @@ async def _h_availability(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
     """查企业成员忙闲找空档（只回忙闲块、不回标题；受 A3 数据范围约束）。需 enterprise_id + members。"""
     return await plan_service.member_availability(
         db,
-        viewer_owner_hasn_id=ctx.owner_hasn_id,
+        viewer_owner_hasn_id=_owner(ctx),
         enterprise_id=int(args['enterprise_id']),
         member_hasn_ids=_as_list(args.get('members')),
         start=_parse_dt(args.get('start')),
@@ -334,19 +356,19 @@ async def _h_checkin(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     data = _without(args, 'id')
     if 'date' in data and 'checkin_date' not in data:
         data['checkin_date'] = data.pop('date')
-    return await plan_service.checkin_habit(db, owner=ctx.owner_hasn_id, habit_id=int(args['id']), data=data)
+    return await plan_service.checkin_habit(db, owner=_owner(ctx), habit_id=int(args['id']), data=data)
 
 
 async def _h_update_milestone(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """改里程碑（含改状态 planned→doing→done）：service 签名用 milestone_id（异构于 pk 类），故走特例 handler。"""
     return await plan_service.update_milestone(
-        db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']), data=_without(args, 'id')
+        db, owner=_owner(ctx), milestone_id=int(args['id']), data=_without(args, 'id')
     )
 
 
 async def _h_delete_milestone(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """删里程碑（其下待办 SET NULL 回落）：service 签名用 milestone_id，走特例 handler。"""
-    await plan_service.delete_milestone(db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']))
+    await plan_service.delete_milestone(db, owner=_owner(ctx), milestone_id=int(args['id']))
     return {'deleted': True}
 
 

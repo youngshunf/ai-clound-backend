@@ -115,11 +115,11 @@ async def test_sync_agents_backfills_online_status_from_presence(monkeypatch: py
         pdc_module.platform_default_config_service, 'get_effective_config', _fake_effective_config
     )
 
-    service = svc_module.HasnAgentProfileService(
-        gateway=FakeGateway([_fake_agent('a_online'), _fake_agent('a_offline')])
-    )
+    gateway: Any = FakeGateway([_fake_agent('a_online'), _fake_agent('a_offline')])
+    service = svc_module.HasnAgentProfileService(gateway=gateway)
+    db: Any = object()
     response = await service.sync_agents(
-        object(),
+        db,
         AgentSyncRequest(owner_id='h_owner', after_revision=None, include_disabled=True),
         user_id=1,
     )

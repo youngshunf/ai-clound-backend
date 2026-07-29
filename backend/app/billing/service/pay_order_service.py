@@ -413,7 +413,10 @@ class PayOrderService:
         # 延迟导入避免 pay → hasn 顶层循环依赖（与 user_tier dao 同为业务定价来源）。
         from backend.app.hasn_core.app_platform import app_catalog_service
 
-        catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
+        app_id = obj.app_id
+        if app_id is None:
+            raise errors.RequestError(msg='应用购买缺少 app_id')
+        catalog = await app_catalog_service.get_published_catalog(db, app_id=app_id)
         if catalog is None:
             raise errors.RequestError(msg=f'应用不存在或已下架: {obj.app_id}')
         if (catalog.access_type or 'free') != 'purchase':
@@ -499,7 +502,10 @@ class PayOrderService:
         """
         from backend.app.hasn_core.app_platform import app_catalog_service
 
-        catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
+        app_id = obj.app_id
+        if app_id is None:
+            raise errors.RequestError(msg='企业席位购买缺少 app_id')
+        catalog = await app_catalog_service.get_published_catalog(db, app_id=app_id)
         if catalog is None:
             raise errors.RequestError(msg=f'应用不存在或已下架: {obj.app_id}')
         if (catalog.access_type or 'free') != 'purchase':
@@ -520,6 +526,10 @@ class PayOrderService:
         now = timezone.now()
         expire_time = now + timedelta(minutes=ORDER_EXPIRE_MINUTES)
 
+        enterprise_id = obj.enterprise_id
+        if enterprise_id is None:
+            raise errors.RequestError(msg='企业席位购买缺少 enterprise_id')
+
         order_dict = {
             'order_no': order_no,
             'user_id': user_id,
@@ -537,7 +547,7 @@ class PayOrderService:
             'extra_data': {
                 'app_code': app_code,
                 'app_id': catalog.app_id,
-                'enterprise_id': int(obj.enterprise_id),
+                'enterprise_id': enterprise_id,
                 'seats': seats,
             },
             # MK-3：商品目录引用快照；offering_key=seat:<id>（席位 feature 前缀族）。

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import operator
 import os
 import re
+import stat
 import zipfile
 
 from dataclasses import dataclass
@@ -15,6 +18,8 @@ from backend.common.exception import errors
 
 MAX_PACKAGE_SIZE = 50 * 1024 * 1024
 MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_TOTAL_UNCOMPRESSED_SIZE = 100 * 1024 * 1024
+MAX_FILE_COUNT = 1000
 MAX_PATH_DEPTH = 12
 BLOCKED_PARTS = {
     '.git',
@@ -51,6 +56,9 @@ class PackageAsset:
 class SkillPackage:
     metadata: dict[str, Any]
     icon: PackageAsset | None
+    markdown: str
+    files: list[dict[str, Any]]
+    content_hash: str
 
 
 @dataclass
@@ -63,6 +71,8 @@ def _validate_zip_entry(info: zipfile.ZipInfo) -> None:
     filename = info.filename
     if not filename or filename.endswith('/'):
         return
+    if '\\' in filename:
+        raise errors.RequestError(msg='ZIP 包含不安全路径分隔符')
     path = PurePosixPath(filename)
     if path.is_absolute() or '..' in path.parts:
         raise errors.RequestError(msg='ZIP 包含不安全路径')
@@ -82,6 +92,9 @@ def _validate_zip_entry(info: zipfile.ZipInfo) -> None:
         raise errors.RequestError(msg='ZIP 包含敏感文件')
     if info.file_size > MAX_FILE_SIZE:
         raise errors.RequestError(msg='ZIP 包含超出大小限制的文件')
+    unix_mode = info.external_attr >> 16
+    if unix_mode and stat.S_ISLNK(unix_mode):
+        raise errors.RequestError(msg='ZIP 包含不允许上传的符号链接')
 
 
 def _open_validated_zip(content: bytes) -> zipfile.ZipFile:
@@ -91,8 +104,24 @@ def _open_validated_zip(content: bytes) -> zipfile.ZipFile:
         zf = zipfile.ZipFile(BytesIO(content), 'r')
     except zipfile.BadZipFile:
         raise errors.RequestError(msg='无效的 ZIP 文件')
-    for info in zf.infolist():
+    entries = zf.infolist()
+    if len(entries) > MAX_FILE_COUNT:
+        zf.close()
+        raise errors.RequestError(msg='ZIP 文件数量超过限制')
+    total_size = sum(info.file_size for info in entries if not info.is_dir())
+    if total_size > MAX_TOTAL_UNCOMPRESSED_SIZE:
+        zf.close()
+        raise errors.RequestError(msg='ZIP 解压后总大小超过限制')
+    seen_paths: set[str] = set()
+    for info in entries:
         _validate_zip_entry(info)
+        if info.is_dir():
+            continue
+        normalized_path = PurePosixPath(info.filename).as_posix()
+        if normalized_path in seen_paths:
+            zf.close()
+            raise errors.RequestError(msg=f'ZIP 包含重复文件路径: {normalized_path}')
+        seen_paths.add(normalized_path)
     return zf
 
 
@@ -144,15 +173,56 @@ def find_icon(zf: zipfile.ZipFile) -> PackageAsset | None:
     return None
 
 
+def _skill_file_manifest(zf: zipfile.ZipFile) -> tuple[list[dict[str, Any]], str]:
+    """生成排序后的文件清单与内容指纹。
+
+    指纹算法与 daemon 个人技能打包一致：对排序后的
+    ``path + NUL + sha256(file) + NUL`` 连续求 SHA256。它不受 ZIP 条目顺序、
+    压缩参数和时间戳影响。
+    """
+    entries: list[tuple[str, bytes]] = []
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        path = PurePosixPath(info.filename).as_posix()
+        entries.append((path, zf.read(info)))
+    entries.sort(key=operator.itemgetter(0))
+
+    top_digest = hashlib.sha256()
+    files: list[dict[str, Any]] = []
+    for path, content in entries:
+        file_hash = hashlib.sha256(content).hexdigest()
+        top_digest.update(path.encode())
+        top_digest.update(b'\0')
+        top_digest.update(file_hash.encode())
+        top_digest.update(b'\0')
+        files.append(
+            {
+                'path': path,
+                'size': len(content),
+                'sha256': file_hash,
+            }
+        )
+    return files, top_digest.hexdigest()
+
+
 def parse_skill_package(content: bytes) -> SkillPackage:
     with _open_validated_zip(content) as zf:
-        metadata = _extract_frontmatter(_read_required_text(zf, 'SKILL.md'))
+        markdown = _read_required_text(zf, 'SKILL.md')
+        metadata = _extract_frontmatter(markdown)
         for field in ('name', 'description'):
-            if not metadata.get(field):
+            if not isinstance(metadata.get(field), str) or not metadata[field].strip():
                 raise errors.RequestError(msg=f'SKILL.md frontmatter 缺少 {field}')
         metadata['version'] = str(metadata.get('version') or '1.0.0')
         metadata['tags'] = normalize_tags(metadata.get('tags'))
-        return SkillPackage(metadata=metadata, icon=find_icon(zf))
+        files, content_hash = _skill_file_manifest(zf)
+        return SkillPackage(
+            metadata=metadata,
+            icon=find_icon(zf),
+            markdown=markdown,
+            files=files,
+            content_hash=content_hash,
+        )
 
 
 def parse_template_package(content: bytes) -> TemplatePackage:

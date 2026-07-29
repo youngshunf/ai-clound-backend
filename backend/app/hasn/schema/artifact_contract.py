@@ -37,6 +37,9 @@ class ArtifactMutation(ArtifactContractModel):
     body: str | None = None
     asset_id: str | None = None
     resource_uri: str | None = None
+    source_asset_uri: str | None = Field(None, pattern=r'^hasn://asset/[^/]+$')
+    source_hash: str | None = Field(None, pattern=r'^[0-9a-f]{64}$')
+    source_synced_at: datetime | None = None
     local_locator_key: str | None = None
     resource_kind: str | None = None
     resource_app_id: str | None = None
@@ -55,6 +58,9 @@ class ArtifactMutation(ArtifactContractModel):
     title: str | None = None
     summary: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    # 同一应用资源可由一个工作会话分批写入；这些计数只在本次 contribution 首次插入时累加，
+    # 重放同一幂等键不再增加。调用方只能声明本次 metadata 中的非负整数键。
+    accumulate_metadata_keys: list[str] = Field(default_factory=list, max_length=32)
     # 幂等键由产生 mutation 的一侧计算并原样过网，云端不得重算（设计 A12）。缺省时按确定性规则
     # 兜底并告警，绝不生成随机键——随机兜底会让 outbox 每重试一次就多一条参与记录。
     idempotency_key: str | None = None
@@ -101,6 +107,37 @@ class ArtifactMutation(ArtifactContractModel):
         if self.artifact_kind is not None and self.artifact_kind != expected_kind:
             raise ValueError('artifact_kind 与产物本体定位方式不一致')
         self.artifact_kind = expected_kind
+        return self
+
+    @model_validator(mode='after')
+    def validate_source_snapshot(self) -> ArtifactMutation:
+        """私有快照三元组必须全空或全非空，空值不得抹除既有快照。"""
+        present = (
+            self.source_asset_uri is not None,
+            self.source_hash is not None,
+            self.source_synced_at is not None,
+        )
+        if any(present) and not all(present):
+            raise ValueError('source_asset_uri/source_hash/source_synced_at 必须全空或全非空')
+        return self
+
+    @model_validator(mode='after')
+    def validate_accumulated_metadata(self) -> ArtifactMutation:
+        """累计键必须唯一且对应非负整数，禁止把任意 JSON 当计数器相加。"""
+        if len(set(self.accumulate_metadata_keys)) != len(
+            self.accumulate_metadata_keys
+        ):
+            raise ValueError('accumulate_metadata_keys 不能重复')
+        for key in self.accumulate_metadata_keys:
+            if not key or len(key) > 64:
+                raise ValueError('累计 metadata 键无效')
+            value = self.metadata.get(key)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise ValueError('累计 metadata 值必须是非负整数')
         return self
 
 
@@ -158,11 +195,18 @@ class ArtifactListItem(ArtifactContractModel):
     preview_url: str | None
     download_url: str | None
     resource_uri: str | None
+    source_asset_uri: str | None
+    source_hash: str | None
+    source_synced_at: datetime | None
     local_entry: LocalArtifactEntry | None
     availability: ArtifactAvailability
     allowed_actions: list[Literal['open', 'preview', 'download', 'locate']]
     sync_state: ArtifactSyncState
-    latest_contribution: LatestContribution
+    # A15：可空且唯一合法场景是「历史回填无法恢复任何参与事实」——此时
+    # migration_lost_history=true，UI 明示「参与记录不可考」；新写入路径产生的产物永远
+    # 至少有一条参与记录，出现 null 而无标记即登记链路缺陷（service 层 warn，不伪填）。
+    latest_contribution: LatestContribution | None = None
+    migration_lost_history: bool = False
     agent_identity: ArtifactAgentIdentity | None
     project_relation: ArtifactProjectRelation | None
     created_time: datetime

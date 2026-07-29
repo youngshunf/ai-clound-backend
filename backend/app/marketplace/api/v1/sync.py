@@ -55,30 +55,30 @@ async def sync_installed(
     for item in request.installed:
         if item.type == 'skill':
             # 获取技能最新版本
-            latest = await marketplace_skill_version_dao.get_latest_by_skill(db, item.id)
+            latest_skill = await marketplace_skill_version_dao.get_latest_by_skill(db, item.id)
             # 简单版本比较（可以改用 semver 库）
-            if latest and latest.version != item.version and _is_newer_version(latest.version, item.version):
+            if latest_skill and latest_skill.version != item.version and _is_newer_version(latest_skill.version, item.version):
                 updates.append(UpdateItem(
                     id=item.id,
                     type='skill',
                     current_version=item.version,
-                    latest_version=latest.version,
-                    changelog=latest.changelog,
-                    download_url=latest.package_url,
-                    file_hash=latest.file_hash,
+                    latest_version=latest_skill.version,
+                    changelog=latest_skill.changelog,
+                    download_url=latest_skill.package_url,
+                    file_hash=latest_skill.file_hash,
                 ))
         elif item.type == 'template':
             # 获取模板最新版本
-            latest = await marketplace_template_version_dao.get_latest_by_template(db, item.id)
-            if latest and latest.version != item.version and _is_newer_version(latest.version, item.version):
+            latest_template = await marketplace_template_version_dao.get_latest_by_template(db, item.id)
+            if latest_template and latest_template.version != item.version and _is_newer_version(latest_template.version, item.version):
                 updates.append(UpdateItem(
                     id=item.id,
                     type='template',
                     current_version=item.version,
-                    latest_version=latest.version,
-                    changelog=latest.changelog,
-                    download_url=latest.package_url,
-                    file_hash=latest.file_hash,
+                    latest_version=latest_template.version,
+                    changelog=latest_template.changelog,
+                    download_url=latest_template.package_url,
+                    file_hash=latest_template.file_hash,
                 ))
 
     return response_base.success(data=SyncResponse(updates=updates))

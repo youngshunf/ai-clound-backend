@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from backend.app.mcp.tools.workbench import _canonicalize_document_routes, _normalize_route
 
 
@@ -39,7 +41,7 @@ def test_normalize_leaves_canonical_and_toplevel_untouched() -> None:
 
 
 def test_canonicalize_document_walks_actions_and_source() -> None:
-    document = {
+    document: dict[str, Any] = {
         'summary': 's',
         'focus_items': [
             {

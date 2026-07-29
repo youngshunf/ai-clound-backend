@@ -16,20 +16,25 @@ import mimetypes
 import re
 import uuid
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
 from sqlalchemy import func, select
 
+from backend.app.hasn.model import HasnAssetBindings, HasnAssets
 from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_knowledge.model import AgentKbGrant, Document, DocumentVersion, Folder, Kb
+from backend.app.hasn_knowledge.service.inline_assets import asset_ids_from_content
 from backend.app.hasn_knowledge.service.instance import resolve_knowledge_instance
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 from backend.common.exception import errors
+from backend.database.db import async_db_session
 from backend.plugin.s3.service.storage_service import storage_service
 from backend.utils.timezone import timezone
 
@@ -53,8 +58,10 @@ MAX_NATIVE_CONTENT_CHARS = 5000
 _DOC_LINK_RE = re.compile(r'hasn://knowledge/documents/(\d+)')
 # folder_id 查询参数的「库根」哨兵（真实 id 从 1 起）
 ROOT_FOLDER_SENTINEL = 0
+_owner_storage = OwnerStorageService(async_db_session)
 
 _GRANT_MODES = ('inherit', 'restricted', 'denied')
+_CLIENT_REQUEST_ID_MAX_LENGTH = 200
 
 # 知识库接入平台产物级协作（应用平台 v3 §6）：resource_share 的 resource_type。
 _RESOURCE_TYPE = 'knowledge'
@@ -75,12 +82,65 @@ def _resource_uri(resource_kind: str, server_id: int) -> str | None:
 
     descriptor 解析不出（manifest 没声明）→ 返 `None`，投影省略 `uri` 字段，绝不返空串或假 URI。
     """
-    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+    from backend.app.hasn_core.app_platform import ai_native_app_registry
 
     descriptor = ai_native_app_registry.resource_descriptor('knowledge', resource_kind)
     if descriptor is None or descriptor.resource_kind != resource_kind:
         return None
     return descriptor.build_uri(server_id)
+
+
+def _as_project_uuid(value: str | uuid.UUID) -> uuid.UUID:
+    """把入参项目 id 归一成 UUID；非法格式如实报 400（不静默忽略，避免「过滤了个寂寞」）。"""
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value).strip())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise errors.RequestError(msg=f'项目 id 不是合法 UUID：{value!r}') from exc
+
+
+def _normalize_client_request_id(value: str | None) -> str | None:
+    """归一建库业务幂等键；空值保持旧版非幂等创建语义。"""
+    if value is None:
+        return None
+    request_id = str(value).strip()
+    if not request_id:
+        raise errors.RequestError(
+            msg='client_request_id 不能为空',
+            data={'error_code': 'KNOWLEDGE_CLIENT_REQUEST_ID_INVALID'},
+        )
+    if len(request_id) > _CLIENT_REQUEST_ID_MAX_LENGTH:
+        raise errors.RequestError(
+            msg=f'client_request_id 最长 {_CLIENT_REQUEST_ID_MAX_LENGTH} 个字符',
+            data={'error_code': 'KNOWLEDGE_CLIENT_REQUEST_ID_INVALID'},
+        )
+    return request_id
+
+
+def _same_kb_create_payload(
+    kb: Kb,
+    *,
+    name: str,
+    description: str | None,
+    cover_asset_uri: str | None,
+    platform_project_id: uuid.UUID | None,
+) -> bool:
+    """判断幂等重放是否与首次建库参数完全一致。"""
+    return (
+        kb.name == name
+        and kb.description == description
+        and kb.cover_asset_uri == cover_asset_uri
+        and kb.platform_project_id == platform_project_id
+        and kb.deleted_time is None
+    )
+
+
+def _idempotent_kb_result(kb: Kb, *, replay: bool) -> dict[str, Any]:
+    """序列化建库结果，并显式告诉调用方是否为幂等重放。"""
+    result = _kb_dict(kb)
+    result['idempotent_replay'] = replay
+    return result
 
 
 def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None = None) -> dict[str, Any]:
@@ -101,6 +161,9 @@ def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None =
         'document_count': kb.document_count,
         'chunk_count': kb.chunk_count,
         'status': kb.status,
+        # 平台项目挂靠（doc38 层2 / doc §3.4）：读侧**不按项目默认收窄**，改为每行回带归属，
+        # 分身与 webui 据此自证「这个库属于哪个项目」，需要收窄时再显式传过滤参。
+        'platform_project_id': str(kb.platform_project_id) if kb.platform_project_id else None,
         'created_time': kb.created_time,
         'updated_time': kb.updated_time,
     }
@@ -350,11 +413,18 @@ class KnowledgeService:
             rows.append((kb, eff, relation))
         return rows
 
-    async def list_accessible_kbs(self, db: AsyncSession, *, subject: Subject) -> list[dict[str, Any]]:
-        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。"""
+    async def list_accessible_kbs(
+        self, db: AsyncSession, *, subject: Subject, platform_project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。
+
+        `platform_project_id` 非空时按挂靠项目收窄（缺省不过滤，见 `list_kbs` 口径说明）。
+        """
+        pid = _as_project_uuid(platform_project_id) if platform_project_id else None
         return [
             _kb_dict(kb, my_permission=perm, relation=relation)
             for kb, perm, relation in await self._accessible_kb_rows(db, subject=subject)
+            if pid is None or kb.platform_project_id == pid
         ]
 
     @staticmethod
@@ -492,13 +562,42 @@ class KnowledgeService:
             db, resource_type=_RESOURCE_TYPE_DOC, resource_id=str(doc_id), grantee_type=grantee_type, grantee_id=grantee_id
         )
 
-    async def list_kbs(self, db: AsyncSession, owner_id: str) -> list[dict[str, Any]]:
-        rows = (
-            await db.execute(
-                select(Kb).where(Kb.owner_id == owner_id, Kb.deleted_time.is_(None)).order_by(Kb.id.desc())
-            )
-        ).scalars()
+    async def get_kb_detail(self, db: AsyncSession, *, subject: Subject, kb_id: int) -> dict[str, Any]:
+        """单库详情（viewer 权即可读）：含 `platform_project_id`，供 daemon 继承挂靠项目与 webui 详情页用。"""
+        kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='viewer')
+        eff = await self._effective_permission(db, kb=kb, subject=subject)
+        relation = 'owner' if kb.owner_id == subject.hasn_id else 'shared'
+        return _kb_dict(kb, my_permission=eff, relation=relation)
+
+    async def list_kbs(
+        self, db: AsyncSession, owner_id: str, *, platform_project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列主人自己的库；`platform_project_id` 非空时收窄到该项目（项目总览「挂靠资源区」用）。
+
+        缺省**不过滤**——知识库是长期资产、跨项目复用是常态，默认按当前项目收窄会让分身/主人
+        看不见绝大多数库（doc38 §5.6「写侧继承、读侧不收窄」）。
+        """
+        conditions = [Kb.owner_id == owner_id, Kb.deleted_time.is_(None)]
+        if platform_project_id:
+            conditions.append(Kb.platform_project_id == _as_project_uuid(platform_project_id))
+        rows = (await db.execute(select(Kb).where(*conditions).order_by(Kb.id.desc()))).scalars()
         return [_kb_dict(kb) for kb in rows]
+
+    @staticmethod
+    async def _resolve_owned_project_id(
+        db: AsyncSession, *, owner_id: str, platform_project_id: str | None
+    ) -> uuid.UUID | None:
+        """校验并归一「新库要挂进哪个平台项目」：空 → None（不挂）；非本主人项目 → 404。
+
+        延迟导入 project 域，避免应用间 import 环（knowledge 只在此一处依赖 project service）。
+        """
+        if not platform_project_id or not str(platform_project_id).strip():
+            return None
+        from backend.app.hasn_project.service.project_app_service import project_service
+
+        pid = _as_project_uuid(platform_project_id)
+        await project_service.assert_owned(db, owner=owner_id, pk=pid)
+        return pid
 
     async def create_kb(
         self,
@@ -508,12 +607,52 @@ class KnowledgeService:
         name: str,
         description: str | None,
         cover_asset_uri: str | None = None,
+        platform_project_id: str | None = None,
+        client_request_id: str | None = None,
     ) -> dict[str, Any]:
         """建库：先建 RAGFlow dataset（失败则不落 kb 行，如实报错），成功后落域行。
 
         cover_asset_uri：封面资产引用（hasn://asset/{id}），主人建库上传或分身建库配图得到；
         存原始引用、不存 CDN 直链，渲染边界再换签名 URL。
+
+        platform_project_id：新库直接挂进的平台项目（doc38 §5.5 容器创建时的项目归属）。
+        三条来源——① daemon 代主人建库时带上本次派发定稿的项目；② 分身在项目工作会话里调
+        `create_kb` 时由 ContextVar 缺省；③ 分身显式指名项目（先经 `hasn.project.list` 换权威 UUID）。
+        **写前必过归属校验**：非本主人的项目 → 404，绝不直写列（否则绕过挂靠点注册表的 owner 隔离）。
         """
+        normalized_name = name.strip()
+        normalized_description = description.strip() if description and description.strip() else None
+        normalized_cover = cover_asset_uri.strip() if cover_asset_uri and cover_asset_uri.strip() else None
+        request_id = _normalize_client_request_id(client_request_id)
+        project_id = await self._resolve_owned_project_id(db, owner_id=owner_id, platform_project_id=platform_project_id)
+        if request_id is not None:
+            # 事务级 advisory lock 在调用真实 RAGFlow 前串行化同 Owner+幂等键并发，
+            # 避免数据库唯一约束虽挡住重复行，却留下第二个外部 dataset。
+            await db.execute(
+                sa.text('SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))'),
+                {'lock_key': f'knowledge:create:{owner_id}:{request_id}'},
+            )
+            existing = (
+                await db.execute(
+                    select(Kb).where(
+                        Kb.owner_id == owner_id,
+                        Kb.client_request_id == request_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if not _same_kb_create_payload(
+                    existing,
+                    name=normalized_name,
+                    description=normalized_description,
+                    cover_asset_uri=normalized_cover,
+                    platform_project_id=project_id,
+                ):
+                    raise errors.ConflictError(
+                        msg='client_request_id 已用于不同的知识库创建参数',
+                        data={'error_code': 'KNOWLEDGE_IDEMPOTENCY_CONFLICT'},
+                    )
+                return _idempotent_kb_result(existing, replay=True)
         client, config = await resolve_knowledge_instance(db)
         # dataset 内部名取唯一随机串（单平台租户下避免撞名；展示名只活在域行）
         dataset = await client.create_dataset(name=f'hxkb_{uuid.uuid4().hex[:16]}', embedding_model=config.default_embd_id)
@@ -521,18 +660,20 @@ class KnowledgeService:
             owner_id=owner_id,
             scope='personal',
             enterprise_id=None,
-            name=name,
-            description=description,
-            cover_asset_uri=cover_asset_uri or None,
+            name=normalized_name,
+            description=normalized_description,
+            cover_asset_uri=normalized_cover,
             ragflow_dataset_id=str(dataset['id']),
             embedding_model=config.default_embd_id,
             document_count=0,
             chunk_count=0,
             status='active',
+            platform_project_id=project_id,
+            client_request_id=request_id,
         )
         db.add(kb)
         await db.flush()
-        return _kb_dict(kb)
+        return _idempotent_kb_result(kb, replay=False) if request_id else _kb_dict(kb)
 
     async def update_kb(
         self,
@@ -561,7 +702,7 @@ class KnowledgeService:
         return _kb_dict(kb)
 
     async def delete_kb(self, db: AsyncSession, resource_owner_id: str, kb_id: int) -> None:
-        """删库：级联删 RAGFlow dataset + 文档/目录行。引擎不可达如实报错（避免残留孤儿向量可检索）。"""
+        """删库：级联删引擎副本与知识行，并释放正文图片绑定。"""
         kb = await self._get_kb(db, resource_owner_id, kb_id)
         client, _ = await resolve_knowledge_instance(db)
         try:
@@ -571,6 +712,16 @@ class KnowledgeService:
                 raise
             # dataset 已不存在等业务错误 → 域行照删（派生物已不在）
         now = timezone.now()
+        doc_ids = list(
+            (
+                await db.execute(
+                    select(Document.id).where(Document.kb_id == kb_id, Document.deleted_time.is_(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await self._deactivate_inline_asset_bindings(db, doc_ids=doc_ids, now=now)
         kb.deleted_time = now
         await db.execute(
             sa.update(Document)
@@ -805,6 +956,7 @@ class KnowledgeService:
         folder_id: int | None = None,
         source: str = 'ui',
         agent_hasn_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """§4.3-A：原件落私有桶（权威，失败=整次失败）→ 落行 → 推引擎副本 → 触发解析。"""
         if not data:
@@ -813,9 +965,15 @@ class KnowledgeService:
             raise errors.RequestError(msg=f'文件超出大小上限 {MAX_FILE_SIZE // (1024 * 1024)}MB')
         kb = await self._get_kb(db, resource_owner_id, kb_id)
         folder_id = await self._validate_folder_for_kb(db, resource_owner_id, kb_id, folder_id)
-        ref = await storage_service.upload(db, data, category='private_doc', filename=filename, content_type=mime)
-        asset = await hasn_asset_service.register_asset(
-            db, owner_hasn_id=resource_owner_id, ref=ref, kind='file', extract_status='done'
+        stored = await _owner_storage.upload_bytes(
+            owner_hasn_id=resource_owner_id,
+            data=data,
+            filename=filename,
+            mime=mime,
+            category='private_doc',
+            source_app='knowledge',
+            idempotency_key=f'knowledge:{idempotency_key or uuid.uuid4().hex}',
+            extract_status='done',
         )
         doc = Document(
             kb_id=kb_id,
@@ -826,7 +984,7 @@ class KnowledgeService:
             size_bytes=len(data),
             mime_type=mime,
             content=None,
-            asset_uri=f'hasn://asset/{asset.asset_id}',
+            asset_uri=stored.uri,
             current_version=0,
             ragflow_document_id=None,
             parse_status='uploading',
@@ -837,6 +995,13 @@ class KnowledgeService:
         )
         db.add(doc)
         await db.flush()
+        await _owner_storage.bind_asset_in_transaction(
+            db,
+            owner_hasn_id=resource_owner_id,
+            asset_id=stored.asset_id,
+            resource_uri=f'hasn://knowledge/documents/{doc.id}',
+            role='source',
+        )
         await self._push_copy_to_engine(db, kb, doc, filename=filename, data=data, mime=mime)
         await self._refresh_kb_counts(db, kb)
         return _document_dict(doc)
@@ -873,6 +1038,8 @@ class KnowledgeService:
             raise errors.NotFoundError(msg='资产不存在')
         if asset.owner_hasn_id != resource_owner_id:
             raise errors.ForbiddenError(msg='该资产不属于你的主人，无法入库')
+        if asset.object_state == 'missing':
+            raise errors.NotFoundError(msg='STORAGE_OBJECT_MISSING')
         data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
         filename = self._asset_filename(title, asset.mime)
         return await self.upload_file_document(
@@ -932,7 +1099,7 @@ class KnowledgeService:
         await db.flush()
 
     async def delete_document(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> None:
-        """删文档：引擎副本必须删净（避免孤儿向量仍可检索），不可达如实报错。"""
+        """删文档：删净引擎副本，并停用当前及历史版本共用的正文图片绑定。"""
         doc = await self._get_document(db, resource_owner_id, doc_id)
         kb = await self._get_kb(db, resource_owner_id, doc.kb_id)
         if doc.ragflow_document_id:
@@ -942,7 +1109,9 @@ class KnowledgeService:
             except KnowledgeProviderError as exc:
                 if exc.code != 'knowledge_provider_error':
                     raise
-        doc.deleted_time = timezone.now()
+        now = timezone.now()
+        await self._deactivate_inline_asset_bindings(db, doc_ids=[doc.id], now=now)
+        doc.deleted_time = now
         await self._refresh_kb_counts(db, kb)
 
     async def get_document(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> dict[str, Any]:
@@ -960,6 +1129,8 @@ class KnowledgeService:
         asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
         if asset is None:
             raise errors.NotFoundError(msg='原件资产不存在')
+        if asset.object_state == 'missing':
+            raise errors.NotFoundError(msg='STORAGE_OBJECT_MISSING')
         stream = storage_service.read_stream(db, storage_id=asset.storage_id, object_key=asset.object_key)
         return doc.name, doc.mime_type or 'application/octet-stream', stream
 
@@ -1036,11 +1207,159 @@ class KnowledgeService:
         if result['valid']:
             return
         bad = [lk for lk in result['links'] if not lk['ok']]
-        _reason_zh = {'not_found': '不存在/已删除', 'cross_kb': '属于其它知识库'}
-        detail = '；'.join(f'{lk["uri"]}（{_reason_zh.get(lk["reason"], lk["reason"])}）' for lk in bad)
+        reason_zh = {'not_found': '不存在/已删除', 'cross_kb': '属于其它知识库'}
+        detail = '；'.join(f'{lk["uri"]}（{reason_zh.get(lk["reason"], lk["reason"])}）' for lk in bad)
         raise errors.RequestError(
             msg=f'正文含 {len(bad)} 条无效深链，无法保存：{detail}。'
             '深链只能指向同一知识库内已存在的文档，请先建好目标文档或修正链接'
+        )
+
+    async def _existing_inline_asset_ids(self, db: AsyncSession, doc: Document) -> set[str]:
+        """读取本文档已保存过的图片引用，供共享编辑者原样保留老内容。"""
+        contents = (
+            await db.execute(
+                select(DocumentVersion.content).where(DocumentVersion.document_id == doc.id)
+            )
+        ).scalars().all()
+        referenced = asset_ids_from_content(doc.content)
+        for content in contents:
+            referenced.update(asset_ids_from_content(content))
+        return referenced
+
+    async def _owned_active_private_asset_ids(
+        self,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        candidate_ids: set[str],
+    ) -> set[str]:
+        """从旧正文引用中筛出文档主人自有的有效私有资产，供安全回填 binding。"""
+        if not candidate_ids:
+            return set()
+        return set(
+            (
+                await db.execute(
+                    select(HasnAssets.asset_id).where(
+                        HasnAssets.asset_id.in_(candidate_ids),
+                        HasnAssets.owner_hasn_id == owner_hasn_id,
+                        HasnAssets.access != 'public',
+                        HasnAssets.lifecycle_status == 'active',
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def _authorize_inline_assets(
+        self,
+        db: AsyncSession,
+        *,
+        actor_owner_id: str,
+        resource_owner_id: str,
+        content: str,
+        doc_id: int | None,
+        existing_ids: set[str],
+    ) -> set[str]:
+        """校验正文图片来源；返回需要绑定到本文档的 actor 自有资产。"""
+        referenced = asset_ids_from_content(content)
+        if not referenced:
+            return set()
+        assets = (
+            (
+                await db.execute(
+                    select(HasnAssets).where(
+                        HasnAssets.asset_id.in_(referenced),
+                        HasnAssets.lifecycle_status == 'active',
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {asset.asset_id: asset for asset in assets}
+        if referenced - by_id.keys():
+            raise errors.NotFoundError(msg='正文图片资产不存在或不可用')
+
+        bound: set[str] = set()
+        if doc_id is not None:
+            resource_uri = _resource_uri('knowledge.document', doc_id)
+            if resource_uri:
+                bound = set(
+                    (
+                        await db.execute(
+                            select(HasnAssetBindings.asset_id).where(
+                                HasnAssetBindings.asset_id.in_(referenced),
+                                HasnAssetBindings.resource_uri == resource_uri,
+                                HasnAssetBindings.role == 'inline_image',
+                                HasnAssetBindings.status == 'active',
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+        actor_owned = {asset_id for asset_id, asset in by_id.items() if asset.owner_hasn_id == actor_owner_id}
+        public_assets = {asset_id for asset_id, asset in by_id.items() if asset.access == 'public'}
+        retained_owner_assets = {
+            asset_id
+            for asset_id, asset in by_id.items()
+            if asset_id in existing_ids and asset.owner_hasn_id == resource_owner_id
+        }
+        unauthorized = referenced - actor_owned - public_assets - bound - retained_owner_assets
+        if unauthorized:
+            raise errors.ForbiddenError(msg='正文含无权附着到本文档的私有图片资产')
+        return actor_owned
+
+    async def _bind_inline_assets(
+        self,
+        db: AsyncSession,
+        *,
+        actor_owner_id: str,
+        doc_id: int,
+        asset_ids: set[str],
+    ) -> None:
+        """把本次写入的 actor 自有图片原子绑定到知识文档，供共享预览投影。"""
+        resource_uri = _resource_uri('knowledge.document', doc_id)
+        if not resource_uri:
+            raise errors.ServerError(msg='知识文档资源 URI 未注册')
+        for asset_id in sorted(asset_ids):
+            await _owner_storage.bind_asset_in_transaction(
+                db,
+                owner_hasn_id=actor_owner_id,
+                asset_id=asset_id,
+                resource_uri=resource_uri,
+                role='inline_image',
+            )
+
+    async def _deactivate_inline_asset_bindings(
+        self,
+        db: AsyncSession,
+        *,
+        doc_ids: list[int],
+        now: datetime,
+    ) -> None:
+        """停用已删除文档的正文图片引用，使资产可回收且不再被共享投影。
+
+        文档删除后当前正文和历史版本都不可再打开，因此它们共用的文档级 binding 一并停用；
+        版本行继续保留仅用于审计，不再构成可访问资源。
+        """
+        resource_uris = [
+            resource_uri
+            for doc_id in doc_ids
+            if (resource_uri := _resource_uri('knowledge.document', doc_id)) is not None
+        ]
+        if not resource_uris:
+            return
+        await db.execute(
+            sa.update(HasnAssetBindings)
+            .where(
+                HasnAssetBindings.resource_uri.in_(resource_uris),
+                HasnAssetBindings.role == 'inline_image',
+                HasnAssetBindings.status == 'active',
+            )
+            .values(status='deleted', updated_time=now)
         )
 
     async def create_native_document(
@@ -1054,11 +1373,21 @@ class KnowledgeService:
         folder_id: int | None = None,
         source: str = 'ui',
         agent_hasn_id: str | None = None,
+        asset_actor_id: str | None = None,
     ) -> dict[str, Any]:
         """§4.3-B：正文落 PG（权威）+ 版本 1 → 渲染 .md 推引擎 → 触发解析。"""
         self._validate_native_content(content)
         # 保存时强校验深链：不能指向不存在/已删除或其它库的文档，有非法即整条拒绝、不落库。
         await self._assert_doc_links_valid(db, resource_owner_id, kb_id, content)
+        actor_owner_id = asset_actor_id or resource_owner_id
+        inline_assets = await self._authorize_inline_assets(
+            db,
+            actor_owner_id=actor_owner_id,
+            resource_owner_id=resource_owner_id,
+            content=content,
+            doc_id=None,
+            existing_ids=set(),
+        )
         kb = await self._get_kb(db, resource_owner_id, kb_id)
         folder_id = await self._validate_folder_for_kb(db, resource_owner_id, kb_id, folder_id)
         doc = Document(
@@ -1081,6 +1410,12 @@ class KnowledgeService:
         )
         db.add(doc)
         await db.flush()
+        await self._bind_inline_assets(
+            db,
+            actor_owner_id=actor_owner_id,
+            doc_id=doc.id,
+            asset_ids=inline_assets,
+        )
         db.add(
             DocumentVersion(
                 document_id=doc.id,
@@ -1109,6 +1444,7 @@ class KnowledgeService:
         move_to_root: bool = False,
         source: str = 'ui',
         agent_hasn_id: str | None = None,
+        asset_actor_id: str | None = None,
     ) -> dict[str, Any]:
         """更新原生文档：title/content 变更=落新版本+保存即重向量化（删旧副本重传）；仅移动目录不重索引。"""
         doc = await self._get_document(db, resource_owner_id, doc_id)
@@ -1121,6 +1457,37 @@ class KnowledgeService:
         if doc.kind == 'native' and (title is not None or content is not None):
             new_title = title if title is not None else doc.name
             new_content = content if content is not None else (doc.content or '')
+            existing_ids = await self._existing_inline_asset_ids(db, doc)
+            actor_owner_id = asset_actor_id or resource_owner_id
+            inline_assets = await self._authorize_inline_assets(
+                db,
+                actor_owner_id=actor_owner_id,
+                resource_owner_id=resource_owner_id,
+                content=new_content,
+                doc_id=doc.id,
+                existing_ids=existing_ids,
+            )
+            # 上线前已有 canonical 图片可能没有 binding。只有资源主人本人保存时，才把其旧引用
+            # 视为重新随本文档分享的确认；共享编辑者不能借历史引用放大主人私有资产的授权范围。
+            owner_backfill_assets: set[str] = set()
+            if actor_owner_id == resource_owner_id:
+                owner_backfill_assets = await self._owned_active_private_asset_ids(
+                    db,
+                    owner_hasn_id=resource_owner_id,
+                    candidate_ids=existing_ids,
+                )
+            await self._bind_inline_assets(
+                db,
+                actor_owner_id=actor_owner_id,
+                doc_id=doc.id,
+                asset_ids=inline_assets,
+            )
+            await self._bind_inline_assets(
+                db,
+                actor_owner_id=resource_owner_id,
+                doc_id=doc.id,
+                asset_ids=owner_backfill_assets - inline_assets,
+            )
             if new_title != doc.name or new_content != (doc.content or ''):
                 self._validate_native_content(new_content)
                 # 保存时强校验深链（同库/存在/未删），有非法即整条拒绝、不落新版本。
@@ -1186,7 +1553,7 @@ class KnowledgeService:
 
     async def restore_version(
         self, db: AsyncSession, resource_owner_id: str, doc_id: int, version_no: int, *, source: str = 'ui',
-        agent_hasn_id: str | None = None,
+        agent_hasn_id: str | None = None, asset_actor_id: str | None = None,
     ) -> dict[str, Any]:
         """恢复版本 = 以快照落新版本 + 重向量化（版本只增不改）。"""
         snapshot = await self.get_version(db, resource_owner_id, doc_id, version_no)
@@ -1198,6 +1565,7 @@ class KnowledgeService:
             content=snapshot['content'],
             source=source,
             agent_hasn_id=agent_hasn_id,
+            asset_actor_id=asset_actor_id,
         )
 
     async def fetch_file_doc_text(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> dict[str, Any]:
@@ -1229,6 +1597,8 @@ class KnowledgeService:
             asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
             if asset is None:
                 raise errors.NotFoundError(msg='原件资产不存在')
+            if asset.object_state == 'missing':
+                raise errors.NotFoundError(msg='STORAGE_OBJECT_MISSING')
             data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
             filename = doc.name
             mime = doc.mime_type or 'application/octet-stream'
@@ -1382,6 +1752,7 @@ class KnowledgeService:
                         select(Document).where(
                             Document.ragflow_document_id.in_(rf_doc_ids),
                             Document.kb_id.in_(visible_kb_ids),
+                            Document.parse_status == 'parsed',
                             Document.deleted_time.is_(None),
                         )
                     )
@@ -1390,6 +1761,11 @@ class KnowledgeService:
                 .all()
             ):
                 doc_rows[str(row.ragflow_document_id)] = row
+        raw_chunks = [
+            chunk
+            for chunk in raw_chunks
+            if str(chunk.get('document_id')) in doc_rows
+        ]
         chunks: list[dict[str, Any]] = []
         for c in raw_chunks:
             doc = doc_rows.get(str(c.get('document_id')))

@@ -17,12 +17,21 @@ from fastapi import APIRouter, Body, Path, Query, Request
 
 from backend.app.hasn_project.api.v1.app._common import (
     bump_project_sync,
+    bump_task_sync,
     publish_project_linkage_sync_after_commit,
     resolve_owner,
 )
-from backend.app.hasn_project.schema.project_app import ProjectCreateBody, ProjectUpdateBody
+from backend.app.hasn_project.schema.project_app import (
+    InspectionMarkDispatchedBody,
+    InspectionMarkRemindedBody,
+    InspectionScheduleBody,
+    ProjectCreateBody,
+    ProjectUpdateBody,
+)
+from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
+from backend.app.hasn_project.service.project_report_service import report_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -131,6 +140,162 @@ async def app_project_artifact_flow(
         size=size,
     )
     return response_base.success(data=flow)
+
+
+@router.get(
+    '/{pk}/reports',
+    summary='项目周报列表',
+    dependencies=[DependsJwtAuth],
+    name='project_app_list_reports',
+)
+async def app_list_reports(
+    request: Request,
+    db: CurrentSession,
+    pk: Annotated[str, Path()],
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ResponseModel:
+    """列项目真实周报 document 索引；正文统一经 artifact 深链打开。"""
+    owner = await resolve_owner(db, request)
+    rows = await report_service.list_for_project(db, owner=owner, project_id=pk, limit=size)
+    return response_base.success(data={'items': rows})
+
+
+@router.get(
+    '/{pk}/inspections',
+    summary='项目巡检建议列表',
+    dependencies=[DependsJwtAuth],
+    name='project_app_list_inspections',
+)
+async def app_list_inspections(
+    request: Request,
+    db: CurrentSession,
+    pk: Annotated[str, Path()],
+    status: Annotated[str | None, Query()] = None,
+) -> ResponseModel:
+    """读取当前主人项目的巡检建议；不传 status 时返回全部处理历史。"""
+    owner = await resolve_owner(db, request)
+    rows = await inspection_service.list_for_project(db, owner=owner, project_id=pk, status=status)
+    return response_base.success(data={'items': rows})
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/dismiss',
+    summary='忽略项目巡检建议',
+    dependencies=[DependsJwtAuth],
+    name='project_app_dismiss_inspection',
+)
+async def app_dismiss_inspection(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+) -> ResponseModel:
+    """把待处理巡检建议标记为 dismissed；重复请求保持幂等。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.dismiss(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/mark-dispatched',
+    summary='回填按建议派发的工作会话',
+    dependencies=[DependsJwtAuth],
+    name='project_app_mark_inspection_dispatched',
+)
+async def app_mark_inspection_dispatched(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+    body: InspectionMarkDispatchedBody,
+) -> ResponseModel:
+    """只接受已真实创建、属于当前主人且挂靠本项目的工作会话。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.mark_dispatched(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+        work_session_id=body.work_session_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/mark-reminded',
+    summary='回填提醒今晚的计划待办',
+    dependencies=[DependsJwtAuth],
+    name='project_app_mark_inspection_reminded',
+)
+async def app_mark_inspection_reminded(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+    body: InspectionMarkRemindedBody,
+) -> ResponseModel:
+    """只接受主人名下真实计划待办；待办由巡检调度动作先创建。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.mark_reminded(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+        plan_todo_id=body.plan_todo_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/remind-tonight',
+    summary='创建今晚处理的计划待办',
+    dependencies=[DependsJwtAuth],
+    name='project_app_remind_inspection_tonight',
+)
+async def app_remind_inspection_tonight(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+) -> ResponseModel:
+    """复用计划待办服务创建真实提醒，并在同一事务回填 `plan_todo_id`。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.remind_tonight(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspection-schedule',
+    summary='启停项目周期巡检',
+    dependencies=[DependsJwtAuth],
+    name='project_app_set_inspection_schedule',
+)
+async def app_set_inspection_schedule(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    body: InspectionScheduleBody,
+) -> ResponseModel:
+    """复用既有任务 scheduler 创建或启停项目巡检任务，默认不创建也不运行。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.set_inspection_schedule(db, owner=owner, project_id=pk, enabled=body.enabled)
+    await bump_project_sync(db, owner)
+    await bump_task_sync(db, owner)
+    return response_base.success(data=data)
 
 
 @router.post(

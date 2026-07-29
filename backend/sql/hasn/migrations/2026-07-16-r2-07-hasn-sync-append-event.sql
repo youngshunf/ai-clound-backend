@@ -59,11 +59,57 @@ DECLARE
     v_event_id          text;
     v_occurred_at       timestamptz;
 BEGIN
+    -- 所有调用方共享同一组边界：先在函数内拒绝空标识、越界字段、非法 producer 和超大载荷，
+    -- 避免不同 Python producer 各自实现一套会漂移的校验。
+    IF p_owner_id IS NULL OR btrim(p_owner_id) = '' OR char_length(p_owner_id) > 40 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: owner_id 必须为 1 至 40 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_hasn_id IS NULL OR btrim(p_hasn_id) = '' OR char_length(p_hasn_id) > 40 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: hasn_id 必须为 1 至 40 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_event_type IS NULL OR btrim(p_event_type) = '' OR char_length(p_event_type) > 50 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: event_type 必须为 1 至 50 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_aggregate_type IS NULL OR btrim(p_aggregate_type) = '' OR char_length(p_aggregate_type) > 40 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: aggregate_type 必须为 1 至 40 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_aggregate_id IS NULL OR btrim(p_aggregate_id) = '' OR char_length(p_aggregate_id) > 80 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: aggregate_id 必须为 1 至 80 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_payload IS NULL OR jsonb_typeof(p_payload) <> 'object' THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: payload 必须是 JSON object'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF octet_length(p_payload::text) > 262144 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: payload 不能超过 262144 字节'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     -- producer / source_event_id 是去重键的两半，必须同时提供或同时省略（缺一则去重语义残缺）
     IF (p_producer IS NULL) <> (p_source_event_id IS NULL) THEN
         RAISE EXCEPTION
             'hasn_sync.append_event: producer 与 source_event_id 必须同时提供或同时省略 (producer=%, source_event_id=%)',
             p_producer, p_source_event_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_producer IS NOT NULL AND (
+        char_length(p_producer) > 40
+        OR p_producer !~ '^[a-z][a-z0-9_]{0,39}$'
+    ) THEN
+        RAISE EXCEPTION
+            'hasn_sync.append_event: producer 必须匹配 ^[a-z][a-z0-9_]{0,39}$'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_source_event_id IS NOT NULL AND (
+        btrim(p_source_event_id) = ''
+        OR char_length(p_source_event_id) > 64
+    ) THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: source_event_id 必须为 1 至 64 个字符'
             USING ERRCODE = 'check_violation';
     END IF;
 

@@ -45,8 +45,8 @@ async def agent_create_quant_backtest_run(
     db: CurrentSessionTransaction,
     obj: CreateQuantBacktestRunParam,
 ) -> ResponseModel:
-    result = await quant_backtest_run_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await quant_backtest_run_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

@@ -291,6 +291,10 @@ class ToolDirectoryService:
             descriptor['access_hint'] = {'reason': decision.reason, 'app_id': decision.app_id}
 
     def _can_discover(self, agent_context: AgentContext, tool: BaseTool) -> bool:
+        from backend.app.mcp.trust_gate import is_session_tool_allowed
+
+        if not is_session_tool_allowed(agent_context, tool.name):
+            return False
         # 统一暴露管线（doc18 §3·实施/103 U1）：发现面 = evaluate 非 HIDDEN 的投影。
         # external 白名单 / runtime 隐藏 / 三态 deny 全部收编进 ToolExposurePolicy，
         # ask 仍可见（调用时由 ask 闸门挂起）、VISIBLE_DENY（U3 付费墙）带引导列出。

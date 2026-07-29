@@ -32,7 +32,7 @@ hasn-mcp（`crates/hasn-mcp/src/computer/tools.rs`，`source=Platform`/`executio
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -100,13 +100,16 @@ def _cap(
     }
 
 
-COMPUTER_USE_AI_NATIVE_MANIFEST = {
+COMPUTER_USE_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'computer_use',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'computer_use': '桌面控制（截屏观察 + 点击/输入/拖拽驱动 GUI）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知发布能力声明（统一通知设计）：完成/派发卡经 Agent JWT 通道发卡给主人。

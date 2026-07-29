@@ -49,6 +49,13 @@ class _FakeDB:
     """sync_agents 现会查公共技能集合修订号；纯快照映射单测无真实库 ⇒ 返回空公共集合（revision '0'）。"""
 
     class _Result:
+        def mappings(self) -> _FakeDB._Result:
+            return self
+
+        @staticmethod
+        def scalar_one_or_none() -> None:
+            return None
+
         @staticmethod
         def all() -> list:
             return []
@@ -93,16 +100,24 @@ class _Gateway:
         self.sync_events.append({'owner_id': owner_id, 'agent_id': agent.hasn_id, 'event_type': event_type})
 
 
+class _OfflinePresenceQuery:
+    async def get_online_map(self, entity_ids: list[str]) -> dict[str, bool]:
+        return {entity_id: False for entity_id in entity_ids}
+
+
 @pytest.mark.asyncio
-async def test_cloud_first_create_merges_template_defaults_and_returns_agent_snapshot() -> None:
+async def test_cloud_first_create_merges_template_defaults_and_returns_agent_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from backend.app.hasn.schema.hasn_agents import CloudCreateAgentRequest
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
-    gateway = _Gateway()
+    gateway: Any = _Gateway()
+    monkeypatch.setattr('backend.app.hasn.service.hasn_agents_service._presence_query', _OfflinePresenceQuery())
     service = HasnAgentProfileService(gateway=gateway)
 
     response = await service.create_cloud_first(
-        db=None,
+        db=gateway,
         request=CloudCreateAgentRequest(
             owner_id='h_owner',
             template_id='tpl_assistant',
@@ -141,6 +156,8 @@ async def test_cloud_first_create_merges_template_defaults_and_returns_agent_sna
     assert response.agent.description == '用户简介'
     assert response.agent.template_id == 'tpl_assistant'
     assert response.agent.skills == {'enabled': ['chat']}
+    assert response.agent.soul_md is not None
+    assert response.agent.user_md is not None
     assert response.agent.soul_md.startswith('# 用户 SOUL')
     assert response.agent.user_md.startswith('# 用户 USER')
     assert response.agent.profile_revision == 1
@@ -150,15 +167,18 @@ async def test_cloud_first_create_merges_template_defaults_and_returns_agent_sna
 
 
 @pytest.mark.asyncio
-async def test_cloud_first_create_uses_template_defaults_when_user_omits_optional_profile() -> None:
+async def test_cloud_first_create_uses_template_defaults_when_user_omits_optional_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from backend.app.hasn.schema.hasn_agents import CloudCreateAgentRequest
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
-    gateway = _Gateway()
+    gateway: Any = _Gateway()
+    monkeypatch.setattr('backend.app.hasn.service.hasn_agents_service._presence_query', _OfflinePresenceQuery())
     service = HasnAgentProfileService(gateway=gateway)
 
     response = await service.create_cloud_first(
-        db=None,
+        db=gateway,
         request=CloudCreateAgentRequest(
             owner_id='h_owner',
             template_id='tpl_assistant',
@@ -179,19 +199,21 @@ async def test_cloud_first_create_uses_template_defaults_when_user_omits_optiona
 
 
 @pytest.mark.asyncio
-async def test_sync_agents_returns_latest_cloud_agent_snapshots() -> None:
+async def test_sync_agents_returns_latest_cloud_agent_snapshots(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.hasn.schema.hasn_agents import AgentSyncRequest
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
-    gateway = _Gateway()
+    gateway: Any = _Gateway()
     gateway.agents[0].display_name = '云端最新昵称'
     gateway.agents[0].avatar = 'https://cdn.example.com/latest.png'
     gateway.agents[0].description = '云端最新简介'
     gateway.agents[0].profile_revision = 7
+    monkeypatch.setattr('backend.app.hasn.service.hasn_agents_service._presence_query', _OfflinePresenceQuery())
     service = HasnAgentProfileService(gateway=gateway)
 
+    fake_db: Any = _FakeDB()
     response = await service.sync_agents(
-        db=_FakeDB(),
+        db=fake_db,
         request=AgentSyncRequest(owner_id='h_owner', after_revision=3),
         user_id=100,
     )
@@ -209,11 +231,13 @@ async def test_sync_agents_returns_latest_cloud_agent_snapshots() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_agents_without_after_revision_returns_full_authoritative_set() -> None:
+async def test_sync_agents_without_after_revision_returns_full_authoritative_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from backend.app.hasn.schema.hasn_agents import AgentSyncRequest
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
-    gateway = _Gateway()
+    gateway: Any = _Gateway()
     gateway.agents = [
         _Agent(
             id=1,
@@ -232,10 +256,12 @@ async def test_sync_agents_without_after_revision_returns_full_authoritative_set
             profile_revision=9,
         ),
     ]
+    monkeypatch.setattr('backend.app.hasn.service.hasn_agents_service._presence_query', _OfflinePresenceQuery())
     service = HasnAgentProfileService(gateway=gateway)
 
+    fake_db: Any = _FakeDB()
     response = await service.sync_agents(
-        db=_FakeDB(),
+        db=fake_db,
         request=AgentSyncRequest(owner_id='h_owner', after_revision=None),
         user_id=100,
     )

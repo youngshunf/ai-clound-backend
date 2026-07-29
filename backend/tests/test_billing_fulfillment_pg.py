@@ -16,7 +16,7 @@ from __future__ import annotations
 import pathlib
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
@@ -44,11 +44,17 @@ _TEST_ORDER_NO = 'HXMK3TESTORDER0001'
 
 # ── 纯分发器逻辑（真实 SUT，数据 double，无 DB）──
 def test_build_offering_ref_maps_kind() -> None:
-    assert fulfillment.build_offering_ref('subscribe')['kind'] == fulfillment.KIND_LLM_TIER
-    assert fulfillment.build_offering_ref('credit_pack')['kind'] == fulfillment.KIND_CREDIT_PACK
-    assert fulfillment.build_offering_ref('app_purchase')['kind'] == fulfillment.KIND_APP
-    assert fulfillment.build_offering_ref('app_seat')['kind'] == fulfillment.KIND_SEAT
-    assert fulfillment.build_offering_ref('lead_pack')['kind'] == fulfillment.KIND_LEAD_PACK
+    expected = {
+        'subscribe': fulfillment.KIND_LLM_TIER,
+        'credit_pack': fulfillment.KIND_CREDIT_PACK,
+        'app_purchase': fulfillment.KIND_APP,
+        'app_seat': fulfillment.KIND_SEAT,
+        'lead_pack': fulfillment.KIND_LEAD_PACK,
+    }
+    for order_type, kind in expected.items():
+        result = fulfillment.build_offering_ref(order_type)
+        assert result is not None
+        assert result['kind'] == kind
     # 快照透传 offering_key/plan_key
     ref = fulfillment.build_offering_ref('subscribe', offering_key='llm:tier', plan_key='pro')
     assert ref == {'offering_key': 'llm:tier', 'plan_key': 'pro', 'kind': 'llm_tier'}
@@ -78,7 +84,8 @@ async def test_dispatch_rejects_order_without_offering_ref() -> None:
     """
     from backend.common.exception import errors
 
-    for offering_ref in (None, {}):
+    offering_refs: tuple[dict[str, Any] | None, ...] = (None, {})
+    for offering_ref in offering_refs:
         with pytest.raises(errors.RequestError):
             await fulfillment.dispatch_fulfillment(object(), SimpleNamespace(order_no='o2', offering_ref=offering_ref))
 

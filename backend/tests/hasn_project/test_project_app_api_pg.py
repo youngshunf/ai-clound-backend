@@ -30,15 +30,23 @@ from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn.model.hasn_sessions import HasnSessions
 from backend.app.hasn.service import sync_invalidate_service
 from backend.app.hasn_designsystem.model.design_system import DesignSystem
+from backend.app.hasn_plan.model.todo import Todo
+from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_designsystem.service import project_linkage as _designsystem_project_linkage  # noqa: F401
 from backend.app.hasn_project.api.v1.app.hasn_project import router as app_project_router
 from backend.app.hasn_project.api.v1.app.hasn_project_milestone import router as app_milestone_router
 from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_project.model.hasn_project_inspection import HasnProjectInspection
 from backend.app.hasn_project.model.hasn_project_milestone import HasnProjectMilestone
+from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_app_service import project_service
+from backend.app.hasn_project.service.project_report_service import report_service
+from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import (
@@ -92,6 +100,16 @@ async def env():
     owner = f'h_prj_{_uid()}'
     agent = f'a_prj_{_uid()}'
     session.add(_human(owner, user_id))
+    session.add(
+        HasnAgents(
+            hasn_id=agent,
+            star_id=f's_{agent}',
+            owner_id=owner,
+            display_name='巡检项目经理',
+            agent_name='inspection-manager',
+            status='active',
+        )
+    )
     await session.flush()
 
     auth_state = {'user_id': user_id}
@@ -124,13 +142,20 @@ async def env():
         ).scalars().all()
         if project_ids:
             await session.execute(
+                delete(HasnProjectInspection).where(HasnProjectInspection.project_id.in_(project_ids))
+            )
+            await session.execute(
                 delete(HasnProjectMilestone).where(
                     HasnProjectMilestone.project_id.in_(project_ids)
                 )
             )
+            await session.execute(delete(HasnSessions).where(HasnSessions.project_id.in_(project_ids)))
         await session.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await session.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+        await session.execute(delete(Todo).where(Todo.owner_hasn_id == owner))
+        await session.execute(delete(HasnTask).where(HasnTask.owner_id == owner))
         await session.execute(delete(HasnProject).where(HasnProject.owner_id == owner))
+        await session.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent))
         await session.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
         await session.commit()
         await session.close()
@@ -195,6 +220,306 @@ async def test_create_list_get_roundtrip(env) -> None:
     assert detail['id'] == created['id']
     assert detail['milestones'] == []  # 新建无里程碑
     assert detail['artifact_flow'] == {'items': [], 'total': 0, 'page': 1, 'size': 50}  # 无产物挂靠
+
+
+async def test_owner_api_keeps_complete_zero_summary_contract(env) -> None:
+    """Owner API 即使项目尚无聚合对象，也必须稳定返回全部零值摘要字段。"""
+    created = _data(await env.client.post(_PROJECTS, json={'name': '零值摘要项目'}))
+    listed = _data(await env.client.get(_PROJECTS))
+    row = next(item for item in listed['items'] if item['id'] == created['id'])
+
+    assert {
+        key: row[key]
+        for key in (
+            'artifact_count',
+            'session_count',
+            'active_session_count',
+            'agent_count',
+            'link_count',
+            'milestone_done_count',
+            'milestone_total_count',
+        )
+    } == {
+        'artifact_count': 0,
+        'session_count': 0,
+        'active_session_count': 0,
+        'agent_count': 0,
+        'link_count': 0,
+        'milestone_done_count': 0,
+        'milestone_total_count': 0,
+    }
+    assert row['agent_ids'] == []
+    assert row['linked_apps'] == []
+
+    detail = _data(await env.client.get(f'{_PROJECTS}/{created["id"]}'))
+    assert detail['summary'] == row
+    assert detail['recent_sessions'] == []
+    assert detail['sessions'] == []
+    assert 'artifact' in detail['linkable_domains']
+
+
+async def test_inspection_publish_owner_actions_and_active_project_guard(env) -> None:
+    """巡检建议按指纹幂等发布，Owner 能读取并把真实会话回填为已派发。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '巡检闭环项目'}))
+    first = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='weekly-risk-v1',
+        suggestion='里程碑本周没有更新，建议先确认阻塞项。',
+        suggested_instruction='请梳理阻塞项并给出今天可执行的下一步。',
+    )
+    replay = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='weekly-risk-v1',
+        suggestion='里程碑本周没有更新，建议先确认阻塞项。',
+        suggested_instruction='请梳理阻塞项并给出今天可执行的下一步。',
+    )
+    assert replay['id'] == first['id']
+
+    detail = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}'))
+    assert detail['inspections'] == [replay]
+    listed = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}/inspections'))
+    assert listed['items'] == [replay]
+
+    session_id = f'ws_{uuid.uuid4().hex[:16]}'
+    env.session.add(
+        HasnSessions(
+            session_id=session_id,
+            owner_id=env.owner,
+            hasn_id=env.agent,
+            session_kind='task',
+            session_scope='conversation_visible',
+            origin_type='app',
+            project_id=uuid.UUID(project['id']),
+        )
+    )
+    await env.session.flush()
+    dispatched = _data(
+        await env.client.post(
+            f'{_PROJECTS}/{project["id"]}/inspections/{first["id"]}/mark-dispatched',
+            json={'work_session_id': session_id},
+        )
+    )
+    assert dispatched['status'] == 'dispatched'
+    assert dispatched['work_session_id'] == session_id
+
+    dismissable = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='optional-next-step-v1',
+        suggestion='可以暂时忽略的可选优化。',
+    )
+    dismissed = _data(
+        await env.client.post(
+            f'{_PROJECTS}/{project["id"]}/inspections/{dismissable["id"]}/dismiss'
+        )
+    )
+    assert dismissed['status'] == 'dismissed'
+
+    remindable = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='tonight-followup-v1',
+        suggestion='今晚确认对方是否已回复。',
+    )
+    reminded = _data(
+        await env.client.post(
+            f'{_PROJECTS}/{project["id"]}/inspections/{remindable["id"]}/remind-tonight',
+        )
+    )
+    assert reminded['status'] == 'reminded'
+    assert isinstance(reminded['plan_todo_id'], int)
+    todo = (
+        await env.session.execute(select(Todo).where(Todo.id == reminded['plan_todo_id']))
+    ).scalar_one()
+    assert todo.owner_hasn_id == env.owner
+    assert todo.title.startswith('今晚处理：')
+
+    missing_owner = f'h_other_{_uid()}'
+    with pytest.raises(errors.NotFoundError):
+        await inspection_service.publish(
+            env.session,
+            owner=missing_owner,
+            agent_id=env.agent,
+            project_id=project['id'],
+            fingerprint='cross-owner',
+            suggestion='不应写入他人项目。',
+        )
+
+    archived = _data(await env.client.post(f'{_PROJECTS}/{project["id"]}/archive'))
+    assert archived['status'] == 'archived'
+    with pytest.raises(errors.RequestError) as archived_error:
+        await inspection_service.publish(
+            env.session,
+            owner=env.owner,
+            agent_id=env.agent,
+            project_id=project['id'],
+            fingerprint='after-archive',
+            suggestion='归档项目不得出现新建议。',
+        )
+    assert archived_error.value.data['error_code'] == 'PROJECT_ARCHIVED'
+
+
+async def test_inspection_owner_api_hides_other_owner_project(env) -> None:
+    """Owner JWT 切换到另一主人后，巡检列表不能泄漏原项目是否存在。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '不可跨主人读取'}))
+    other_user_id = _new_user_id()
+    other_owner = f'h_prj_{_uid()}'
+    other_human = _human(other_owner, other_user_id)
+    env.session.add(other_human)
+    await env.session.flush()
+    try:
+        env.auth_state['user_id'] = other_user_id
+        response = await env.client.get(f'{_PROJECTS}/{project["id"]}/inspections')
+        assert response.status_code == 404, response.text
+    finally:
+        env.auth_state['user_id'] = env.user_id
+        await env.session.delete(other_human)
+        await env.session.flush()
+
+
+async def test_inspection_schedule_uses_existing_owner_task_and_defaults_off(env) -> None:
+    """周期巡检默认关闭；主人启用后创建既有任务实体，停用只暂停该任务。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '周期巡检项目'}))
+    before = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}'))
+    assert before['inspection_schedule']['enabled'] is False
+    assert before['inspection_schedule']['task_id'] is None
+
+    enabled = _data(
+        await env.client.post(f'{_PROJECTS}/{project["id"]}/inspection-schedule', json={'enabled': True})
+    )
+    assert enabled['enabled'] is True
+    assert enabled['agent_id'] == env.agent
+    task = (
+        await env.session.execute(select(HasnTask).where(HasnTask.id == enabled['task_id']))
+    ).scalar_one()
+    assert task.owner_id == env.owner
+    assert task.project_id == uuid.UUID(project['id'])
+    assert task.execution_spec == {'kind': 'project_inspection'}
+    assert task.schedule_type == 'cron'
+
+    disabled = _data(
+        await env.client.post(f'{_PROJECTS}/{project["id"]}/inspection-schedule', json={'enabled': False})
+    )
+    assert disabled['enabled'] is False
+    assert task.enabled is False
+
+
+async def test_weekly_report_is_a_real_project_document_and_regeneration_updates_it(env) -> None:
+    """周报必须是绑定真实会话的 document 产物；同周期重生成原地更新并留 update 贡献记录。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '周报闭环项目'}))
+    session_id = f'ws_{uuid.uuid4().hex[:16]}'
+    env.session.add(
+        HasnSessions(
+            session_id=session_id,
+            owner_id=env.owner,
+            hasn_id=env.agent,
+            session_kind='task',
+            session_scope='conversation_visible',
+            origin_type='app',
+            project_id=uuid.UUID(project['id']),
+        )
+    )
+    await env.session.flush()
+
+    first = await report_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        work_session_id=session_id,
+        period_start='2026-07-20',
+        period_end='2026-07-26',
+        title='第 30 周项目周报',
+        body='本周完成里程碑校验，并确认下一步风险处理人。',
+        summary='完成里程碑校验，待处理风险归属。',
+    )
+    assert first['uri'] == f"hasn://artifact/{first['artifact_id']}"
+    artifact = (
+        await env.session.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == first['artifact_id']))
+    ).scalar_one()
+    assert artifact.artifact_kind == 'document'
+    assert artifact.project_id == uuid.UUID(project['id'])
+    assert artifact.body == '本周完成里程碑校验，并确认下一步风险处理人。'
+    assert artifact.meta_data['period_start'] == '2026-07-20'
+    assert artifact.meta_data['period_end'] == '2026-07-26'
+    assert artifact.meta_data['work_session_id'] == session_id
+
+    replay = await report_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        work_session_id=session_id,
+        period_start='2026-07-20',
+        period_end='2026-07-26',
+        title='第 30 周项目周报',
+        body='本周完成里程碑校验，并确认下一步风险处理人。',
+        summary='完成里程碑校验，待处理风险归属。',
+    )
+    assert replay['artifact_id'] == first['artifact_id']
+    contributions = (
+        await env.session.execute(
+            select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == first['artifact_id'])
+        )
+    ).scalars().all()
+    assert len(contributions) == 1
+    assert contributions[0].work_session_id == session_id
+
+    updated = await report_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        work_session_id=session_id,
+        period_start='2026-07-20',
+        period_end='2026-07-26',
+        title='第 30 周项目周报（更新）',
+        body='本周完成里程碑校验，风险处理人已经确认。',
+        summary='里程碑校验完成，风险已明确负责人。',
+    )
+    assert updated['artifact_id'] == first['artifact_id']
+    await env.session.refresh(artifact)
+    assert artifact.title == '第 30 周项目周报（更新）'
+    assert artifact.body == '本周完成里程碑校验，风险处理人已经确认。'
+    contributions = (
+        await env.session.execute(
+            select(HasnArtifactContributions)
+            .where(HasnArtifactContributions.artifact_id == first['artifact_id'])
+            .order_by(HasnArtifactContributions.occurred_time)
+        )
+    ).scalars().all()
+    assert [row.action for row in contributions] == ['create', 'update']
+
+    detail = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}'))
+    assert detail['reports'][0]['report_id'] == first['artifact_id']
+    assert detail['reports'][0]['resource_uri'] == first['uri']
+    listed = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}/reports'))
+    assert listed['items'][0]['report_id'] == first['artifact_id']
+
+    _data(await env.client.post(f'{_PROJECTS}/{project["id"]}/archive'))
+    with pytest.raises(errors.RequestError) as archived_error:
+        await report_service.publish(
+            env.session,
+            owner=env.owner,
+            agent_id=env.agent,
+            project_id=project['id'],
+            work_session_id=session_id,
+            period_start='2026-07-20',
+            period_end='2026-07-26',
+            title='归档后不应生成',
+            body='不得写入。',
+        )
+    assert archived_error.value.data['error_code'] == 'PROJECT_ARCHIVED'
 
 
 async def test_create_name_required_400(env) -> None:
@@ -282,6 +607,34 @@ async def test_link_unlink_and_artifact_flow(env) -> None:
 
     flow2 = _data(await c.get(f'{_PROJECTS}/{pid}/artifact-flow'))
     assert art_in not in {r['artifact_id'] for r in flow2['items']}
+
+
+async def test_link_reassigns_resource_atomically_without_unlink(env) -> None:
+    """改挂只需目标项目的一次 link，失败前不会留下资源已摘出的中间态。"""
+    c = env.client
+    artifact_id = f'art_{uuid.uuid4().hex[:16]}'
+    await _seed_artifact(env.session, owner=env.owner, agent=env.agent, artifact_id=artifact_id)
+    original = _data(await c.post(_PROJECTS, json={'name': '原项目'}))
+    target = _data(await c.post(_PROJECTS, json={'name': '目标项目'}))
+    resource_uri = f'hasn://artifact/{artifact_id}'
+
+    initial = _data(await c.post(f'{_PROJECTS}/{original["id"]}/link', json={'resource_uri': resource_uri}))
+    assert initial['project_id'] == original['id']
+    assert initial['previous_project_id'] is None
+
+    reassigned = _data(await c.post(f'{_PROJECTS}/{target["id"]}/link', json={'resource_uri': resource_uri}))
+    assert reassigned == {
+        'linked': True,
+        'changed': True,
+        'resource_uri': resource_uri,
+        'project_id': target['id'],
+        'previous_project_id': original['id'],
+    }
+
+    old_flow = _data(await c.get(f'{_PROJECTS}/{original["id"]}/artifact-flow'))
+    new_flow = _data(await c.get(f'{_PROJECTS}/{target["id"]}/artifact-flow'))
+    assert artifact_id not in {item['artifact_id'] for item in old_flow['items']}
+    assert artifact_id in {item['artifact_id'] for item in new_flow['items']}
 
 
 async def test_link_designsystem_publishes_after_production_transaction_commit() -> None:

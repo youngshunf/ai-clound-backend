@@ -176,6 +176,25 @@ class WorkflowService:
             if not node.agent_id:
                 raise errors.RequestError(msg=f'节点 {node.node_key} 缺少目标分身 agent_id')
 
+        # Owner 场景实例化是唯一要求稳定重放的建图路径。事务级 advisory lock 把「先查再建」
+        # 收敛为同一 owner+key 的串行临界区，避免并发重试穿透 partial unique index 后才报 500。
+        idempotency_key = obj.instantiation_idempotency_key
+        if idempotency_key:
+            lock_key = f'{owner_id}:{idempotency_key}'
+            await db.execute(
+                sa.text('SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))'), {'lock_key': lock_key}
+            )
+            existing = (
+                await db.execute(
+                    sa.select(HasnWorkflow).where(
+                        HasnWorkflow.owner_id == owner_id,
+                        HasnWorkflow.instantiation_idempotency_key == idempotency_key,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+
         workflow_uuid = obj.workflow_uuid or f'wf_{uuid.uuid4().hex}'
         # 唯一性：同 uuid 不重复建
         if await hasn_workflow_dao.get_by_uuid(db, workflow_uuid):
@@ -189,6 +208,8 @@ class WorkflowService:
             workflow_uuid=workflow_uuid,
             owner_id=owner_id,
             name=obj.name,
+            template_key=obj.template_key,
+            instantiation_idempotency_key=idempotency_key,
             goal=obj.goal,
             schedule_type=obj.schedule_type,
             schedule_config=obj.schedule_config,
@@ -203,12 +224,16 @@ class WorkflowService:
             continuation_enabled=obj.continuation_enabled,
             next_run_at=next_run_at,
             workflow_revision=1,
+            project_id=obj.project_id,
         )
         db.add(workflow)
         await db.flush()
 
         # 节点 = task（workflow_uuid + node_key；调度由 WorkflowScheduler 触发，节点本身不自调度）
         for node in obj.nodes:
+            node_agent_id = node.agent_id
+            if not node_agent_id:
+                raise errors.RequestError(msg=f'节点 {node.node_key} 缺少目标分身 agent_id')
             task_uuid = f'tsk_{uuid.uuid4().hex}'
             await db.execute(
                 sa.text(
@@ -226,7 +251,7 @@ class WorkflowService:
                 ),
                 {
                     'o': owner_id,
-                    'a': node.agent_id,
+                    'a': node_agent_id,
                     'n': node.name or node.node_key,
                     'd': node.description,
                     'p': node.prompt,
@@ -255,7 +280,7 @@ class WorkflowService:
                     node_key=node.node_key,
                     name=node.name or node.node_key,
                     description=node.description,
-                    agent_id=node.agent_id,
+                    agent_id=node_agent_id,
                     prompt=node.prompt,
                     system_prompt=node.system_prompt,
                     apps=node.apps,
@@ -285,6 +310,12 @@ class WorkflowService:
         return workflow
 
     @staticmethod
+    async def definition_snapshot(db: AsyncSession, *, owner_id: str, workflow_uuid: str) -> dict[str, list[dict]]:
+        """按已持久化的定义行返回稳定图快照，幂等重放绝不回显新请求里的可变参数。"""
+        detail = await WorkflowService.get_workflow(db, owner_id=owner_id, workflow_uuid=workflow_uuid)
+        return {'nodes': detail['nodes'], 'edges': detail['edges']}
+
+    @staticmethod
     async def get_workflow(db: AsyncSession, *, owner_id: str, workflow_uuid: str) -> dict[str, Any]:
         """查图：workflow 定义 + 节点（优先专属表 workflow_node，旧数据回退 task 投影）+ 边。跨户 NotFound。"""
         workflow = await hasn_workflow_dao.get_by_uuid(db, workflow_uuid)
@@ -304,6 +335,12 @@ class WorkflowService:
                     'enable_subagents': n.enable_subagents,
                     'description': n.description,
                     'is_origin': n.is_origin,
+                    'apps': n.apps,
+                    'skills': n.skills,
+                    'enabled_toolsets': n.enabled_toolsets,
+                    'output_spec': n.output_spec,
+                    'review_policy': n.review_policy,
+                    'max_retries': n.max_retries,
                     'display': n.display,
                 }
                 for n in node_rows
@@ -316,15 +353,27 @@ class WorkflowService:
                 ),
                 {'wu': workflow_uuid},
             )
-            nodes = [dict(r) for r in nodes_result.mappings().all()]
+            nodes = [
+                {
+                    **dict(row),
+                    'description': None,
+                    'is_origin': False,
+                    'apps': [],
+                    'skills': [],
+                    'enabled_toolsets': None,
+                    'output_spec': None,
+                    'review_policy': None,
+                    'max_retries': None,
+                    'display': {},
+                }
+                for row in nodes_result.mappings().all()
+            ]
         edges_rows = await hasn_workflow_edge_dao.list_by_workflow(db, workflow_uuid)
         edges = [{'parent': e.parent_node_key, 'child': e.child_node_key} for e in edges_rows]
         return {'workflow': workflow, 'nodes': nodes, 'edges': edges}
 
     @staticmethod
-    async def list_workflows(
-        db: AsyncSession, *, owner_id: str, project_id: str | None = None
-    ) -> list[HasnWorkflow]:
+    async def list_workflows(db: AsyncSession, *, owner_id: str, project_id: str | None = None) -> list[HasnWorkflow]:
         """列某 owner 的工作流（未删除）；`project_id` 给值则只返挂在该项目下的（P9-D 项目侧聚合读）。"""
         return list(await hasn_workflow_dao.list_by_owner(db, owner_id, project_id=project_id))
 

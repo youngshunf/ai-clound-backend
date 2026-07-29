@@ -60,7 +60,7 @@ async def e2e():
 
     tag = _uid()
     owner = f'h_owner_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     agent_hasn = f'a_{tag}'
     own_skill = f'user/{owner}/own-skill-{tag}'
     common_skill = f'huanxing/search/common-{tag}'

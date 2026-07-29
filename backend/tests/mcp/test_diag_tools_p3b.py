@@ -109,6 +109,7 @@ def test_ordinary_agent_cannot_discover(monkeypatch: pytest.MonkeyPatch) -> None
     ctx = _ctx()
     for tool_name in _ALL_TOOLS:
         tool = server.tool_registry.get_tool(tool_name)
+        assert tool is not None
         assert not server.tool_directory._can_discover(ctx, tool), f'普通分身不应发现 {tool_name}'
 
 
@@ -117,6 +118,7 @@ def test_operator_can_discover(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _operator_ctx()
     for tool_name in _ALL_TOOLS:
         tool = server.tool_registry.get_tool(tool_name)
+        assert tool is not None
         assert server.tool_directory._can_discover(ctx, tool), f'运维分身应发现 {tool_name}'
 
 
@@ -125,6 +127,7 @@ def test_capability_mode_allow_is_not_a_grant(monkeypatch: pytest.MonkeyPatch) -
     server = _server_with_noop_io(monkeypatch)
     ctx = _ctx(granted=set(), capability_modes={SCOPE_READ: 'allow'})
     tool = server.tool_registry.get_tool('hasn.diag.list_issues')
+    assert tool is not None
     assert not server.tool_directory._can_discover(ctx, tool)
 
 
@@ -134,6 +137,7 @@ async def test_operator_owner_deny_tightens(monkeypatch: pytest.MonkeyPatch) -> 
     server = _server_with_noop_io(monkeypatch)
     ctx = _operator_ctx(capability_modes={SCOPE_READ: 'deny'})
     tool = server.tool_registry.get_tool('hasn.diag.list_issues')
+    assert tool is not None
     assert not server.tool_directory._can_discover(ctx, tool)
     with pytest.raises(PermissionError):
         await server.call_tool(ctx, 'hasn.diag.list_issues', {})

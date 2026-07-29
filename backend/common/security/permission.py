@@ -1,7 +1,7 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from fastapi import Request
-from sqlalchemy import Alias, ColumnElement, Table, and_, or_
+from sqlalchemy import Alias, ColumnElement, Table, and_, or_, true
 from sqlalchemy.orm.util import AliasedClass
 from sqlalchemy_crud_plus.types import Model
 
@@ -49,9 +49,15 @@ class RequestPermission:
             ctx.permission = self.value
 
 
-def get_data_permission_models() -> dict[str, object]:
+PermissionModel: TypeAlias = type[Model] | AliasedClass | Alias | Table
+
+
+def get_data_permission_models() -> dict[str, PermissionModel]:
     """获取所有可用于数据权限的模型"""
-    return {getattr(model, '__name__', str(model)): model for model in get_all_models()}
+    return cast(
+        dict[str, PermissionModel],
+        {getattr(model, '__name__', str(model)): model for model in get_all_models()},
+    )
 
 
 def filter_data_permission(  # noqa: C901
@@ -69,12 +75,12 @@ def filter_data_permission(  # noqa: C901
     """
     # 超级管理员不过滤
     if request.user.is_superuser:
-        return or_(1 == 1)
+        return true()
 
     # 角色未启用数据权限过滤
     for role in request.user.roles:
         if role.status and not role.is_filter_scopes:
-            return or_(1 == 1)
+            return true()
 
     # 获取数据规则
     data_rules: set[DataRule] = set()
@@ -86,7 +92,7 @@ def filter_data_permission(  # noqa: C901
                 data_rules.update(rule for rule in scope.rules if rule is not None)
 
     if not data_rules:
-        return or_(1 == 1)
+        return true()
 
     # 目标模型
     target_model_map = (
@@ -117,7 +123,7 @@ def filter_data_permission(  # noqa: C901
             target_models = [target_model] if target_model is not None else []
 
         for target_model in target_models:
-            table = target_model if isinstance(target_model, Table) else target_model.__table__
+            table = target_model if isinstance(target_model, Table) else cast(Any, target_model).__table__
             rule_column = column_template_resolvers.get(data_rule.column, data_rule.column)
             if rule_column not in table.columns.keys():
                 continue
@@ -177,7 +183,7 @@ def filter_data_permission(  # noqa: C901
     if where_or_list:
         where_list.append(or_(*where_or_list))
 
-    return or_(*where_list) if where_list else or_(1 == 1)
+    return or_(*where_list) if where_list else true()
 
 
 # 此函数是为了简化调用方式，但目前无法正常工作: https://github.com/fastapi/fastapi/discussions/14438

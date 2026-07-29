@@ -36,6 +36,8 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.database.schema_names import SCHEMA_NAMES
+
 # 分片数=1（§7.2）：全局单分片常量。容量需要时改 hash(aggregate_id)%N，消费者按 shard 各持 cursor。
 _GLOBAL_SHARD = 0
 
@@ -44,7 +46,7 @@ _GLOBAL_SHARD = 0
 _SHARD_LOCK_PREFIX = 'hasn_im.integration_events.shard.'
 
 # 物理表名（R2 期落 public·带 hasn_im_ 前缀；R2-11 SET SCHEMA → hasn_im 去前缀）
-_TABLE = 'public.hasn_im_integration_events'
+_TABLE = SCHEMA_NAMES.im_event_table('integration_events')
 
 
 @dataclass(frozen=True)

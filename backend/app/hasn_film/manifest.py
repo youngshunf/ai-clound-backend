@@ -27,7 +27,7 @@ stage.intervene/continue）`film:write`（出厂 Ask，视频花钱）；上传�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -123,13 +123,16 @@ def _write_cap(
 
 _PROJECT_ID = {'project_id': {'type': 'string', 'minLength': 1, 'description': '视频项目 id'}}
 
-FILM_AI_NATIVE_MANIFEST = {
+FILM_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'film',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'film': '影视创作（多阶段流水线/分镜/角色）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     'notifications': {

@@ -18,15 +18,17 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn.model.hasn_conversations import HasnConversations
-from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+from backend.app.hasn.model.hasn_conversation_memberships import (
+    HasnConversationMemberships as HasnGroupMembers,
+)
 from backend.app.hasn.service.agent_message_read_service import agent_message_read_service
 from backend.app.hasn.service.hasn_group_service import hasn_group_service
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.common.exception import errors
-from backend.database.db import async_db_session
+from backend.database.db import im_service_db_session
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,7 @@ class GroupJoinTool(BaseTool):
         group_id = str(arguments.get('group_id') or '').strip()
         if not group_id:
             return {'ok': False, 'error': 'group_id 不能为空（群公开 ID g:NNNNNN）'}
-        async with async_db_session.begin() as db:
+        async with im_service_db_session.begin() as db:
             try:
                 # 入群主体是分身本身（agent_hasn_id），入群后可在群内发言/协作。
                 result = await hasn_group_service.join_group(
@@ -162,7 +164,7 @@ class GroupMessageListTool(BaseTool):
         group_id = str(arguments.get('group_id') or '').strip()
         if not group_id:
             return {'ok': False, 'error': 'group_id 不能为空（群公开 ID g:NNNNNN）'}
-        async with async_db_session() as db:
+        async with im_service_db_session() as db:
             # 解析群会话（g:NNNNNN → conversation_id），按 group_id 直接读活跃群。
             group = (
                 (
@@ -192,6 +194,8 @@ class GroupMessageListTool(BaseTool):
                                 select(HasnAgents.hasn_id).where(HasnAgents.owner_id == owner_hasn_id)
                             ),
                         ),
+                        HasnGroupMembers.left_seq.is_(None),
+                        HasnGroupMembers.state == 'active',
                     )
                     .limit(1)
                 )

@@ -9,6 +9,7 @@ statement，断言两个不同 user_id 产生不同（参数化到实际 user_id
 """
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +19,7 @@ from sqlalchemy.dialects.postgresql import dialect as pg_dialect
 from backend.app.hasn.service.hasn_contacts_service import hasn_contacts_service
 
 
-def _compiled_sql(stmt: object) -> tuple[str, dict]:
+def _compiled_sql(stmt: Any) -> tuple[str, dict]:
     compiled = stmt.compile(
         dialect=pg_dialect(),
         compile_kwargs={'literal_binds': False},

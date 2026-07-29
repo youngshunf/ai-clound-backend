@@ -21,13 +21,25 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service import conversation_projection as cp
+from backend.app.hasn_im.consumers.audience import (
+    resolve_audience_owner_ids,
+)
 from backend.app.hasn_im.consumers.base import ConsumerClass, IntegrationEvent
-from backend.app.hasn_im.consumers.facts import IM_MESSAGE_COMMITTED, MessageCommittedFacts
+from backend.app.hasn_im.consumers.facts import (
+    IM_CONVERSATION_UPDATED,
+    IM_MESSAGE_COMMITTED,
+    IM_MESSAGE_RECALLED,
+    ConversationUpdatedFacts,
+    MessageCommittedFacts,
+    MessageRecalledFacts,
+)
 from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
 from backend.app.hasn_sync.ports.dto import SyncEnvelope
 from backend.app.hasn_sync.ports.sync_appender import SyncAppender
 
 _MESSAGE_NEW = 'message.new'
+_MESSAGE_RECALLED = 'message.recalled'
+_CONVERSATION_UPDATED = 'conversation.updated'
 # 幂等去重键的 producer 段（§7.3）——本消费者产的 sync 事件统一标 'hasn_im'。
 _PRODUCER = 'hasn_im'
 
@@ -38,28 +50,39 @@ class SyncProjector:
 
     # sync 事件唯一写入口（§3.2）；默认现网薄封装，测试可注入替身。
     appender: SyncAppender = field(default_factory=SqlAlchemySyncAppender)
+    consumer_name: str = 'sync_projector'
 
     @property
     def name(self) -> str:
-        return 'sync_projector'
+        return self.consumer_name
 
     @property
     def consumer_class(self) -> ConsumerClass:
         return ConsumerClass.DURABLE
 
     async def handle(self, event: IntegrationEvent, db: AsyncSession) -> None:
-        """扇出一条 message.new 到每个受众 owner（与 cursor 推进同事务）。"""
-        # 只认消息提交事件；其它类型（会话元数据变更等）由各自消费者/写点负责，跳过不报错。
-        if event.event_type != IM_MESSAGE_COMMITTED:
-            return
-        facts = MessageCommittedFacts.from_event(event)
+        """把消息及会话事实投影到每个受众 owner 的权威 feed。"""
+        if event.event_type == IM_MESSAGE_COMMITTED:
+            await self._project_message_committed(event, db)
+        elif event.event_type == IM_MESSAGE_RECALLED:
+            await self._project_message_recalled(event, db)
+        elif event.event_type == IM_CONVERSATION_UPDATED:
+            await self._project_conversation_updated(event, db)
 
-        conv = await cp._fetch_conversation(db, facts.conversation_id)
-        if conv is None:
-            # 会话已删/不存在——消息事实无处投影，视为无受众（幂等，不阻塞游标）。
+    async def _project_message_committed(
+        self,
+        event: IntegrationEvent,
+        db: AsyncSession,
+    ) -> None:
+        """扇出一条 message.new 到每个当前受众 owner。"""
+        facts = MessageCommittedFacts.from_event(event)
+        audience = await resolve_audience_owner_ids(
+            db,
+            conversation_id=facts.conversation_id,
+            conversation_seq=facts.conversation_seq,
+        )
+        if not audience:
             return
-        members = await cp._load_group_members(db, str(conv.id)) if conv.type == 'group' else None
-        audience = await cp.compute_audience_owner_ids(db, conv, members=members)
 
         # 仅当携带溯源时才解析发送方 owner（用于受众分叉；否则省一次查询）。
         sender_owner_id: str | None = None
@@ -69,9 +92,7 @@ class SyncProjector:
 
         for owner_id in audience:
             owner_origin_session_id = (
-                facts.origin_session_id
-                if (facts.origin_session_id and owner_id == sender_owner_id)
-                else None
+                facts.origin_session_id if (facts.origin_session_id and owner_id == sender_owner_id) else None
             )
             envelope = SyncEnvelope(
                 owner_id=owner_id,
@@ -86,6 +107,60 @@ class SyncProjector:
                 source_event_id=event.event_id,
             )
             await self.appender.append(db, envelope)
+
+    async def _project_message_recalled(
+        self,
+        event: IntegrationEvent,
+        db: AsyncSession,
+    ) -> None:
+        """把撤回事实持久扇出，供离线设备修正已镜像消息。"""
+        facts = MessageRecalledFacts.from_event(event)
+        audience = await resolve_audience_owner_ids(
+            db,
+            conversation_id=facts.conversation_id,
+            conversation_seq=facts.conversation_seq,
+        )
+        for owner_id in audience:
+            await self.appender.append(
+                db,
+                SyncEnvelope(
+                    owner_id=owner_id,
+                    hasn_id=owner_id,
+                    event_type=_MESSAGE_RECALLED,
+                    aggregate_type='message',
+                    aggregate_id=facts.message_id,
+                    payload=facts.payload(),
+                    producer=_PRODUCER,
+                    source_event_id=event.event_id,
+                ),
+            )
+
+    async def _project_conversation_updated(
+        self,
+        event: IntegrationEvent,
+        db: AsyncSession,
+    ) -> None:
+        """把会话 revision 扇出给变更前后全部受众。"""
+        facts = ConversationUpdatedFacts.from_event(event)
+        audience = await resolve_audience_owner_ids(
+            db,
+            conversation_id=facts.conversation_id,
+            frozen_hasn_ids=facts.audience_hasn_ids,
+        )
+        for owner_id in audience:
+            await self.appender.append(
+                db,
+                SyncEnvelope(
+                    owner_id=owner_id,
+                    hasn_id=owner_id,
+                    event_type=_CONVERSATION_UPDATED,
+                    aggregate_type='conversation',
+                    aggregate_id=facts.conversation_id,
+                    payload=facts.payload(),
+                    producer=_PRODUCER,
+                    source_event_id=event.event_id,
+                ),
+            )
 
 
 def _message_new_payload(facts: MessageCommittedFacts, origin_session_id: str | None) -> dict[str, Any]:

@@ -14,7 +14,8 @@
    set_user_quota），group/quota 原样保留、不再清空。
 2. 防御纵深：ensure_agent_token 在 _ensure_user_access_token 之后补一次 ensure_user_group（幂等），
    把「铸 Agent token 后父 user 分组必为 default」变成不变量。
-另需保持 create 路径「ensure_user_group 排在所有用户级 GET→PUT 之后」的既有不变量。
+另需保持 create 路径「ensure_user_group 排在 bootstrap 的用户级 GET→PUT 之后」的不变量。
+配额已改由幂等履约事件增量发放，建号路径不得再用绝对 quota 覆盖 NewAPI 权威余额。
 
 本测试不连任何真实 new-api / DB，纯验证方法调用顺序与分组保留契约。
 """
@@ -61,7 +62,7 @@ def _fake_db() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_create_path_sets_group_after_all_user_puts() -> None:
-    """create 路径：ensure_user_group 必须排在 set_user_quota 与 bootstrap 之后、建 token 之前。"""
+    """create 路径：不覆盖权威余额，且 ensure_user_group 排在 bootstrap 后、建 token 前。"""
     calls: list[str] = []
     client = _ordered_client(calls)
     with (
@@ -73,9 +74,10 @@ async def test_create_path_sets_group_after_all_user_puts() -> None:
 
     assert info.newapi_user_id == _FAKE_USER_ID
     assert info.newapi_token_key == _FAKE_RAW_KEY
-    # 核心不变量：设组在两次「用户级 GET→PUT」之后，否则会被它们的整对象回写覆盖回空组。
+    # 建号不得以绝对 quota 覆盖由 NewAPI 权威维护的余额。
+    assert 'set_user_quota' not in calls, f'建号路径不得覆盖 NewAPI 权威余额，实际顺序={calls}'
+    # 核心不变量：设组在 bootstrap 的「用户级 GET→PUT」之后，否则会被整对象回写覆盖回空组。
     i_group = calls.index('ensure_user_group')
-    assert i_group > calls.index('set_user_quota'), f'设组必须排在 set_user_quota 之后，实际顺序={calls}'
     assert i_group > calls.index('bootstrap_user_access_token'), f'设组必须排在 bootstrap 之后，实际顺序={calls}'
     # 设组后只建 relay token（不 PUT 用户），分组不再被覆盖。
     assert i_group < calls.index('provision_user_relay_token'), f'设组应在建 token 之前，实际顺序={calls}'

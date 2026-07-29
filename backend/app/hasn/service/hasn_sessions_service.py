@@ -1,5 +1,3 @@
-import json
-
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -10,7 +8,6 @@ import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.crud.crud_hasn_sessions import hasn_sessions_dao
 from backend.app.hasn.model import HasnSessions
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
@@ -19,17 +16,19 @@ from backend.app.hasn.schema.hasn_sessions import (
     DeleteHasnSessionsParam,
     UpdateHasnSessionsParam,
 )
-from backend.app.hasn.service.hasn_conversations_service import hasn_conversations_service
-from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn.service.session_im_outbox import SESSION_IM_OUTBOX
+from backend.app.hasn_im.adapters.sqlalchemy_producer_outbox import (
+    enqueue_send_message,
+)
 from backend.app.hasn_im.application.provider import get_im_gateway
 from backend.app.hasn_im.ports.dto import (
     ActorKind,
-    DeliveryState,
     EnsureDirectConversationCommand,
+    ListMessagesQuery,
     SendMessageCommand,
-    SendMessageResult,
     ServicePrincipal,
 )
+from backend.app.hasn_im.ports.im_gateway import ImGateway
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.pagination import paging_data
@@ -273,35 +272,50 @@ class HasnSessionsService:
         page_size: int = 50,
     ) -> dict[str, Any]:
         """查询云端允许展示的工作会话投影消息。"""
-        await HasnSessionsService.get_by_session_id(db=db, session_id=session_id, owner_id=owner_id)
-        offset = max(page - 1, 0) * page_size
-        result = await db.execute(
-            sa.text(
-                """
-                SELECT id,
-                       conversation_id::text AS conversation_id,
-                       from_id,
-                       to_id,
-                       content,
-                       context,
-                       client_message_id,
-                       created_time
-                FROM public.hasn_messages
-                WHERE owner_id = :owner_id
-                  AND session_id = :session_id
-                ORDER BY id ASC
-                LIMIT :limit OFFSET :offset
-                """
-            ),
-            {
-                'owner_id': owner_id,
-                'session_id': session_id,
-                'limit': page_size,
-                'offset': offset,
-            },
+        session = await HasnSessionsService.get_by_session_id(
+            db=db,
+            session_id=session_id,
+            owner_id=owner_id,
         )
-        rows = list(result.mappings().all())
-        return {'messages': [dict(row) for row in rows], 'total': len(rows), 'page': page, 'page_size': page_size}
+        if not session.conversation_id:
+            return {
+                'messages': [],
+                'total': 0,
+                'page': page,
+                'page_size': page_size,
+                'has_more': False,
+                'next_cursor': None,
+            }
+
+        gateway = get_im_gateway()
+        cursor: str | None = None
+        current_page = 1
+        result_page = None
+        principal = _actor_principal(owner_id)
+        while current_page <= page:
+            result_page = await gateway.list_messages(
+                ListMessagesQuery(
+                    conversation_id=session.conversation_id,
+                    limit=page_size,
+                    before_cursor=cursor,
+                    origin_session_id=session_id,
+                ),
+                principal,
+            )
+            if current_page == page or not result_page.has_more:
+                break
+            cursor = result_page.next_cursor
+            current_page += 1
+
+        assert result_page is not None
+        return {
+            'messages': result_page.items if current_page == page else [],
+            'total': len(result_page.items) if current_page == page else 0,
+            'page': page,
+            'page_size': page_size,
+            'has_more': result_page.has_more if current_page == page else False,
+            'next_cursor': result_page.next_cursor if current_page == page else None,
+        }
 
     @staticmethod
     async def project_work_session_result(
@@ -310,14 +324,15 @@ class HasnSessionsService:
         owner_id: str,
         session_id: str,
         projection_data: dict[str, Any],
+        im_gateway: ImGateway | None = None,
     ) -> dict[str, Any]:
         """幂等写入工作会话结果摘要消息。
 
         work-session 是 hasn-node 本地实体（本地 `sessions` 表，scope=summary_only），
         云端 `hasn_sessions` 不保证有对应行。因此**不要求**云端先存在 session：缺失时
         直接用 projection_data 自包含字段（agent_id/origin/title/summary/deep_link）写入
-        主会话卡片消息，并跳过云端 session 回写。鉴权仍由 owner JWT +
-        `_assert_projection_conversation_owned`（会话归属校验）保证。
+        主会话卡片投递命令，并跳过云端 session 回写。鉴权仍由 owner JWT 与
+        ``ImGateway.ensure_direct_conversation`` 返回的权威会话 ID 双重约束。
         """
         session = await HasnSessionsService.try_get_by_session_id(db=db, session_id=session_id, owner_id=owner_id)
         agent_id = str(projection_data.get('agent_id') or (session.hasn_id if session else ''))
@@ -331,13 +346,23 @@ class HasnSessionsService:
             owner_id=owner_id,
             agent_id=agent_id,
             projection_data=projection_data,
+            im_gateway=im_gateway,
         )
         dedupe_key = _projection_dedupe_key(session_id, projection_data)
 
-        existing = await _find_projection_message(db, owner_id=owner_id, dedupe_key=dedupe_key)
+        existing = await _find_projection_delivery(
+            db,
+            dedupe_key=dedupe_key,
+        )
         if existing:
             return {
-                'result_message_id': str(existing['id']),
+                'result_message_id': (
+                    str(existing['message_id'])
+                    if existing['message_id'] is not None
+                    else None
+                ),
+                'delivery_command_id': str(existing['command_id']),
+                'delivery_state': str(existing['status']),
                 'conversation_id': str(existing['conversation_id']),
                 'dedupe_key': dedupe_key,
                 'created': False,
@@ -358,101 +383,29 @@ class HasnSessionsService:
         content_card = _projection_card_body(session_id=session_id, title=title, content_json=content_json)
         validate_card_message_body(content_card)
 
-        # R2-02：完成卡也是会话消息，必须与普通消息共用同一权威取号入口。
-        # 取号和 INSERT 处于同一事务，后续写入失败时序号增量随事务一起回滚。
-        conversation_seq = await hasn_conversations_dao.allocate_seq(db, conversation_id)
-        if conversation_seq is None:
-            raise ValueError(f'allocate_seq 失败：会话 {conversation_id} 不存在，无法分配 conversation_seq')
-
-        result = await db.execute(
-            sa.text(
-                """
-                INSERT INTO public.hasn_messages (
-                    conversation_id,
-                    conversation_seq,
-                    owner_id,
-                    hasn_id,
-                    from_id,
-                    sender_hasn_id,
-                    from_type,
-                    to_id,
-                    recipient_hasn_id,
-                    to_type,
-                    content_type,
-                    content,
-                    process_blocks,
-                    msg_type,
-                    status,
-                    priority,
-                    local_id,
-                    client_message_id,
-                    mention_all,
-                    context,
-                    sync_status,
-                    delivery_status,
-                    dispatch_status,
-                    server_received_at,
-                    created_time
-                ) VALUES (
-                    CAST(:conversation_id AS uuid),
-                    :conversation_seq,
-                    :owner_id,
-                    :hasn_id,
-                    :from_id,
-                    :sender_hasn_id,
-                    2,
-                    :to_id,
-                    :recipient_hasn_id,
-                    1,
-                    5,
-                    CAST(:content AS jsonb),
-                    CAST(:process_blocks AS jsonb),
-                    'work_session_result',
-                    1,
-                    'normal',
-                    :local_id,
-                    :client_message_id,
-                    false,
-                    CAST(:context AS jsonb),
-                    'pending',
-                    'delivered',
-                    'not_required',
-                    now(),
-                    now()
-                )
-                RETURNING id
-                """
+        principal = _actor_principal(agent_id, origin_session_id=session_id)
+        command_id = await enqueue_send_message(
+            db,
+            table=SESSION_IM_OUTBOX,
+            command=SendMessageCommand(
+                conversation_id=str(conversation_id),
+                content=content_card,
+                content_type=5,
+                idempotency_key=dedupe_key,
+                msg_type='work_session_result',
+                context={
+                    'projection_kind': 'work_session_result_summary',
+                    'session_id': session_id,
+                    'dedupe_key': dedupe_key,
+                },
             ),
-            {
-                'conversation_id': str(conversation_id),
-                'conversation_seq': conversation_seq,
-                'owner_id': owner_id,
-                'hasn_id': owner_id,
-                'from_id': agent_id,
-                'sender_hasn_id': agent_id,
-                'to_id': owner_id,
-                'recipient_hasn_id': owner_id,
-                'content': json.dumps(content_card, ensure_ascii=False, sort_keys=True, default=str),
-                'process_blocks': '[]',
-                'local_id': dedupe_key,
-                'client_message_id': dedupe_key,
-                'context': json.dumps(
-                    {
-                        'projection_kind': 'work_session_result_summary',
-                        'session_id': session_id,
-                        'dedupe_key': dedupe_key,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-            },
+            principal=principal,
+            causation_id=f'work-session:{session_id}'[:80],
         )
-        row = result.mappings().one()
-        result_message_id = str(row['id'])
         if session is not None:
-            _record_projection_on_session(
+            _record_projection_command_on_session(
                 session=session,
-                result_message_id=result_message_id,
+                command_id=command_id,
                 conversation_id=str(conversation_id),
                 content_json=content_json,
             )
@@ -476,7 +429,9 @@ class HasnSessionsService:
             )
         await db.flush()
         return {
-            'result_message_id': result_message_id,
+            'result_message_id': None,
+            'delivery_command_id': command_id,
+            'delivery_state': 'pending',
             'conversation_id': str(conversation_id),
             'dedupe_key': dedupe_key,
             'created': True,
@@ -550,10 +505,11 @@ _SUMMARY_PREVIEW_CAP = 200
 # origin_ref 形如 ``resource:<app>:<id>``（AppCollab doc21 §D3）——取中间的 <app> 段作应用标识。
 _RESOURCE_ORIGIN_PREFIX = 'resource:'
 
-# 云端 session_status（active/completed/error/cancelled）→ digest 状态词表
+# 云端 session_status（active/waiting_for_user/completed/error/cancelled）→ digest 状态词表
 # （running/waiting_for_user/completed/failed）。云端只有粗粒度，daemon 有本地则用本地细状态。
 _CLOUD_STATUS_MAP = {
     'active': 'running',
+    'waiting_for_user': 'waiting',
     'completed': 'completed',
     'error': 'failed',
     'cancelled': 'cancelled',
@@ -661,66 +617,43 @@ async def _resolve_projection_conversation(
     owner_id: str,
     agent_id: str,
     projection_data: dict[str, Any],
+    im_gateway: ImGateway | None = None,
 ) -> str:
+    gateway = im_gateway or get_im_gateway()
+    conversation = await gateway.ensure_direct_conversation(
+        EnsureDirectConversationCommand(
+            peer_hasn_id=owner_id,
+            relation_type='social',
+        ),
+        _actor_principal(agent_id),
+    )
     explicit_id = projection_data.get('target_conversation_id') or projection_data.get('source_conversation_id')
     if explicit_id:
-        await _assert_projection_conversation_owned(
-            db=db,
-            owner_id=owner_id,
-            agent_id=agent_id,
-            conversation_id=str(explicit_id),
-        )
+        if str(explicit_id) != str(conversation.conversation_id):
+            raise errors.ForbiddenError(msg='无权投影到该会话')
         return str(explicit_id)
-
-    conversation = await hasn_conversations_service.ensure_conversation(
-        db=db,
-        caller_hasn_id=owner_id,
-        peer_hasn_id=agent_id,
-        relation_type='social',
-    )
-    return str(conversation.id)
+    return str(conversation.conversation_id)
 
 
-async def _assert_projection_conversation_owned(
-    *,
+async def _find_projection_delivery(
     db: AsyncSession,
-    owner_id: str,
-    agent_id: str,
-    conversation_id: str,
-) -> None:
+    *,
+    dedupe_key: str,
+) -> dict[str, Any] | None:
+    """按稳定幂等键查投递命令，覆盖 relay 前后的重复请求。"""
     result = await db.execute(
         sa.text(
             """
-            SELECT id
-            FROM public.hasn_conversations
-            WHERE id = CAST(:conversation_id AS uuid)
-              AND type = 'direct'
-              AND (
-                    (participant_a_id = :owner_id AND participant_b_id = :agent_id)
-                 OR (participant_a_id = :agent_id AND participant_b_id = :owner_id)
-              )
+            SELECT command_id,
+                   conversation_id::text AS conversation_id,
+                   status,
+                   message_id
+            FROM public.hasn_session_im_command_outbox
+            WHERE idempotency_key = :dedupe_key
             LIMIT 1
             """
         ),
-        {'conversation_id': conversation_id, 'owner_id': owner_id, 'agent_id': agent_id},
-    )
-    if not result.mappings().first():
-        raise errors.ForbiddenError(msg='无权投影到该会话')
-
-
-async def _find_projection_message(db: AsyncSession, *, owner_id: str, dedupe_key: str) -> dict[str, Any] | None:
-    result = await db.execute(
-        sa.text(
-            """
-            SELECT id, conversation_id::text AS conversation_id
-            FROM public.hasn_messages
-            WHERE owner_id = :owner_id
-              AND client_message_id = :dedupe_key
-            ORDER BY id ASC
-            LIMIT 1
-            """
-        ),
-        {'owner_id': owner_id, 'dedupe_key': dedupe_key},
+        {'dedupe_key': dedupe_key},
     )
     row = result.mappings().first()
     return dict(row) if row else None
@@ -775,8 +708,7 @@ def _parse_app_origin_ref(origin_ref: str | None) -> tuple[str, str] | None:
 
     与 daemon 侧 `domains/app_resource.rs::parse_resource_origin_ref` 对称：只认 `resource:` 前缀，
     按**首个**冒号切 app_id 与其余（local_ref 允许含冒号，覆盖将来带命名空间的本地 id）。
-    local_ref 即 webui `hasn://{域}/{id}` 需要的那个 id——调用方优先用云端权威 `{app}_server_id`，
-    未上云才回退本地 local_ref（本地 id 跨设备/分享后对端解析不开，见 Core-08 URI 第二原则）。
+    local_ref 只用于 descriptor 选择与溯源，禁止直接进入跨端 URI。
     """
     if not origin_ref or not origin_ref.startswith(_APP_RESOURCE_ORIGIN_PREFIX):
         return None
@@ -795,8 +727,8 @@ def _resolve_app_resource_projection(content_json: dict[str, Any]) -> tuple[Any,
     """据投影 content_json 判定是否应用资源会话，命中则返回 `(descriptor, app_id, uri_id)`（RC-P3/RC-P8 共用）。
 
     仅当 `origin_ref=resource:{app}:{local}` 且该 app 在 manifest.resources[] 声明了 descriptor 才算应用资源；
-    未声明 → None（完成卡回落通用工作会话卡、且不登记应用资源产物）。`uri_id` 一律**优先云端权威
-    `{app}_server_id`**，未上云才回退本地 local_ref（Core-08 URI 第二原则：本地 id 换设备/分享后对端解析不开）。
+    未声明或缺少云端权威 ``{app}_server_id`` → None（完成卡回落通用工作会话卡，且不登记
+    应用资源产物）。本地 ref 只作溯源，绝不进入 URI。
     """
     app_resource = _parse_app_origin_ref(content_json.get('origin_ref'))
     if app_resource is None:
@@ -809,7 +741,10 @@ def _resolve_app_resource_projection(content_json: dict[str, Any]) -> tuple[Any,
     descriptor, resolved_ref = ai_native_app_registry.resolve_resource_descriptor(app_id, local_ref)
     if descriptor is None or resolved_ref is None:
         return None
-    uri_id = str(content_json.get(f'{app_id}_server_id') or resolved_ref)
+    server_id = content_json.get(f'{app_id}_server_id')
+    if server_id is None or not str(server_id).strip():
+        return None
+    uri_id = str(server_id).strip()
     return descriptor, app_id, uri_id
 
 
@@ -827,8 +762,7 @@ def build_generic_resource_card(
     云端据 descriptor 统一组卡（标题「{card.verb}做好了」、主按钮 `card.action_label`、深链
     `hasn://{uri_domain}/{uri_id}`），新应用零改代码即出卡。分身不自己发卡，杜绝「发错/忘发」。
 
-    - `uri_id` = **云端权威 server_id**（调用方 `_projection_card_body` 优先取 `{app}_server_id`，
-      未上云才回退本地 local_ref）——跨设备/分享后对端据云端 id 读穿云端 ACL 打开，不依赖设备私有本地 id。
+    - `uri_id` = **云端权威 server_id**；缺失时调用方不得生成应用资源 URI。
     - deck 喂其 descriptor 时逐字节等价旧 `_projection_deck_card`（RC-P3 回归断言）。
     """
     verb = descriptor.card.verb
@@ -912,11 +846,16 @@ def _projection_deck_card(
     )
 
 
-def _actor_principal(hasn_id: str) -> ServicePrincipal:
+def _actor_principal(
+    hasn_id: str,
+    *,
+    origin_session_id: str | None = None,
+) -> ServicePrincipal:
     """按 hasn_id 推断发送方身份，供卡片投递 path 构造 principal。"""
     return ServicePrincipal(
         canonical_sender=hasn_id,
         actor_kind=ActorKind.AGENT if hasn_id.startswith('a_') else ActorKind.HUMAN,
+        origin_session_id=origin_session_id,
     )
 
 
@@ -928,50 +867,39 @@ async def _send_card_to_owner_via_im(
     card: dict[str, Any],
     local_id: str | None,
     context: dict[str, Any],
+    im_gateway: ImGateway | None = None,
 ) -> dict[str, Any]:
-    """走 ImGateway 发送分身→主人的卡片；失败返回 route_message 风格字典。"""
-    gateway = get_im_gateway()
+    """ensure 会话并与应用状态同事务登记完成卡命令。"""
+    if not local_id:
+        raise errors.RequestError(msg='完成卡缺少稳定幂等键')
+    gateway = im_gateway or get_im_gateway()
     principal = _actor_principal(sender_id)
 
     conv_ref = await gateway.ensure_direct_conversation(
         EnsureDirectConversationCommand(peer_hasn_id=owner_id, relation_type='social'),
         principal,
     )
-    try:
-        send_result = await gateway.send_message(
-            SendMessageCommand(
-                conversation_id=conv_ref.conversation_id,
-                content=card,
-                content_type=5,
-                msg_type='card',
-                idempotency_key=local_id,
-                context=context,
-            ),
-            principal,
-        )
-    except ImSendRejected as exc:
-        return {
-            'error': True,
-            'code': exc.code,
-            'message': str(exc),
-            'conversation_id': str(conv_ref.conversation_id),
-        }
-
-    status = 'sent'
-    if send_result.delivery_state == DeliveryState.SUPPRESSED:
-        status = 'suppressed'
-    elif send_result.delivery_state == DeliveryState.PENDING_POLICY:
-        status = 'pending_confirmation'
-
+    command_id = await enqueue_send_message(
+        db,
+        table=SESSION_IM_OUTBOX,
+        command=SendMessageCommand(
+            conversation_id=conv_ref.conversation_id,
+            content=card,
+            content_type=5,
+            msg_type='card',
+            idempotency_key=local_id,
+            context=context,
+        ),
+        principal=principal,
+        causation_id=local_id[:80],
+    )
     return {
         'error': False,
-        'msg_id': send_result.message_id,
-        'conversation_id': send_result.conversation_id,
-        'status': status,
-        'deduped': send_result.deduped,
-        'relation': send_result.relation,
-        'pending_request_id': send_result.pending_request_id,
-        'reason': send_result.suppress_reason,
+        'msg_id': None,
+        'command_id': command_id,
+        'conversation_id': conv_ref.conversation_id,
+        'status': 'pending',
+        'deduped': False,
         'local_id': local_id,
     }
 
@@ -984,6 +912,7 @@ async def emit_deck_completion_card(
     deck_id: str,
     title: str = '',
     summary: str = '',
+    im_gateway: ImGateway | None = None,
 ) -> dict[str, Any]:
     """演示文稿收尾 → 云端组「打开演示文稿」卡，走 ``ImGateway`` 从**分身→主人**投递。
 
@@ -991,12 +920,10 @@ async def emit_deck_completion_card(
     分身写完最后一页调 ``hasn.deck.finalize``，云端**首次** draft/generating→ready 转换时调本函数。
     **分身不自己发卡**——由云端据 deck 完成事件统一组卡，杜绝「发错/忘发」。
 
-    - 复用 ``ImGateway``（分身→自己主人始终放行）：自带会话解析 + 落库 + push_to_owner +
-      daemon 镜像，与分身平时回复主人完全同一条可靠通道（在线即推、离线重连 sync_pull 补达）。
+    - 事务内写入 session 生产方 outbox；独立 relay 经 ``ImGateway`` 投递，进程崩溃后可恢复。
     - 深链 ``hasn://deck/{deck_id}``，``deck_id`` = **云端权威 deck id**（主会话路径 deck 本就
       建在云端，入参即云端 id，无需本地↔云端映射；跨设备/分享后对端据云端 id 读穿 ACL 打开）。
-    - 幂等：``local_id=deck_complete:{deck_id}`` 命中 ``hasn_messages`` 唯一索引则不二次投递，
-      叠加 finalize 的状态守卫 → 双保只发一次。
+    - 幂等：``deck_complete:{deck_id}`` 是 outbox 和最终消息共同使用的稳定幂等键。
     """
     # doc36 §8.3：先解析 descriptor，查不到即 fail loud（warn + 不发卡）——registry 无 deck
     # descriptor = manifest.resources[] 坏了，绝不拿硬编码副本假装正常（那会掩盖漂移）。
@@ -1048,6 +975,7 @@ async def emit_deck_completion_card(
         card=card,
         local_id=f'deck_complete:{deck_id}',
         context={'projection_kind': 'deck_completion', 'deck_id': str(deck_id)},
+        im_gateway=im_gateway,
     )
 
 
@@ -1072,19 +1000,18 @@ async def emit_designsystem_completion_card(
     design_system_id: str,
     title: str = '',
     summary: str = '',
+    im_gateway: ImGateway | None = None,
 ) -> dict[str, Any]:
     """设计系统写满必填字段 → 云端组「打开设计系统」卡，走 ``ImGateway`` 从**分身→主人**投递。
 
     完全对齐 ``emit_deck_completion_card``（福仔「像 deck 那样」）——不再走 notification_service.emit
     的汇报面通道（依赖 OwnerLoopback 守卫 + 部署状态，脆弱），改用 deck 同一条可靠会话通道：
 
-    - 复用 ``ImGateway``（分身→自己主人始终放行）：自带会话解析 + 落库 + push_to_owner +
-      daemon 镜像，与分身平时回复主人完全同一条通道（在线即推、离线重连 sync_pull 补达）。
+    - 事务内写入 session 生产方 outbox；独立 relay 经 ``ImGateway`` 投递，进程崩溃后可恢复。
     - 深链 ``hasn://designsystem/{design_system_id}``，``design_system_id`` = **云端权威 id**
       （设计系统本就建在云端，入参即云端 id；跨设备/分享后对端据云端 id 读穿 ACL 打开，
       符合「本地 ID 永不上 URI」铁律）。
-    - 幂等：``local_id=designsystem_complete:{id}`` 命中 ``hasn_messages`` 唯一索引则不二次投递
-      —— 完成信号可被多次 save 触发（自愈补发首次投递失败的卡），local_id 保证只发一次。
+    - 幂等：``designsystem_complete:{id}`` 是 outbox 和最终消息共同使用的稳定幂等键。
     - **产物登记不在此处**：由 ``hasn.designsystem.save`` 工具每次 save 都 register-on-write
       （带 work_session_id），故完成卡只管发卡、不重复登记（与 deck 略异：designsystem 的 save
       恒经工具，无「主会话直建、无工具」路径，故此处省登记）。
@@ -1129,15 +1056,15 @@ async def emit_designsystem_completion_card(
             'projection_kind': 'designsystem_completion',
             'designsystem_id': str(design_system_id),
         },
+        im_gateway=im_gateway,
     )
 
 
 def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
     # RC-P3：应用资源会话（origin_ref=resource:{app}:{local}）→ 据 descriptor 泛化组「{verb}做好了」卡
     # （分身不自己发卡，去 deck 特例）。判别器用 origin_ref 拆 app_id/local_ref，卡里 `hasn://{域}/{id}`
-    # 的 id **一律优先用云端权威 `{app}_server_id`**——本地 id 跨设备/分享后对端解析不开（福仔「分享给
-    # 别人根本打不开」的根因）。仅当资源尚未上云（无 server_id）才回退本地 local_ref：此时资源不在云端、
-    # 根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析。未声明 descriptor 的应用 → 回落通用卡。
+    # 的 id **只允许云端权威 `{app}_server_id`**——本地 id 跨设备/分享后对端无法解析。资源尚未上云时
+    # 不生成应用资源 URI，诚实回落通用工作会话卡；未声明 descriptor 的应用同样回落通用卡。
     resolved = _resolve_app_resource_projection(content_json)
     if resolved is not None:
         descriptor, app_id, uri_id = resolved
@@ -1213,24 +1140,26 @@ def _projection_card_body(*, session_id: str, title: str, content_json: dict[str
     }
 
 
-def _record_projection_on_session(
+def _record_projection_command_on_session(
     *,
     session: HasnSessions,
-    result_message_id: str,
+    command_id: str,
     conversation_id: str,
     content_json: dict[str, Any],
 ) -> None:
+    """在业务事务内记录待投递命令，不把 command_id 冒充 message_id。"""
     checkpoint = dict(session.summary_checkpoint_json or {})
     checkpoint.update({
         'summary': content_json.get('summary'),
         'status': content_json.get('status'),
-        'result_message_id': result_message_id,
+        'result_message_id': None,
+        'delivery_command_id': command_id,
+        'delivery_state': 'pending',
         'projection_conversation_id': conversation_id,
         'deep_link': content_json.get('deep_link'),
         'completion_reason': content_json.get('completion_reason'),
         'dedupe_key': content_json.get('dedupe_key'),
     })
     session.summary_checkpoint_json = checkpoint
-    session.last_message_id = result_message_id
     session.last_message_at = timezone.now()
     session.updated_time = timezone.now()

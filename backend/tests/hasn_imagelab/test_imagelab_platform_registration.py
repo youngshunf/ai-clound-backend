@@ -2,12 +2,12 @@
 
 覆盖云端注册第一刀（catalog/manifest 注册 + 铸七 scope，doc30 §5.5）：
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
-- capabilities scope 与落地 hasn-mcp 工具一致（16 个；读类 3 → imagelab:read、处理类 8 → imagelab:process、
+- capabilities scope 与落地 hasn-mcp 工具一致（17 个；读类 4 → imagelab:read、处理类 8 → imagelab:process、
   导出类 1 → imagelab:export、批量类 1 → imagelab:batch、破坏性类 1 → imagelab:destructive、
   生成类 1 → imagelab:generate、分享类 1 → imagelab:share；mcp_name 全 hasn.imagelab.*）。
 - scopes.py 登记七 scope（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- 出厂默认三态：imagelab:read/:process/:export 出厂 Allow；imagelab:batch/:destructive/:generate/:share
-  出厂 Ask（= imagelab.rs 本地出厂态，缺陷 3 修复契约——静息态与本地 CapabilityModeMirror 一致）。
+- 出厂默认三态：除 imagelab:share 外全部出厂 Allow；imagelab:share 出厂 Ask
+  （= imagelab.rs 本地出厂态，静息态与本地 CapabilityModeMirror 一致）。
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 ==
   {imagelab:process, imagelab:export, imagelab:batch, imagelab:destructive, imagelab:generate, imagelab:share}
   （= hasn-node crates/hasn-mcp/src/imagelab.rs capability_scopes() 契约，见 test_local_tool_scope_alignment）。
@@ -42,6 +42,8 @@ from backend.app.hasn.service.app_catalog_service import (
     _CATALOG_AGENT_DEFAULTS,
     _CATALOG_DEFAULT_CONFIG,
     _CATALOG_SORT_ORDER,
+    _catalog_row_from_app,
+    catalog_to_manifest,
     ensure_catalog_seeded,
     get_all_app_configs,
     get_catalog,
@@ -51,8 +53,8 @@ from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 # 落地真相（hasn-node crates/hasn-mcp/src/imagelab.rs，P3 待落，本表是云端侧契约源）：
-# 读类 3 / 处理类 8 / 导出类 1 / 批量类 1 / 破坏性类 1 / 生成类 1 / 分享类 1 = 16 个。
-_READ_TOOLS = {'analyze', 'job.get', 'job.list'}
+# 读类 4 / 处理类 8 / 导出类 1 / 批量类 1 / 破坏性类 1 / 生成类 1 / 分享类 1 = 17 个。
+_READ_TOOLS = {'workspace.get', 'analyze', 'job.get', 'job.list'}
 _PROCESS_TOOLS = {
     'process',
     'pipeline',
@@ -78,8 +80,10 @@ _EXPORT_SCOPE = 'imagelab:export'
 _SHARE_SCOPE = 'imagelab:share'
 
 # 出厂 Allow（不弹确认）vs 出厂 Ask（human_confirmation.required=True）的工具集。
-_ALLOW_TOOLS = _READ_TOOLS | _PROCESS_TOOLS | _EXPORT_TOOLS
-_ASK_TOOLS = _BATCH_TOOLS | _DESTRUCTIVE_TOOLS | _GENERATE_TOOLS | _SHARE_TOOLS
+_ALLOW_TOOLS = (
+    _READ_TOOLS | _PROCESS_TOOLS | _EXPORT_TOOLS | _BATCH_TOOLS | _DESTRUCTIVE_TOOLS | _GENERATE_TOOLS
+)
+_ASK_TOOLS = _SHARE_TOOLS
 
 # 每工具 → 期望 scope。
 _TOOL_SCOPE = {
@@ -116,17 +120,17 @@ def test_imagelab_in_builtin_registry() -> None:
 
 
 def test_imagelab_capabilities_match_landed_tools() -> None:
-    """16 个 capability，mcp_name 全 hasn.imagelab.*；每工具 scope 与 §5.4 工具表逐一对齐。"""
+    """17 个 capability，mcp_name 全 hasn.imagelab.*；每工具 scope 与 §5.4 工具表逐一对齐。"""
     caps = IMAGELAB_AI_NATIVE_MANIFEST['capabilities']
     names = {c['tool_id'].split('.', 1)[1] for c in caps}
     assert names == set(_TOOL_SCOPE), f'工具集与落地不一致: {names}'
-    assert len(caps) == 16
+    assert len(caps) == 17
 
     for cap in caps:
         assert cap['mcp_name'].startswith('hasn.imagelab.'), cap['mcp_name']
         short = cap['tool_id'].split('.', 1)[1]
         assert cap['required_scopes'] == [_TOOL_SCOPE[short]], f'{short} scope 应为 {_TOOL_SCOPE[short]}'
-        # 出厂 Allow（读/处理/导出）不弹确认；出厂 Ask（批量/破坏性/生成/分享）弹确认。
+        # 只有外发分享出厂 Ask，其余工具出厂 Allow。
         expected_confirm = short in _ASK_TOOLS
         assert cap['human_confirmation'].get('required') is expected_confirm, f'{short} 确认态不符'
 
@@ -201,6 +205,44 @@ def test_imagelab_workbench_app_shape() -> None:
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(IMAGELAB_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
     assert IMAGELAB_AI_NATIVE_MANIFEST['collaboration_mode'] == app.collaboration_mode
+
+
+def test_imagelab_project_requirement_survives_catalog_projection() -> None:
+    """图坊项目必选契约须经 manifest、注册表与 catalog 投影完整保留。"""
+    app = build_imagelab_app()
+    assert IMAGELAB_AI_NATIVE_MANIFEST['project_aware'] is True
+    assert IMAGELAB_AI_NATIVE_MANIFEST['project_required'] is True
+    assert app.project_aware is True
+    assert app.project_required is True
+    assert app.to_manifest()['project_aware'] is True
+    assert app.to_manifest()['project_required'] is True
+
+    catalog = HasnAppCatalog(**_catalog_row_from_app(app))
+    projected = catalog_to_manifest(catalog, registry_app=app)
+    assert projected['project_aware'] is True
+    assert projected['project_required'] is True
+
+
+def test_imagelab_project_requirement_is_validated_against_registry() -> None:
+    """图坊项目必选不能脱离项目感知，也不能与工作台注册契约漂移。"""
+    project_unaware = {
+        **IMAGELAB_AI_NATIVE_MANIFEST,
+        'project_aware': False,
+        'project_required': True,
+    }
+    unaware_result = ai_native_app_registry.validate_manifest(project_unaware)
+    assert unaware_result.valid is False
+    assert 'project_required_requires_project_aware' in unaware_result.errors
+    assert 'project_aware_mismatch' in unaware_result.errors
+
+    optional_project = {
+        **IMAGELAB_AI_NATIVE_MANIFEST,
+        'project_aware': True,
+        'project_required': False,
+    }
+    optional_result = ai_native_app_registry.validate_manifest(optional_project)
+    assert optional_result.valid is False
+    assert 'project_required_mismatch' in optional_result.errors
 
 
 def test_imagelab_catalog_factory_source() -> None:

@@ -12,3 +12,4 @@ from backend.app.hasn_task.model.workflow_node import HasnWorkflowNode as HasnWo
 from backend.app.hasn_task.model.workflow_node_run import HasnWorkflowNodeRun as HasnWorkflowNodeRun
 from backend.app.hasn_task.model.workflow_run import HasnWorkflowRun as HasnWorkflowRun
 from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate as HasnWorkflowTemplate
+from backend.app.hasn_task.model.task_dispatch_outbox import TaskDispatchOutbox as TaskDispatchOutbox

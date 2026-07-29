@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import uuid
+import time
 
 import pytest
 import pytest_asyncio
@@ -20,7 +21,9 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_messages import HasnMessages
 from backend.app.hasn.service.hasn_sessions_service import emit_deck_completion_card
+from backend.app.hasn.service.session_im_outbox import build_session_im_relay
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
+from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -51,7 +54,7 @@ async def session():
 @pytest_asyncio.fixture
 async def seeded(session):
     tag = _uid()
-    uid_owner = 960000 + int(uuid.uuid4().int % 9000)
+    uid_owner = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     owner = f'h_own_{tag}'
     agent = f'a_mine_{tag}'
     session.add_all(
@@ -91,14 +94,23 @@ async def test_finalize_flips_ready_and_idempotent(seeded) -> None:
 
 
 async def test_finalize_emits_completion_card_once(seeded) -> None:
-    """emit_deck_completion_card：给主人落一张 content_type=5 卡片，深链=云端权威 deck id；重复 emit 幂等不重复。"""
+    """deck 完成卡先与业务同事务入 outbox，再由真实 relay 幂等落入主会话。"""
     session, owner, agent = seeded['session'], seeded['owner'], seeded['agent']
     deck = await deck_service.create_deck(session, owner_id=owner, title='季度汇报')
     deck_id = deck['id']
+    session_factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    gateway = PythonLocalImGateway(session_factory)
 
-    await emit_deck_completion_card(
-        session, owner_id=owner, agent_id=agent, deck_id=str(deck_id), title='季度汇报', summary='第一版做好了'
+    delivery = await emit_deck_completion_card(
+        session,
+        owner_id=owner,
+        agent_id=agent,
+        deck_id=str(deck_id),
+        title='季度汇报',
+        summary='第一版做好了',
+        im_gateway=gateway,
     )
+    assert delivery['status'] == 'pending'
 
     def _cards():
         stmt = select(HasnMessages).where(
@@ -107,6 +119,18 @@ async def test_finalize_emits_completion_card_once(seeded) -> None:
             HasnMessages.content_type == 5,
         )
         return session.execute(stmt)
+
+    # relay 前没有权威消息；只持久化生产方命令。
+    rows = (await _cards()).scalars().all()
+    assert rows == []
+    await session.commit()
+    relay = build_session_im_relay(
+        session_factory=session_factory,
+        gateway=gateway,
+        instance_id=f'deck-test-{uuid.uuid4().hex}',
+    )
+    stats = await relay.drain_once(now=int(time.time()) + 2)
+    assert stats.completed >= 1
 
     rows = (await _cards()).scalars().all()
     assert len(rows) == 1, f'应恰好落 1 张完成卡，实际 {len(rows)}'
@@ -118,6 +142,17 @@ async def test_finalize_emits_completion_card_once(seeded) -> None:
     assert card['description'] == '第一版做好了'
 
     # 幂等：同 deck_id → 同 local_id(deck_complete:{id}) → 不重复发卡
-    await emit_deck_completion_card(session, owner_id=owner, agent_id=agent, deck_id=str(deck_id), title='季度汇报')
+    duplicate = await emit_deck_completion_card(
+        session,
+        owner_id=owner,
+        agent_id=agent,
+        deck_id=str(deck_id),
+        title='季度汇报',
+        summary='第一版做好了',
+        im_gateway=gateway,
+    )
+    assert duplicate['command_id'] == delivery['command_id']
+    await session.commit()
+    await relay.drain_once(now=int(time.time()) + 2)
     rows2 = (await _cards()).scalars().all()
     assert len(rows2) == 1, f'重复 emit 应幂等不重复发卡，实际 {len(rows2)}'

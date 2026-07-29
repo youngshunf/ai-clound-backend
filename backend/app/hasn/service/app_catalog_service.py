@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -34,10 +35,10 @@ from backend.app.hasn.service.app_catalog_registry import App, app_catalog_regis
 from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 # 默认应用标识（订阅档与 billing 同源，见 [[project_billing_newapi_authoritative_source]]）。
@@ -495,6 +496,188 @@ async def get_all_app_configs(db: AsyncSession) -> dict[str, dict]:
     return {app_id: cfg for app_id, cfg in rows if cfg}
 
 
+_SIGNED_ENGINE_DOCUMENT_FIELDS = {'payload', 'signature'}
+_SIGNED_ENGINE_PAYLOAD_FIELDS = {
+    'schema_version',
+    'artifact_id',
+    'version',
+    'release_sequence',
+    'channel',
+    'issued_at',
+    'expires_at',
+    'minimum_daemon_version',
+    'revoked',
+    'key_id',
+    'packages',
+}
+_SIGNED_ENGINE_PACKAGE_FIELDS = {
+    'key',
+    'url',
+    'sha256',
+    'compressed_size',
+    'installed_size',
+    'file_manifest_sha256',
+}
+_SIGNED_ENGINE_SHA256_RE = re.compile(r'^[0-9a-fA-F]{64}$')
+_SIGNED_ENGINE_SIGNATURE_RE = re.compile(r'^[0-9a-fA-F]{128}$')
+_SIGNED_ENGINE_PLATFORM_RE = re.compile(r'^(macos|windows|linux)-[A-Za-z0-9._-]{1,128}$')
+_SIGNED_ENGINE_TOKEN_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
+_SIGNED_ENGINE_VERSION_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
+_SIGNED_ENGINE_SEMVER_RE = re.compile(r'^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')
+
+
+def _require_exact_fields(value: object, fields: set[str], label: str) -> dict:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise errors.RequestError(msg=f'图坊签名 manifest {label}字段不符合 schema v2')
+    return value
+
+
+def _parse_signed_engine_time(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是 RFC3339 时间')
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as exc:
+        raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是 RFC3339 时间') from exc
+    if parsed.tzinfo is None:
+        raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须带时区')
+    return parsed
+
+
+def _validate_signed_engine_package(
+    *,
+    app_id: str,
+    version: str,
+    platform_key: object,
+    package_value: object,
+) -> dict:
+    if not isinstance(platform_key, str) or not _SIGNED_ENGINE_PLATFORM_RE.fullmatch(platform_key):
+        raise errors.RequestError(msg=f'图坊签名 manifest 平台键无效：{platform_key}')
+    package = _require_exact_fields(
+        package_value, _SIGNED_ENGINE_PACKAGE_FIELDS, f'packages.{platform_key} ',
+    )
+    object_key = package['key']
+    expected_prefix = f'runtime-engine/{app_id}/{version}/'
+    if (
+        not isinstance(object_key, str)
+        or not object_key.startswith(expected_prefix)
+        or '..' in object_key
+        or any(character.isspace() for character in object_key)
+    ):
+        raise errors.RequestError(msg=f'图坊签名 manifest 对象 key 必须位于 {expected_prefix}')
+    url = package['url']
+    if not isinstance(url, str):
+        raise errors.RequestError(msg='图坊签名 manifest 包 URL 无效')
+    parsed_url = urlparse(url)
+    loopback = parsed_url.scheme == 'http' and parsed_url.hostname in {'localhost', '127.0.0.1', '::1'}
+    if parsed_url.scheme != 'https' and not loopback:
+        raise errors.RequestError(msg='图坊签名 manifest 包 URL 必须是 HTTPS 或 loopback HTTP')
+    for field in ('sha256', 'file_manifest_sha256'):
+        digest = package[field]
+        if not isinstance(digest, str) or not _SIGNED_ENGINE_SHA256_RE.fullmatch(digest):
+            raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是 64 位 sha256')
+    for field in ('compressed_size', 'installed_size'):
+        size = package[field]
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是正整数')
+    return package
+
+
+def _validate_signed_engine_manifest(*, app_id: str, document: object) -> dict:
+    signed = _require_exact_fields(document, _SIGNED_ENGINE_DOCUMENT_FIELDS, '顶层')
+    signature = signed['signature']
+    if not isinstance(signature, str) or not _SIGNED_ENGINE_SIGNATURE_RE.fullmatch(signature):
+        raise errors.RequestError(msg='图坊签名 manifest signature 必须是 128 位 Ed25519 hex')
+    payload = _require_exact_fields(signed['payload'], _SIGNED_ENGINE_PAYLOAD_FIELDS, 'payload ')
+    if payload['schema_version'] != 2:
+        raise errors.RequestError(msg='图坊签名 manifest schema_version 必须为 2')
+    expected_artifact_id = f'app.engine.{app_id}'
+    if payload['artifact_id'] != expected_artifact_id:
+        raise errors.RequestError(msg=f'图坊签名 manifest artifact_id 必须为 {expected_artifact_id}')
+    version = payload['version']
+    if (
+        not isinstance(version, str)
+        or version in {'.', '..'}
+        or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version)
+    ):
+        raise errors.RequestError(msg='图坊签名 manifest version 无效')
+    sequence = payload['release_sequence']
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0:
+        raise errors.RequestError(msg='图坊签名 manifest release_sequence 必须是正整数')
+    for field in ('channel', 'key_id'):
+        value = payload[field]
+        if not isinstance(value, str) or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(value):
+            raise errors.RequestError(msg=f'图坊签名 manifest {field} 无效')
+    minimum_daemon_version = payload['minimum_daemon_version']
+    if (
+        not isinstance(minimum_daemon_version, str)
+        or not _SIGNED_ENGINE_SEMVER_RE.fullmatch(minimum_daemon_version)
+    ):
+        raise errors.RequestError(msg='图坊签名 manifest minimum_daemon_version 无效')
+    if not isinstance(payload['revoked'], bool):
+        raise errors.RequestError(msg='图坊签名 manifest revoked 必须是布尔值')
+    issued_at = _parse_signed_engine_time(payload['issued_at'], 'issued_at')
+    expires_at = _parse_signed_engine_time(payload['expires_at'], 'expires_at')
+    if expires_at <= issued_at:
+        raise errors.RequestError(msg='图坊签名 manifest expires_at 必须晚于 issued_at')
+    packages = payload['packages']
+    if not isinstance(packages, dict) or not packages:
+        raise errors.RequestError(msg='图坊签名 manifest packages 不能为空')
+    for platform_key, package in packages.items():
+        _validate_signed_engine_package(
+            app_id=app_id,
+            version=version,
+            platform_key=platform_key,
+            package_value=package,
+        )
+    return signed
+
+
+def merge_signed_engine_manifest(
+    config_json: dict | None,
+    *,
+    app_id: str,
+    document: dict,
+) -> dict:
+    """严格校验并保存 schema v2 签名引擎清单；云端不持有发布私钥，只做哑存储。
+
+    发布序列在云端也保持单调：低序列拒绝重放，相同序列只允许字节语义完全幂等；同一版本的
+    同平台摘要不得改变。daemon 仍会用内置信任根验签，云端结构校验不能替代客户端信任门。
+    """
+    signed = copy.deepcopy(_validate_signed_engine_manifest(app_id=app_id, document=document))
+    existing = copy.deepcopy(config_json or {})
+    current = existing.get('engine')
+    if (
+        isinstance(current, dict)
+        and isinstance(current.get('payload'), dict)
+        and current['payload'].get('schema_version') == 2
+    ):
+        previous_payload = current['payload']
+        incoming_payload = signed['payload']
+        previous_sequence = previous_payload.get('release_sequence')
+        incoming_sequence = incoming_payload['release_sequence']
+        if isinstance(previous_sequence, int):
+            if incoming_sequence < previous_sequence:
+                raise errors.RequestError(msg='图坊签名 manifest 发布序列重放')
+            if incoming_sequence == previous_sequence:
+                if current != signed:
+                    raise errors.RequestError(msg='图坊签名 manifest 相同发布序列内容不一致')
+                return existing
+        if previous_payload.get('version') == incoming_payload['version']:
+            previous_packages = previous_payload.get('packages') or {}
+            for platform_key, incoming_package in incoming_payload['packages'].items():
+                previous_package = previous_packages.get(platform_key)
+                if (
+                    isinstance(previous_package, dict)
+                    and previous_package.get('sha256') != incoming_package['sha256']
+                ):
+                    raise errors.RequestError(
+                        msg=f'图坊签名 manifest 同版本异摘要：{platform_key}',
+                    )
+    existing['engine'] = signed
+    return existing
+
+
 def merge_engine_package(
     config_json: dict | None,
     *,
@@ -747,6 +930,101 @@ async def publish_finance_engine_release(
     return catalog.config_json['engine_release']
 
 
+async def stage_signed_engine_package(
+    db: AsyncSession,
+    *,
+    pk: int,
+    os_arch: str,
+    version: str,
+    data: bytes,
+    filename: str,
+    expected_sha256: str,
+) -> dict:
+    """上传 schema v2 待签平台包，返回进入签名正文的云端权威字段。
+
+    本步骤只让对象先在公共桶可达，不修改 ``config_json.engine``，因此在线 daemon 不会看到半套
+    发布。对象 key 绑定内容摘要，上传重试幂等；全部平台上传完后由离线发布工具共同签名，再调用
+    :func:`publish_signed_engine_manifest` 一次切换权威清单。
+    """
+    import hashlib
+
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.plugin.s3.service.storage_service import StorageService
+
+    if not _SIGNED_ENGINE_PLATFORM_RE.fullmatch(os_arch):
+        raise errors.RequestError(msg=f'引擎包平台键无效：{os_arch}')
+    if (
+        version in {'.', '..'}
+        or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version)
+    ):
+        raise errors.RequestError(msg='引擎包 version 无效')
+    if not _SIGNED_ENGINE_SHA256_RE.fullmatch(expected_sha256):
+        raise errors.RequestError(msg='引擎包 sha256 必须是 64 位十六进制')
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if expected_sha256.lower() != actual_sha256:
+        raise errors.RequestError(
+            msg=f'引擎包 sha256 不匹配：客户端 {expected_sha256}，服务端 {actual_sha256}（上传损坏）',
+        )
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    safe_filename = filename
+    if (
+        not safe_filename
+        or '/' in safe_filename
+        or '\\' in safe_filename
+        or not safe_filename.endswith('.zip')
+    ):
+        raise errors.RequestError(msg='引擎包 filename 必须是无路径的 .zip 文件名')
+    object_key = (
+        f'runtime-engine/{catalog.app_id}/{version}/{actual_sha256[:16]}-{safe_filename}'
+    )
+    ref = await StorageService.upload(
+        db,
+        data,
+        category='film_engine',
+        filename=safe_filename,
+        content_type='application/zip',
+        key=object_key,
+    )
+    return {
+        'key': object_key,
+        'url': ref.stable_url,
+        'sha256': actual_sha256,
+        'compressed_size': len(data),
+    }
+
+
+async def publish_signed_engine_manifest(
+    db: AsyncSession,
+    *,
+    pk: int,
+    document: dict,
+) -> dict:
+    """原子保存已签 schema v2 清单并推送 ``platform_config`` 失效。
+
+    云端不持有也不加载发布公钥；这里只做严格结构/序列/对象归属校验。daemon 收到后仍须用内置
+    Ed25519 信任根验签，不能把云端管理员权限当作引擎执行信任。
+    """
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    merged = merge_signed_engine_manifest(
+        catalog.config_json,
+        app_id=catalog.app_id,
+        document=document,
+    )
+    if merged == (catalog.config_json or {}):
+        return copy.deepcopy(merged['engine'])
+    catalog.config_json = merged
+    await db.flush()
+    await sync_bump('platform_config', db)
+    return copy.deepcopy(merged['engine'])
+
+
 async def resolve_default_agent_for_app(db: AsyncSession, *, owner_id: str, app_id: str) -> str | None:
     """AppCollab（doc21 §7.2）：打开应用时默认承接的分身 hasn_id。
 
@@ -810,7 +1088,7 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
         )
         .values(status='expired', updated_time=now)
     )
-    return result.rowcount or 0
+    return affected_rows(result)
 
 
 # ============================ C2：catalog 作为展示权威 ============================
@@ -1253,7 +1531,7 @@ async def revoke_entitlement(db: AsyncSession, *, entitlement_id: int) -> bool:
         .where(HasnAppEntitlement.id == entitlement_id, HasnAppEntitlement.status == 'active')
         .values(status='revoked', updated_time=timezone.now())
     )
-    return (result.rowcount or 0) > 0
+    return affected_rows(result) > 0
 
 
 async def list_entitlements(

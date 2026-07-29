@@ -2,13 +2,20 @@ import shutil
 
 from functools import cache
 from re import Pattern
+from re import compile as compile_pattern
 from typing import Any, Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH
 from backend.plugin.settings_source import PluginSettingsSource
+
+
+def _set_production_observability_default(values: dict[str, Any]) -> None:
+    """生产默认开启可观测性，同时保留显式关闭能力。"""
+    if 'GRAFANA_METRICS_ENABLE' not in values:
+        values['GRAFANA_METRICS_ENABLE'] = True
 
 
 class Settings(BaseSettings):
@@ -55,6 +62,10 @@ class Settings(BaseSettings):
     # 数据库
     DATABASE_ECHO: bool | Literal['debug'] = False
     DATABASE_POOL_ECHO: bool | Literal['debug'] = False
+    # R3 后同一进程最多建立主库与三个受限角色的四个独立池；生产又有多 API/Celery
+    # 进程，因此单池默认必须保守，避免所有进程按旧 10+20 配置耗尽 PostgreSQL 连接。
+    DATABASE_POOL_SIZE: int = Field(default=2, ge=1, le=20)
+    DATABASE_MAX_OVERFLOW: int = Field(default=2, ge=0, le=40)
     DATABASE_SCHEMA: str = 'huanxing'
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
@@ -73,6 +84,9 @@ class Settings(BaseSettings):
     IM_SERVICE_DATABASE_URL: str = ''
     SYNC_SERVICE_DATABASE_URL: str = ''
     PYTHON_BACKEND_DATABASE_URL: str = ''
+    # R3 硬切换总闸。False 使用 public 旧物理名；True 使用 hasn_im/hasn_sync 显式限定名。
+    # 生产开启时必须同时配置三个受限 role DSN 与最低 daemon 版本，否则启动即拒绝。
+    HASN_IM_SCHEMA_CUTOVER: bool = False
 
     # 积分↔quota 的换算常量已随 doc94 D1 删除：NewAPI 是积分唯一权威，
     # 云端持有一份换算算法就等于持有第二套金额口径。需要积分数值时读 NewAPI
@@ -189,6 +203,13 @@ class Settings(BaseSettings):
     # 网页发布（模块 18）：制品内容绝不在 API 主域渲染——/s/* 整面落独立分享域名（usercontent 模式）。
     # 形如 https://share.huanxing.ai；为空时回退请求 origin（仅 dev/同域，生产必须配独立域名）。
     WEB_PUBLISH_SHARE_ORIGIN: str = ''
+    # Growth 落地页的受信任外壳向公开表单 API 回流时使用的 origin；为空则与分享域同源。
+    # 跨域部署时必须同时把 WEB_PUBLISH_SHARE_ORIGIN 加入 CORS_ALLOWED_ORIGINS。
+    GROWTH_PUBLIC_FORM_API_ORIGIN: str = ''
+    # Growth 公开表单只通过 Publish 内部 HTTP 解析站点权威绑定；两项缺一即 fail-closed。
+    PUBLISH_INTERNAL_BASE_URL: str = ''
+    PUBLISH_INTERNAL_TOKEN: str = ''
+    PUBLISH_INTERNAL_TIMEOUT: float = 5.0
     RAGFLOW_PUBLIC_RSA_PUBLIC_KEY: str = ''  # RAGFlow RSA 公钥（PEM 格式），用于加密注册密码
     RAGFLOW_DEFAULT_EMBD_ID: str = 'BAAI/bge-large-zh-v1.5'  # 默认 embedding 模型
     RAGFLOW_DEFAULT_LLM_ID: str = 'deepseek-chat'  # 默认 LLM 模型
@@ -230,6 +251,30 @@ class Settings(BaseSettings):
     # 免费额度按月重置（lead_quota.period_key 变更即归零）；单价按条计（分），运营改环境变量不动代码。
     GROWTH_FREE_LEADS_PER_MONTH: int = 50  # 每用户每月免费可领取线索条数
     GROWTH_LEAD_UNIT_PRICE_FEN: int = 100  # 购买线索单价（分/条），默认 ¥1.00/条
+
+    # 获客项目化 v4 分阶段开关（实施 92 §9）：全部默认关闭，生产开启必须经变更审计。
+    GROWTH_PROJECT_V4_ENABLED: bool = False
+    # 企业 ID 的 UUID↔BIGINT 权威映射尚未落地前恒关；后端门禁不能由客户端显隐替代。
+    GROWTH_PROJECT_V4_ENTERPRISE_ENABLED: bool = False
+    GROWTH_PII_NEW_WRITE_ENABLED: bool = False
+    GROWTH_PII_SHADOW_READ_ENABLED: bool = False
+    # 联系人 PII 使用独立版本化密钥环，JSON 形如 {"1":"<base64 32字节密钥>"}。
+    # 密钥真实值只从 Vault/KMS 注入；留空或 active 版本不存在时业务写/reveal 必须 fail-closed。
+    GROWTH_PII_ENCRYPTION_KEYS_JSON: str = ''
+    GROWTH_PII_HMAC_KEYS_JSON: str = ''
+    GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION: int = 0
+    GROWTH_PII_ACTIVE_HMAC_KEY_VERSION: int = 0
+    GROWTH_PROJECT_DUAL_WRITE_ENABLED: bool = False
+    GROWTH_PROJECT_READ_CUTOVER_ENABLED: bool = False
+    # Publish 未完成项目挂靠前，落地页与公开表单必须保持 fail-closed。
+    GROWTH_PUBLISH_LANDING_ENABLED: bool = False
+    # 当前页面实际展示的隐私说明版本；为空时公开表单即使误开总开关也必须拒绝写入。
+    GROWTH_FORM_PRIVACY_NOTICE_VERSION: str = ''
+    GROWTH_FORM_RATE_WINDOW_SECONDS: int = 3600
+    GROWTH_FORM_RATE_IP_MAX: int = 20
+    GROWTH_FORM_RATE_IDENTITY_MAX: int = 5
+    # 真实外部发送有独立授权；默认只允许 manual_assist/manual_attested。
+    GROWTH_EXTERNAL_SEND_ENABLED: bool = False
 
     # 获客采集 — 地图 POI 源（doc93 §3.2 maps 混合架构）：地图走官方 Place API 直出 POI，
     # **跳过 firecrawl + LLM**（POI 本就结构化）。高德优先，回落百度；都为空则 maps 源诚实跳过
@@ -278,6 +323,8 @@ class Settings(BaseSettings):
         f'{FASTAPI_API_V1_PATH}/user_tier/my/subscription/packages',
     ]
     TOKEN_REQUEST_PATH_EXCLUDE_PATTERN: list[Pattern[str]] = [  # JWT / RBAC 路由白名单（正则）
+        compile_pattern(pattern)
+        for pattern in (
         rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
         rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
         rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
@@ -301,6 +348,7 @@ class Settings(BaseSettings):
         # JwtAuthMiddleware.extract_token 通过 is_agent_token 按 token 类型分流放行，
         # 交由路由自身的 DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
         # 上面 *_agent/* 模式保留的是 X-Agent-Key（无 Authorization 头）等非 Bearer 自鉴权面。
+        )
     ]
 
     # 用户安全
@@ -453,6 +501,10 @@ class Settings(BaseSettings):
         f'{FASTAPI_API_V1_PATH}/oauth2/github/callback',
         f'{FASTAPI_API_V1_PATH}/oauth2/google/callback',
     ]
+    # 公开表单请求体包含联系人 PII：不得读取进操作日志，也不得写入普通访问日志。
+    OPERA_LOG_REQUEST_DETAILS_PREFIX_EXCLUDE: list[str] = [
+        f'{FASTAPI_API_V1_PATH}/growth/open/forms/',
+    ]
     OPERA_LOG_REDACT_KEYS: list[str] = [
         'password',
         'old_password',
@@ -526,8 +578,8 @@ class Settings(BaseSettings):
     # ClawHub 下载量阈值：只同步 stats.downloads 严格大于该值的技能。
     #   0 = 不设阈值（全收）；生产设为 100 即"下载量超过 100 才同步"。
     MARKETPLACE_CLAWHUB_MIN_DOWNLOADS: int = 0
-    # ClawHub 技能解压目录累计占用硬上限(GB)：达到即暂停后续下载（安全兜底）。
-    MARKETPLACE_CLAWHUB_MAX_DISK_GB: float = 50.0
+    # ClawHub 详情和版本元数据并发数；只请求 JSON，不下载技能 ZIP。
+    MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY: int = 8
 
     # 市场缓存配置
     MARKETPLACE_CACHE_DIR: str = '/tmp/marketplace-cache'
@@ -628,6 +680,25 @@ class Settings(BaseSettings):
     @classmethod
     def check_env(cls, values: Any) -> Any:
         """检查环境变量"""
+        cutover_value = values.get('HASN_IM_SCHEMA_CUTOVER', False)
+        cutover = cutover_value is True or str(cutover_value).strip().lower() in {
+            '1',
+            'true',
+            'yes',
+            'on',
+        }
+        if values.get('ENVIRONMENT') == 'prod' and cutover:
+            required = (
+                'IM_SERVICE_DATABASE_URL',
+                'SYNC_SERVICE_DATABASE_URL',
+                'PYTHON_BACKEND_DATABASE_URL',
+                'HASN_WS_MIN_CLIENT_VERSION',
+            )
+            missing = [name for name in required if not str(values.get(name) or '').strip()]
+            if missing:
+                raise ValueError(
+                    'R3 生产硬切换配置不完整，缺少：' + ', '.join(missing)
+                )
         if values.get('ENVIRONMENT') == 'prod':
             # FastAPI
             values['FASTAPI_OPENAPI_URL'] = None
@@ -637,7 +708,7 @@ class Settings(BaseSettings):
             # 生产若要用 RabbitMQ，在 .env 显式设置 CELERY_BROKER=rabbitmq（不再硬编码）
 
             # Grafana
-            values['GRAFANA_METRICS_ENABLE'] = True
+            _set_production_observability_default(values)
 
         return values
 

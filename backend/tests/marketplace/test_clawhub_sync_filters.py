@@ -1,10 +1,9 @@
-"""ClawHub 同步：下载量阈值 + 50G 磁盘闸 + dry-run 报告 + cursor 分页 单测。
+"""ClawHub 元数据同步：下载量阈值、dry-run 报告与 cursor 分页测试。
 
-锁住本次新增契约（对应"下载量超过 100 才同步" + "占用达 50G 暂停" 需求）：
+锁住当前元数据联邦契约：
 - ``_filter_skills`` 的 downloads 阈值是 **严格大于**；threshold<=0 表示不过滤（全收，向后兼容）。
-- ``_dir_size_bytes`` 真实递归统计目录占用（磁盘闸度量），目录不存在 -> 0。
-- ``_build_dry_run_report`` 只读不写、命中数量/占用预估字段齐全。
-- ``_fetch_all_skills`` 用 **cursor 游标**翻页（不是 page/pageSize），用真实本地 HTTP stub 验证
+- ``_build_dry_run_report`` 明确报告服务器包下载与磁盘占用均为零。
+- ``_fetch_all_skills`` 用 **limit + cursor** 翻页，用真实本地 HTTP stub 验证
   （零 mock：起一个真的 http.server 喂分页数据）。
 """
 
@@ -15,14 +14,10 @@ import json
 import threading
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from backend.app.marketplace.service.clawhub_sync_service import ClawHubSyncService
 from backend.app.marketplace.service.skill_content_extractor import raw_bilingual_body
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _skill(slug: str, downloads: int, stars: int = 0, updated: int = 0) -> dict:
@@ -108,24 +103,9 @@ def test_require_engagement_top_n_by_downloads_then_stars() -> None:
     assert [s['slug'] for s in out] == ['c', 'b']
 
 
-# ── 磁盘大小度量（50G 闸的核心） ─────────────────────────────────────────────
-def test_dir_size_bytes_sums_files(tmp_path: Path) -> None:
-    (tmp_path / 'a.txt').write_bytes(b'x' * 100)
-    sub = tmp_path / 'sub'
-    sub.mkdir()
-    (sub / 'b.txt').write_bytes(b'y' * 250)
-    assert ClawHubSyncService._dir_size_bytes(tmp_path) == 350
-
-
-def test_dir_size_bytes_missing_dir_is_zero(tmp_path: Path) -> None:
-    assert ClawHubSyncService._dir_size_bytes(tmp_path / 'nope') == 0
-
-
 # ── dry-run 报告（只读不写） ─────────────────────────────────────────────────
-def test_build_dry_run_report_counts_and_estimates(tmp_path: Path) -> None:
+def test_build_dry_run_report_is_metadata_only() -> None:
     svc = ClawHubSyncService()
-    svc.hub_local_path = tmp_path  # 指向干净 tmp，shutil.disk_usage 真实可用
-    # 生产里传入的是 _filter_skills 已按 downloads 降序排好的列表
     filtered = [_skill('d', 955), _skill('c', 300)]
     report = svc._build_dry_run_report(
         total_fetched=10,
@@ -137,9 +117,11 @@ def test_build_dry_run_report_counts_and_estimates(tmp_path: Path) -> None:
     assert report['matched'] == 2
     assert report['min_downloads'] == 100
     assert report['total_fetched'] == 10
-    assert report['estimated_disk_gb'] >= 0
-    assert report['max_disk_gb'] == 50.0
-    assert report['top_by_downloads'][0] == {'slug': 'd', 'downloads': 955}
+    assert report['mode'] == 'metadata_only'
+    assert report['estimated_package_download_bytes'] == 0
+    assert report['estimated_server_disk_bytes'] == 0
+    assert report['top_by_downloads'][0]['slug'] == 'd'
+    assert report['top_by_downloads'][0]['downloads'] == 955
 
 
 # ── cursor 游标分页（真实本地 HTTP stub，零 mock） ───────────────────────────
@@ -202,23 +184,6 @@ def test_raw_bilingual_body_chinese_keeps_original_on_zh_side() -> None:
 
 def test_raw_bilingual_body_empty_clears_both_sides() -> None:
     assert raw_bilingual_body(None, '   ') == (None, None)
-
-
-def test_extract_body_and_files_raw_mode_skips_translation(tmp_path: Path) -> None:
-    # translate_body=False：从 SKILL.md 提取正文，原文填充（不调 translate_markdown/LLM），
-    # 文件清单含 SKILL.md。整条路径纯本地、零网络。
-    skill_dir = tmp_path / 'owner' / 'demo'
-    skill_dir.mkdir(parents=True)
-    (skill_dir / 'SKILL.md').write_text(
-        'A concise English skill body for raw-fill verification.', encoding='utf-8'
-    )
-    svc = ClawHubSyncService()
-    body_en, body_zh, files_json = asyncio.run(
-        svc._extract_body_and_files(None, None, skill_dir, translate_body=False)
-    )
-    assert body_en is not None and 'raw-fill verification' in body_en
-    assert body_zh is None  # 未翻译，另一侧留空
-    assert 'SKILL.md' in files_json
 
 
 def test_batch_prepare_metadata_empty_is_noop() -> None:

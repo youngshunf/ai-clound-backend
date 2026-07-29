@@ -60,6 +60,9 @@ _GENUINE = {
     'POST /api/v1/pay/open/contract-notify/{channel_id}',
     'POST /api/v1/pay/open/notify/{channel_id}',
     'POST /api/v1/pay/open/refund-notify/{channel_id}',
+    # GitHub webhook 需要按 provider 约定直接返回接收结果，不能套业务信封
+    'POST /api/v1/marketplace/webhook/github/skills',
+    'POST /api/v1/marketplace/webhook/github/templates',
     # Swagger 文档授权（fba 内置，给 docs UI 用）
     'POST /api/v1/auth/login/swagger',
     # 插件原始响应（plugin 自定义返回）
@@ -68,13 +71,11 @@ _GENUINE = {
 
 # ---- 已知欠债（正常业务接口，当前裸返回但自洽工作；按规则应逐步迁到信封，迁完删行）----
 _DEBT = {
-    # hasn 登录 / 同步 / 消息：daemon 侧用 .send_json() 配对，迁移须云端+daemon 两仓同步改
+    # hasn 登录 / 同步：daemon 侧用 .send_json() 配对，迁移须云端+daemon 两仓同步改
     'POST /api/v1/hasn/auth/phone/send_code',
     'POST /api/v1/hasn/auth/phone/verify',
     'POST /api/v1/hasn/auth/token/refresh',
-    'POST /api/v1/hasn/inbox/pull',
     'POST /api/v1/hasn/memory/sync/pull',
-    'POST /api/v1/hasn/messages/send',
     'POST /api/v1/hasn/onboarding/ensure',
     'POST /api/v1/hasn/runtime/report',
     'POST /api/v1/hasn/sync/pull',

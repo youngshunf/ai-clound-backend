@@ -18,7 +18,7 @@ plan 是 **Tool-First** AI-Native 个人 PIM 应用（Collaboration Mode `none`�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -37,13 +37,16 @@ _AUDIT_FIELDS = [
 ]
 
 
-PLAN_AI_NATIVE_MANIFEST = {
+PLAN_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'plan',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'plan': '规划（目标/计划/待办/简报/复盘）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],  # PLAN-ENT PE-6：双模应用（个人 PIM + 企业日历）
     'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     # 资源描述符（doc31 §2，RC-P6/doc31-A）：plan 是**多资源**应用——派发工作会话的 origin_ref 子类化
     # （resource:plan:goal:{id} / resource:plan:plan:{id}），据 ref_type 段分别映射到目标/计划详情页。
     # 目标 decompose / 计划推进会话完成即出「目标做好了 / 计划做好了」卡 + 登记应用资源产物到会话资源栏。

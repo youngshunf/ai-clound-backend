@@ -29,7 +29,7 @@ validate/extract 纯函数 + 导入/存取），**不内部调 LLM**（编排交
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -117,7 +117,7 @@ def _write_cap(
     }
 
 
-DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
+DESIGNSYSTEM_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'designsystem',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'designsystem': '设计系统（令牌编译/校验/组件抽取）'},
@@ -126,6 +126,7 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
     'collaboration_mode': 'none',
     'project_aware': True,
     'project_required': False,
+    'project_integration': 'project_aware',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知发布能力声明（统一通知设计）：生成完成 / 分享经 Agent JWT 通道发卡给主人（P10 接 emit）。

@@ -12,12 +12,14 @@ from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, ap
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_computer_use.manifest import COMPUTER_USE_AI_NATIVE_MANIFEST
+from backend.app.hasn_copilot.manifest import COPILOT_AI_NATIVE_MANIFEST
 
 # G6 资源类型适配器注册（doc33 S2-6）：import 即把各应用 adapter 注册进平台注册表。必须在
 # manifest 校验（validate_manifest 查 registered_types）之前完成，否则新增 resource_access 声明会
 # 被误判「type 未注册」。各应用自注册模块见 `<app>/service/resource_adapter.py`。
 from backend.app.hasn_copilot.service import resource_adapter as _copilot_resource_adapter  # noqa: F401
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
+from backend.app.hasn_creator.service import project_linkage as _creator_project_linkage  # noqa: F401
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.service import project_linkage as _deck_project_linkage  # noqa: F401
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
@@ -30,12 +32,16 @@ from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.service import project_linkage as _finance_project_linkage  # noqa: F401
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_growth.service import project_linkage as _growth_project_linkage  # noqa: F401
+from backend.app.hasn_growth.service import resource_adapter as _growth_resource_adapter  # noqa: F401
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
+from backend.app.hasn_knowledge.service import project_linkage as _knowledge_project_linkage  # noqa: F401
 from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_project.manifest import PROJECT_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.service import resource_adapter as _plan_resource_adapter  # noqa: F401
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_publish.service import project_linkage as _publish_project_linkage  # noqa: F401
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
 from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST
@@ -54,6 +60,21 @@ class ManifestValidationResult:
         self.valid = valid
         self.errors = errors
         self.manifest_hash = manifest_hash
+
+
+_PROJECT_INTEGRATION_FLAGS = {
+    'artifact_only': (False, False),
+    'project_aware': (True, False),
+    'project_required': (True, True),
+}
+
+
+def _project_integration_tier(*, project_aware: bool, project_required: bool) -> str:
+    if project_required:
+        return 'project_required'
+    if project_aware:
+        return 'project_aware'
+    return 'artifact_only'
 
 
 class AINativeAppRegistry:
@@ -104,6 +125,7 @@ class AINativeAppRegistry:
             # hasn.computer.* 工具在本地 hasn-mcp（computer/tools.rs，CU-P2a 已落）经 daemon 托管 cua-driver 落
             # 真实桌面，云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
             'computer_use': COMPUTER_USE_AI_NATIVE_MANIFEST,
+            'copilot': COPILOT_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
@@ -121,8 +143,9 @@ class AINativeAppRegistry:
         version = str(manifest.get('version') or '')
         workspace_scope = list(manifest.get('workspace_scope') or [])
         collaboration_mode = str(manifest.get('collaboration_mode') or 'none')
-        project_aware = manifest.get('project_aware', False)
-        project_required = manifest.get('project_required', False)
+        project_aware = manifest.get('project_aware')
+        project_required = manifest.get('project_required')
+        project_integration = manifest.get('project_integration')
 
         if not app_id:
             errors_list.append('app_id_required')
@@ -134,6 +157,13 @@ class AINativeAppRegistry:
             errors_list.append('project_required_must_be_boolean')
         if project_required is True and project_aware is not True:
             errors_list.append('project_required_requires_project_aware')
+        if project_integration is None:
+            errors_list.append('project_integration_required')
+        elif project_integration not in _PROJECT_INTEGRATION_FLAGS:
+            errors_list.append('project_integration_invalid')
+        elif isinstance(project_aware, bool) and isinstance(project_required, bool):
+            if _PROJECT_INTEGRATION_FLAGS[project_integration] != (project_aware, project_required):
+                errors_list.append('project_integration_flags_mismatch')
 
         try:
             registered_app = self.catalog_registry.get(app_id)
@@ -150,6 +180,13 @@ class AINativeAppRegistry:
                 errors_list.append('project_aware_mismatch')
             if isinstance(project_required, bool) and project_required != registered_app.project_required:
                 errors_list.append('project_required_mismatch')
+            if project_integration in _PROJECT_INTEGRATION_FLAGS:
+                registered_tier = _project_integration_tier(
+                    project_aware=registered_app.project_aware,
+                    project_required=registered_app.project_required,
+                )
+                if project_integration != registered_tier:
+                    errors_list.append('project_integration_mismatch')
 
         # 资源描述符校验（doc31 §2.1，RC-P0）：manifest.resources[] 若声明，逐项按 ResourceDescriptor
         # 校验（uri_domain 非空/无 scheme、open.mode 三枚举、route_template 含 :id、card.verb/action_label…）。
@@ -295,7 +332,9 @@ class AINativeAppRegistry:
         chosen: dict[str, Any] | None = None
         if resource_kind:
             chosen = next((r for r in resources if r.get('resource_kind') == resource_kind), None)
-        if chosen is None:
+            if chosen is None:
+                return None
+        else:
             chosen = resources[0]
         try:
             return ResourceDescriptor.model_validate(chosen)

@@ -7,6 +7,7 @@
 from fastapi.routing import APIRoute
 
 from backend.app.router import router
+from backend.app.mcp.tools.project import PROJECT_TOOLS
 from backend.common.security.jwt import DependsJwtAuth
 
 
@@ -37,3 +38,29 @@ def test_project_owner_app_routes_keep_owner_jwt_dependency() -> None:
     assert owner_routes, '项目 Owner App 路由必须保留'
     for route in owner_routes:
         assert any(dependency.dependency is DependsJwtAuth.dependency for dependency in route.dependencies)
+
+
+def test_project_inspection_publish_is_a_scoped_platform_tool() -> None:
+    """项目经理只能经规范平台工具发布巡检建议，不能经裸 Agent HTTP CRUD 写入。"""
+    tool = next(tool for tool in PROJECT_TOOLS if tool.name == 'hasn.project.inspection.publish')
+
+    assert tool.source == 'platform'
+    assert tool.execution_location == 'cloud'
+    assert tool.required_scopes == ['project:write']
+    assert set(tool.input_schema['required']) == {'project_id', 'fingerprint', 'suggestion'}
+
+
+def test_project_report_publish_is_a_scoped_platform_tool() -> None:
+    """周报只能由分身通过项目平台工具登记 document 产物，不能开放裸 Agent CRUD。"""
+    tool = next(tool for tool in PROJECT_TOOLS if tool.name == 'hasn.project.report.publish')
+
+    assert tool.source == 'platform'
+    assert tool.execution_location == 'cloud'
+    assert tool.required_scopes == ['project:write']
+    assert set(tool.input_schema['required']) == {
+        'project_id',
+        'period_start',
+        'period_end',
+        'title',
+        'body',
+    }

@@ -101,7 +101,7 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param template_id: 模板 ID
         :return:
         """
-        return await self.select_models_by_column(db, template_id=template_id)
+        return await self.select_models(db, template_id=template_id)
 
     async def mark_all_not_latest(self, db: AsyncSession, template_id: str) -> int:
         """

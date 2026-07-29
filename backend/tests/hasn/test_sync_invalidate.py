@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import builtins
 
 from typing import Any
 
@@ -20,7 +21,7 @@ import pytest
 class FakeRedis:
     def __init__(self) -> None:
         self.strings: dict[str, Any] = {}
-        self.sets: dict[str, set[Any]] = {}
+        self.sets: dict[str, builtins.set[Any]] = {}
         self.hashes: dict[str, dict[str, Any]] = {}
 
     async def get(self, key: str) -> Any:
@@ -29,14 +30,14 @@ class FakeRedis:
     async def set(self, key: str, value: Any, ex: int | None = None) -> None:
         self.strings[key] = value
 
-    async def smembers(self, key: str) -> set[Any]:
+    async def smembers(self, key: str) -> builtins.set[Any]:
         return set(self.sets.get(key, set()))
 
     async def hlen(self, key: str) -> int:
         return len(self.hashes.get(key, {}))
 
 
-class FakeWS:
+class _FakeWS:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.sent: list[str] = []
@@ -55,13 +56,19 @@ class RowsResult:
         return self._rows
 
 
-class FakeDb:
+FakeWS: Any = _FakeWS
+
+
+class _FakeDb:
     def __init__(self, results: list[Any]) -> None:
         self.results = list(results)
 
     async def execute(self, stmt: Any) -> Any:
         assert self.results, 'unexpected extra execute'
         return self.results.pop(0)
+
+
+FakeDb: Any = _FakeDb
 
 
 @pytest.mark.asyncio

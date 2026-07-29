@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS opportunity (
     customer_id bigint NOT NULL REFERENCES customer(id),
     user_id bigint NOT NULL,
     name varchar(200) NOT NULL,
+    version bigint NOT NULL DEFAULT 1,
     stage varchar(24) NOT NULL DEFAULT 'contacted',
     amount numeric(14,2),
     currency varchar(8) NOT NULL DEFAULT 'CNY',
@@ -59,12 +60,16 @@ CREATE TABLE IF NOT EXISTS opportunity (
     lost_at timestamptz,
     lost_reason varchar(500),
     close_note text,
+    review_task_id varchar(64),
     created_by_kind varchar(16) NOT NULL DEFAULT 'agent',
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz DEFAULT now()
+    updated_time timestamptz DEFAULT now(),
+    CONSTRAINT ck_growth_opportunity_version CHECK (version >= 1)
 );
 COMMENT ON TABLE opportunity IS '获客商机（阶段推进 + 金额 + 成交/败因登记）';
 COMMENT ON COLUMN opportunity.stage IS '阶段 (contacted:已触达:blue/replied:已回应:cyan/proposal:已发提案:purple/negotiation:商务洽谈:orange/closed_won:成交:green/closed_lost:流失:red)';
+COMMENT ON COLUMN opportunity.version IS '并发控制版本；每次阶段变化或关闭单调递增';
+COMMENT ON COLUMN opportunity.review_task_id IS '成交或流失后幂等创建的复盘任务 UUID';
 COMMENT ON COLUMN opportunity.created_by_kind IS '创建者 (owner:主人:blue/agent:分身:violet)';
 CREATE INDEX IF NOT EXISTS idx_growth_opportunity_user_stage ON opportunity (user_id, stage);
 CREATE INDEX IF NOT EXISTS idx_growth_opportunity_customer ON opportunity (customer_id);

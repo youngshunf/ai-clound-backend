@@ -1,7 +1,7 @@
 import json
 import uuid
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from fastapi_oauth20 import FastAPIOAuth20, GitHubOAuth20
@@ -9,6 +9,7 @@ from pyrate_limiter import Duration, Rate
 from starlette.responses import RedirectResponse
 
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.database.db import CurrentSessionTransaction
 from backend.database.redis import redis_client
@@ -46,11 +47,13 @@ async def github_oauth2_callback(  # noqa: ANN201
     response: Response,
     background_tasks: BackgroundTasks,
     oauth2: Annotated[
-        FastAPIOAuth20,
+        tuple[dict[str, Any], str | None],
         Depends(FastAPIOAuth20(github_client, redirect_uri=settings.OAUTH2_GITHUB_REDIRECT_URI)),
     ],
 ):
     token_data, state = oauth2
+    if not state:
+        raise errors.RequestError(msg='OAuth2 state 缺失')
     access_token = token_data['access_token']
     user = await github_client.get_userinfo(access_token)
     data = await oauth2_service.login_or_binding(

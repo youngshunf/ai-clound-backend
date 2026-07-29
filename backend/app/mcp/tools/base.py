@@ -4,10 +4,20 @@ MCP 工具基类
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
+
+
+def require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """读取主人 HASN ID；身份上下文不完整时闭合失败。"""
+    from backend.common.exception import errors
+
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise errors.TokenError(msg='AgentContext 缺少 owner_hasn_id')
+    return owner_hasn_id
 
 
 class BaseTool(ABC):
@@ -84,10 +94,10 @@ class BaseTool(ABC):
         execution_location，供 source 维度索引与后续阶段消费。execution_location
         为 P0 占位（local 来源→local，其余→cloud），P3 由工具显式声明覆盖。
         """
-        from backend.app.mcp.canonical import schema_hash, validate_canonical_name
+        from backend.app.mcp.canonical import ToolSource, schema_hash, validate_canonical_name
         from backend.app.mcp.tool_app_registry import resolve_tool_app_id
 
-        parsed = validate_canonical_name(self.name, self.source)
+        parsed = validate_canonical_name(self.name, cast(ToolSource, self.source))
         output_schema = getattr(self, "output_schema", None)
         default_location = "local" if self.source == "local" else "cloud"
         return {

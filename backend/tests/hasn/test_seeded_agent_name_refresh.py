@@ -358,7 +358,7 @@ async def session() -> AsyncIterator[AsyncSession]:
 async def _make_owner(session, nickname: str) -> str:
     tag = _uid()
     owner = f'h_nr_{tag}'
-    uid = 980000 + int(uuid.uuid4().int % 9000)
+    uid = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     session.add(HasnHumans(hasn_id=owner, star_id=f's_{uid}', user_id=uid, nickname=nickname, status='active'))
     await session.flush()
     return owner
@@ -539,6 +539,8 @@ async def test_refresh_rewrites_user_md_owner_label_in_db(session: AsyncSession)
     # 3) 断言：两个分身的 USER.md 称呼都刷成真实昵称（分身不再按手机号掩码称呼主人）。
     agents = (await session.execute(select(HasnAgents).where(HasnAgents.owner_id == owner))).scalars().all()
     rows = {a.agent_name: a for a in agents}
+    assert rows['assistant'].user_md is not None
+    assert rows['my_helper'].user_md is not None
     assert '称呼: 杨大宝' in rows['assistant'].user_md
     assert '186****2019' not in rows['assistant'].user_md
     assert '称呼: 杨大宝' in rows['my_helper'].user_md  # 非内置分身 user_md 也刷新（owner 维度）
@@ -578,6 +580,7 @@ async def test_refresh_user_md_idempotent_in_db(session: AsyncSession) -> None:
         session, owner_id=owner, current_nickname='杨大宝', previous_nickname='186****2019'
     )
     after = (await _reload(session, owner))['assistant']
+    assert after.user_md is not None
     assert '称呼: 杨大宝' in after.user_md
     assert after.profile_revision == rev_after_first  # 第二次无改动 → revision 不再涨
     _ = agent

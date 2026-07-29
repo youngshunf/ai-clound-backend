@@ -76,6 +76,12 @@ def _deck_dict(d: Deck, *, my_permission: str | None = None, relation: str | Non
     return out
 
 
+def _accessible_deck_sort_key(item: dict[str, Any]) -> tuple[bool, Any, int]:
+    """为可访问 Deck 并集提供确定性全序；空更新时间置后，id 作为跨页稳定兜底。"""
+    updated_time = item.get('updated_time')
+    return updated_time is not None, updated_time, int(item['id'])
+
+
 def _style_profile_dict(s: StyleProfile) -> dict[str, Any]:
     return {
         'slug': s.slug,
@@ -215,16 +221,41 @@ class DeckService:
 
     @staticmethod
     async def list_accessible_decks(
-        db: AsyncSession, *, subject: Subject, limit: int = 50, offset: int = 0
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        limit: int = 50,
+        offset: int = 0,
+        platform_project_id: str | UUID | None = None,
     ) -> dict[str, Any]:
-        """可访问 deck = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。"""
+        """可访问 deck = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，可显式按平台项目收窄。"""
         human = subject.owner_hasn_id
         memberships = await resource_share_service.acting_human_memberships(db, human)
         member_enterprise_ids = {eid for eid, _ in memberships}
+        project_uuid = (
+            platform_project_id
+            if isinstance(platform_project_id, UUID)
+            else UUID(str(platform_project_id))
+            if platform_project_id is not None
+            else None
+        )
+        project_filter = (
+            (Deck.platform_project_id == project_uuid,) if project_uuid is not None else ()
+        )
 
         # 1. 我拥有的
         owned = (
-            (await db.execute(select(Deck).where(Deck.owner_id == human, Deck.deleted_time.is_(None)))).scalars().all()
+            (
+                await db.execute(
+                    select(Deck).where(
+                        Deck.owner_id == human,
+                        Deck.deleted_time.is_(None),
+                        *project_filter,
+                    )
+                )
+            )
+            .scalars()
+            .all()
         )
         owned_ids = {d.id for d in owned}
 
@@ -249,6 +280,7 @@ class DeckService:
                             Deck.owner_scope == 'enterprise',
                             Deck.visibility == 'enterprise',
                             Deck.enterprise_id.in_(member_enterprise_ids),
+                            *project_filter,
                         )
                     )
                 )
@@ -262,7 +294,15 @@ class DeckService:
         extra_decks: list[Deck] = []
         if extra_ids:
             extra_decks = list(
-                (await db.execute(select(Deck).where(Deck.id.in_(extra_ids), Deck.deleted_time.is_(None))))
+                (
+                    await db.execute(
+                        select(Deck).where(
+                            Deck.id.in_(extra_ids),
+                            Deck.deleted_time.is_(None),
+                            *project_filter,
+                        )
+                    )
+                )
                 .scalars()
                 .all()
             )
@@ -275,7 +315,7 @@ class DeckService:
             relation = 'enterprise' if (d.id in ent_ids and str(d.id) not in shared_ids) else 'shared'
             items.append(_deck_dict(d, my_permission=eff, relation=relation))
 
-        items.sort(key=lambda x: (x.get('updated_time') is None, x.get('updated_time')), reverse=True)
+        items.sort(key=_accessible_deck_sort_key, reverse=True)
         total = len(items)
         return {'items': items[offset : offset + limit], 'total': total}
 

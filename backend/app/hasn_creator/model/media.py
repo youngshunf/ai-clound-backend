@@ -26,5 +26,5 @@ class Media(HasnCreatorAppBase):
     height: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment=None)
     duration: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment=None)
     thumbnail_uri: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
-    tags: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    tags: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
     description: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)

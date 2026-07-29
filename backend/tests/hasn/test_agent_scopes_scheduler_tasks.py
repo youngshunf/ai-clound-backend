@@ -60,12 +60,13 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
     monkeypatch.setattr(module, 'update_agent_modes', update_modes)
 
     service = module.AgentScopesService()
-    config = await service.get_agent_scopes(object(), 'a_agent', 'h_owner')
+    db: Any = object()
+    config = await service.get_agent_scopes(db, 'a_agent', 'h_owner')
     assert config.default_mode == 'allow'
     assert config.capability_modes == {}
 
     response = await service.update_agent_scopes(
-        object(),
+        db,
         'a_agent',
         'h_owner',
         UpdateAgentScopesRequest(
@@ -81,7 +82,7 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
     assert not hasattr(response, 'agent_token')
 
     with pytest.raises(Exception) as forbidden:
-        await service.get_agent_scopes(object(), 'a_agent', 'h_other')
+        await service.get_agent_scopes(db, 'a_agent', 'h_other')
     assert forbidden.value.__class__.__name__ == 'ForbiddenError'
 
     async def missing_agent(db: object, hasn_id: str) -> None:  # noqa: RUF029
@@ -89,7 +90,7 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
 
     monkeypatch.setattr(module.hasn_agents_dao, 'get_by_hasn_id', missing_agent)
     with pytest.raises(Exception) as missing:
-        await service.get_agent_scopes(object(), 'a_agent', 'h_owner')
+        await service.get_agent_scopes(db, 'a_agent', 'h_owner')
     assert missing.value.__class__.__name__ == 'NotFoundError'
 
 
@@ -122,20 +123,21 @@ async def test_agent_scopes_api_resolves_owner_and_delegates(monkeypatch: pytest
     monkeypatch.setattr(module.agent_scopes_service, 'update_agent_scopes', update_scopes)
     monkeypatch.setattr(module.agent_scopes_service, 'get_scope_catalog', get_catalog)
 
-    request = SimpleNamespace(user=SimpleNamespace(id=7))
+    request: Any = SimpleNamespace(user=SimpleNamespace(id=7))
+    db: Any = object()
     # API 一律走 fba 标准信封 ResponseModel（daemon envelope 解析依赖此约定）；
     # service 结果落在 .data，不再裸返回。
-    get_resp = await module.get_agent_scopes(request, 'a_agent', object())
+    get_resp = await module.get_agent_scopes(request, 'a_agent', db)
     assert get_resp.code == 200
     assert get_resp.data == 'config'
     update_resp = await module.update_agent_scopes(
         request,
         'a_agent',
         UpdateAgentScopesRequest(default_mode='deny', capability_modes={}),
-        object(),
+        db,
     )
     assert update_resp.data == 'updated'
-    catalog_resp = await module.get_scope_catalog(request, 'a_agent', object())
+    catalog_resp = await module.get_scope_catalog(request, 'a_agent', db)
     assert catalog_resp.data == 'catalog'
 
     # 身份从 Owner JWT 解析为 owner_hasn_id；D3 后不再透传 owner_user_id。
@@ -149,7 +151,7 @@ async def test_agent_scopes_api_resolves_owner_and_delegates(monkeypatch: pytest
 
     monkeypatch.setattr('backend.app.hasn.api.agent_scopes.hasn_humans_dao.get_by_user_id', missing_human)
     with pytest.raises(Exception) as exc_info:
-        await module.get_agent_scopes(request, 'a_agent', object())
+        await module.get_agent_scopes(request, 'a_agent', db)
     assert exc_info.value.__class__.__name__ == 'NotFoundError'
 
 

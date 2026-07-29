@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import builtins
+
 from typing import Any
 
 import pytest
@@ -48,13 +50,13 @@ class FakeRedis:
         return [store.get(f) for f in fields]
 
     async def sadd(self, key: str, value: Any) -> None:
-        self.sets.setdefault(key, set()).add(value)
+        self.sets.setdefault(key, builtins.set()).add(value)
 
     async def srem(self, key: str, value: Any) -> None:
-        self.sets.get(key, set()).discard(value)
+        self.sets.get(key, builtins.set()).discard(value)
 
-    async def smembers(self, key: str) -> set[Any]:
-        return set(self.sets.get(key, set()))
+    async def smembers(self, key: str) -> builtins.set[Any]:
+        return builtins.set(self.sets.get(key, builtins.set()))
 
     async def delete(self, key: str) -> None:
         self.hashes.pop(key, None)
@@ -77,11 +79,11 @@ class FakeRedis:
             node_id, connection_id, user_nodes_prefix = argv
             if self.hashes.get(generation_key, {}).get(node_id) != connection_id:
                 return 0
-            for hasn_id in list(self.sets.get(entities_key, set())):
+            for hasn_id in list(self.sets.get(entities_key, builtins.set())):
                 if self.hashes.get(entity_node_key, {}).get(hasn_id) == node_id:
                     self.hashes.get(entity_node_key, {}).pop(hasn_id, None)
                 if str(hasn_id).startswith('h_'):
-                    self.sets.get(f'{user_nodes_prefix}:{hasn_id}', set()).discard(node_id)
+                    self.sets.get(f'{user_nodes_prefix}:{hasn_id}', builtins.set()).discard(node_id)
             await self.delete(entities_key)
             self.hashes.get(node_conn_key, {}).pop(node_id, None)
             await self.delete(alive_key)

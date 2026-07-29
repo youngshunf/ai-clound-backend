@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 #: 30 天固定周期（doc94 §0.3）。目录里的 plan 快照必须带它，否则合同建不出来。
 CYCLE_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_STORAGE_BYTES = 100 * 1024**3
 
 _PLAN_COLUMNS = (
     'price_amount',
@@ -117,6 +118,7 @@ class CatalogSeed:
         monthly_price: Decimal | int = 100,
         yearly_price: Decimal | int | None = 1000,
         max_agents: int = 5,
+        storage_bytes: int = DEFAULT_STORAGE_BYTES,
         sort_order: int = 0,
         display_name: str | None = None,
     ) -> None:
@@ -129,6 +131,7 @@ class CatalogSeed:
                 'cycle_seconds': CYCLE_SECONDS,
                 'cycle_count': 1,
                 'max_agents': max_agents,
+                'storage_bytes': storage_bytes,
             }
         )
         display = json.dumps({'display_name': display_name or tier_name, 'tier_name': tier_name, 'features': {}})

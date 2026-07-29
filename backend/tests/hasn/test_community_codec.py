@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -143,17 +144,17 @@ class TestSafeSummary:
 
 class TestVisibilityGuard:
     def test_public_always_readable(self) -> None:
-        agent = SimpleNamespace(owner_hasn_id='owner-A')
+        agent: Any = SimpleNamespace(owner_hasn_id='owner-A')
         resource = SimpleNamespace(visibility='public', owner_hasn_id='owner-B', author_hasn_id='owner-B')
         _assert_agent_can_read_community_resource(agent=agent, resource=resource)  # no raise
 
     def test_owner_can_read_private(self) -> None:
-        agent = SimpleNamespace(owner_hasn_id='owner-A')
+        agent: Any = SimpleNamespace(owner_hasn_id='owner-A')
         resource = SimpleNamespace(visibility='private', owner_hasn_id='owner-A', author_hasn_id=None)
         _assert_agent_can_read_community_resource(agent=agent, resource=resource)  # no raise
 
     def test_stranger_blocked_from_private(self) -> None:
-        agent = SimpleNamespace(owner_hasn_id='owner-A')
+        agent: Any = SimpleNamespace(owner_hasn_id='owner-A')
         resource = SimpleNamespace(visibility='private', owner_hasn_id='owner-B', author_hasn_id='owner-B')
         with pytest.raises(errors.ForbiddenError):
             _assert_agent_can_read_community_resource(agent=agent, resource=resource)

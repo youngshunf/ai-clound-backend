@@ -213,8 +213,9 @@ async def test_models_target_hasn_task_schema() -> None:  # noqa: RUF029  # 与�
         HasnBuiltinTaskCatalog: 'builtin_catalog',
     }
     for model, table in expectations.items():
-        assert model.__table__.schema == 'hasn_task', f'{model.__name__} schema 错: {model.__table__.schema}'
-        assert model.__table__.name == table, f'{model.__name__} 表名错: {model.__table__.name}'
+        model_table = getattr(model, '__table__')
+        assert model_table.schema == 'hasn_task', f'{model.__name__} schema 错: {model_table.schema}'
+        assert model_table.name == table, f'{model.__name__} 表名错: {model_table.name}'
 
 
 async def test_service_create_read_delete_roundtrip(env: SimpleNamespace) -> None:

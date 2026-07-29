@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +31,7 @@ class CRUDHasnBuiltinTaskCatalog(CRUDPlus[HasnBuiltinTaskCatalog]):
         :param pk: HASN 官方内置任务目录（云端权威） ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return cast(HasnBuiltinTaskCatalog | None, await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取HASN 官方内置任务目录（云端权威）列表查询表达式"""
@@ -43,7 +44,7 @@ class CRUDHasnBuiltinTaskCatalog(CRUDPlus[HasnBuiltinTaskCatalog]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return cast(Sequence[HasnBuiltinTaskCatalog], await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateHasnBuiltinTaskCatalogParam) -> None:
         """

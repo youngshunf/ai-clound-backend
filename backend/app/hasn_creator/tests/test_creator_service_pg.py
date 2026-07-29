@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
+
 import pytest
 import pytest_asyncio
 
@@ -359,7 +362,7 @@ async def test_save_stage_rejects_invalid_asset_refs(session) -> None:
     )
     cid = content['id']
 
-    bad_refs = [
+    bad_refs: list[list[Any]] = [
         [{'kind': 'local', 'path': '/p'}],  # local 缺 node_id
         [{'kind': 'local', 'node_id': 'n'}],  # local 缺 path
         [{'kind': 'local', 'path': '', 'node_id': 'n'}],  # local path 空串
@@ -387,7 +390,7 @@ async def test_search_patterns_builtin(session) -> None:
             source='builtin',
             is_builtin=True,
             owner_scope='personal',
-            success_rate=88,
+            success_rate=Decimal(88),
         )
     )
     session.add(
@@ -397,7 +400,7 @@ async def test_search_patterns_builtin(session) -> None:
             user_id=_UID_A,
             owner_scope='personal',
             source='ai_extracted',
-            success_rate=70,
+            success_rate=Decimal(70),
         )
     )
     await session.flush()

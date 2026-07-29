@@ -27,7 +27,7 @@ from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.database.db import async_db_session
 
 # 真实-DB async 测试共享 module 级事件循环（连接池不被已关闭 loop 回收）。
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _suffix() -> str:

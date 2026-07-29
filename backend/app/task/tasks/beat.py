@@ -65,6 +65,11 @@ LOCAL_BEAT_SCHEDULE = {
         # 抢占用 FOR UPDATE SKIP LOCKED，多副本并发安全。
         'schedule': TzAwareCrontab('*'),
     },
+    'Agent 控制边关系 outbox 投递': {
+        'task': 'hasn_relation_outbox_dispatch',
+        # 提交后即时唤醒失败时，每分钟扫描一次持久命令，保证控制边最终落入 IM 关系域。
+        'schedule': TzAwareCrontab('*'),
+    },
     '履约对账': {
         'task': 'credit_outbox_reconcile',
         # 每 15 分钟核对死信事件在 NewAPI 侧的真实结果，收敛「其实成功了只是回执丢了」的事件。
@@ -85,10 +90,34 @@ LOCAL_BEAT_SCHEDULE = {
         # 每 5 分钟重放 savepoint 失败后留下的真实登记意图，并补齐异常中断的 outbox。
         'schedule': TzAwareCrontab('*/5'),
     },
+    '用户云存储作业投递': {
+        'task': 'owner_storage_job_dispatch',
+        # 每分钟推进导出、迁移、物理回收与补偿 outbox；作业内部使用 SKIP LOCKED 支持多副本。
+        'schedule': TzAwareCrontab('*'),
+    },
+    '用户云存储上传生命周期清理': {
+        'task': 'owner_storage_upload_lifecycle_sweep',
+        # 每 5 分钟终止过期 multipart 并核实过期预占，避免供应商分片和额度长期悬挂。
+        'schedule': TzAwareCrontab('*/5'),
+    },
+    '用户云存储旧资产回填': {
+        'task': 'owner_storage_legacy_backfill',
+        # 兼容窗口内持续补齐 object_id；读取路径保留双读，任务失败不会中断旧资产访问。
+        'schedule': TzAwareCrontab('*/5'),
+    },
+    '用户云存储保留期清理': {
+        'task': 'owner_storage_retention_sweep',
+        # 每天 3:10 清理过期导出、迁移源对象和策略允许的长期无引用资产。
+        'schedule': TzAwareCrontab('10', '3'),
+    },
+    '用户云存储周期对账': {
+        'task': 'owner_storage_reconcile',
+        # 每天 3:30 以数据库对象行逐 Owner 核实真实对象与计数器，不依赖桶前缀遍历。
+        'schedule': TzAwareCrontab('30', '3'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
-        # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；
-        # 磁盘硬闸 MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB）——clawhub 目录占用达上限即暂停下载。
+        # 每 3 天增量同步一次（真 72h 间隔）。只读取元数据与文件清单，技能 ZIP 由 ClawHub 分发。
         'schedule': schedule(timedelta(days=3)),
     },
     '技能市场-公共技能共享目录 reconcile': {
@@ -101,6 +130,11 @@ LOCAL_BEAT_SCHEDULE = {
     '获客-触达发送 worker': {
         'task': 'growth_dispatch_approved_outreach',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）
+    },
+    '获客-项目开通恢复对账': {
+        'task': 'growth_project_provision_reconcile',
+        # 到期失败与 worker 崩溃留下的 running 每 5 分钟重投；步骤写点自身保持幂等。
+        'schedule': TzAwareCrontab('*/5'),
     },
     'Owner 记忆 pending 合并兜底重试': {
         'task': 'owner_memory_retry_pending_merges',

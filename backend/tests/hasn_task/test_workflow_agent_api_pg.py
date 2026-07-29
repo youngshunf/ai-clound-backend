@@ -4,7 +4,7 @@
 - manifest：hasn.workflow.* 能力齐全 + required_scopes/risk_level + 写类走统一授权开关
 - scope catalog：workflow:read/manage/run 登记
 - Agent JWT → /api/v1/hasn-task/agent/workflows：建菱形图 / 查图 / 列图 / 发现分身 / run / pause
-- 定时图 → pending_approval + 通知；owner app approve → active
+- 定时图 → pending_approval + 主会话汇报卡；owner app approve → active
 - 跨户 NotFound
 
 事实源: docs/hasn-node设计文档/12-任务系统实施方案/07-多任务编排（工作流）设计.md §9；实施 92 N2。
@@ -25,15 +25,16 @@ import pytest_asyncio
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_project.model import HasnProject
 from backend.app.hasn_task.api.v1.agent.workflow import router as agent_workflow_router
+from backend.app.hasn_task.api.v1.app.sync import router as app_sync_router
 from backend.app.hasn_task.api.v1.app.workflow import router as app_workflow_router
+from backend.app.hasn_task.api.v1.app.workflow_template import router as app_workflow_template_router
 from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
@@ -42,7 +43,8 @@ from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError, ForbiddenError, RequestError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import SQLALCHEMY_DATABASE_URL, async_db_session, get_db, get_db_transaction
+from backend.database.redis import redis_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -52,10 +54,15 @@ pytestmark = pytest.mark.asyncio
 _SQL_DIR = Path(__file__).resolve().parents[2] / 'sql' / 'hasn_task' / 'migrations'
 AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encoding='utf-8')
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
+NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
+ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
+WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 
 _APP = FastAPI()
 _APP.include_router(agent_workflow_router, prefix='/api/v1/hasn-task/agent')
+_APP.include_router(app_sync_router, prefix='/api/v1/hasn-task/app')
 _APP.include_router(app_workflow_router, prefix='/api/v1/hasn-task/app')
+_APP.include_router(app_workflow_template_router, prefix='/api/v1/hasn-task/app')
 
 
 @_APP.exception_handler(BaseExceptionError)
@@ -70,12 +77,22 @@ def _uid() -> str:
 async def _run_sql(sql: str) -> None:
     import asyncpg
 
-    dsn = SQLALCHEMY_DATABASE_URL.render_as_string(hide_password=False).replace('postgresql+asyncpg://', 'postgresql://')
+    dsn = SQLALCHEMY_DATABASE_URL.render_as_string(hide_password=False).replace(
+        'postgresql+asyncpg://', 'postgresql://'
+    )
     conn = await asyncpg.connect(dsn)
     try:
         await conn.execute(sql)
     finally:
         await conn.close()
+
+
+async def _reset_redis_pool() -> None:
+    """每例重连全局 Redis 池，避免连接绑定已关闭的 pytest 事件循环。"""
+    try:
+        await redis_client.connection_pool.disconnect()
+    except Exception:
+        pass
 
 
 # ---------- 纯 Python：manifest + scope ----------
@@ -119,6 +136,7 @@ def test_scope_catalog_has_workflow() -> None:
 
 @pytest_asyncio.fixture
 async def e2e() -> AsyncIterator[SimpleNamespace]:
+    await _reset_redis_pool()
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -129,6 +147,9 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
 
     await _run_sql(AINATIVE_SQL)
     await _run_sql(WORKFLOW_SQL)
+    await _run_sql(NODE_TABLES_SQL)
+    await _run_sql(ADVANCE_MODE_SQL)
+    await _run_sql(WORKFLOW_HISTORY_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = _uid()
@@ -143,27 +164,41 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     research = f'a_wf_r_{tag}'
     writer = f'a_wf_w_{tag}'
 
-    session.add(
-        HasnHumans(
-            hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active'
+    # 严格 IM 网关使用独立数据库会话校验主人和分身身份，测试身份必须先提交，不能只在
+    # 业务事务中 flush。业务数据仍由下方 session 统一回滚。
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(
+            HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active')
         )
-    )
-    session.add(
-        HasnHumans(
-            hasn_id=other_owner, star_id=f's_{owner_uid + 1}', user_id=owner_uid + 1, nickname='Other', status='active'
+        identity_db.add(
+            HasnHumans(
+                hasn_id=other_owner,
+                star_id=f's_{owner_uid + 1}',
+                user_id=owner_uid + 1,
+                nickname='Other',
+                status='active',
+            )
         )
-    )
-    session.add(
-        HasnAgents(
-            hasn_id=research, star_id=f'{_uid()}#star', owner_id=owner, display_name='研究分身', agent_name='research'
+        identity_db.add(
+            HasnAgents(
+                hasn_id=research,
+                star_id=f'{_uid()}#star',
+                owner_id=owner,
+                display_name='研究分身',
+                agent_name='research',
+                status='active',
+            )
         )
-    )
-    session.add(
-        HasnAgents(
-            hasn_id=writer, star_id=f'{_uid()}#star', owner_id=owner, display_name='写作分身', agent_name='writer'
+        identity_db.add(
+            HasnAgents(
+                hasn_id=writer,
+                star_id=f'{_uid()}#star',
+                owner_id=owner,
+                display_name='写作分身',
+                agent_name='writer',
+                status='active',
+            )
         )
-    )
-    await session.flush()
 
     async def _yield_session() -> AsyncIterator:  # noqa: RUF029
         yield session
@@ -198,7 +233,11 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         _APP.dependency_overrides.clear()
         await session.rollback()
         await session.close()
+        async with async_db_session.begin() as identity_db:
+            await identity_db.execute(delete(HasnAgents).where(HasnAgents.hasn_id.in_([research, writer])))
+            await identity_db.execute(delete(HasnHumans).where(HasnHumans.hasn_id.in_([owner, other_owner])))
         await engine.dispose()
+        await _reset_redis_pool()
 
 
 def _data(resp: httpx.Response) -> dict:
@@ -277,12 +316,33 @@ async def test_agent_periodic_pending_approval_then_owner_approve(e2e: SimpleNam
     assert wf['status'] == 'pending_approval'  # D4：agent 建定时图待主人确认
     wfid = wf['workflow_id']
 
-    # 通知行落库
+    # 自有分身向主人请示走主会话汇报卡，不污染通知中心；业务事务只登记发送命令，
+    # 独立 relay 在提交后投递，测试不再依赖旧的 hasn_messages 直写路径。
+    notifications = (
+        await e2e.session.execute(
+            text(
+                "SELECT id FROM hasn_notifications "
+                "WHERE target_id = :owner AND type = 'workflow.pending_approval'"
+            ),
+            {'owner': e2e.owner},
+        )
+    ).all()
+    assert notifications == []
+
     row = await e2e.session.execute(
-        text("SELECT 1 FROM hasn_notifications WHERE target_id = :o AND type = 'workflow.pending_approval'"),
-        {'o': e2e.owner},
+        text(
+            "SELECT payload, idempotency_key FROM hasn_notification_im_command_outbox "
+            "WHERE payload->'principal'->>'canonical_sender' = :agent "
+            "AND payload->'message'->'content'->'resource'->'metadata'->>'target_kind' = 'workflow'"
+        ),
+        {'agent': e2e.research},
     )
-    assert row.first() is not None
+    cards = row.mappings().all()
+    assert len(cards) == 1
+    card = cards[0]['payload']['message']['content']
+    assert card['metadata']['report'] is True
+    assert card['resource']['id'] == wfid
+    assert card['primary_action']['uri'] == f'hasn://tasks/workflows/{wfid}'
 
     # owner app approve → active
     approved = _data(await e2e.client.post(f'/api/v1/hasn-task/app/workflows/{wfid}/approve'))
@@ -294,8 +354,11 @@ async def test_create_rejects_cross_owner_node_agent(e2e: SimpleNamespace) -> No
     foreign = f'a_foreign_{_uid()}'
     e2e.session.add(
         HasnAgents(
-            hasn_id=foreign, star_id=f'{_uid()}#star', owner_id=e2e.other_owner,
-            display_name='他人', agent_name='x',
+            hasn_id=foreign,
+            star_id=f'{_uid()}#star',
+            owner_id=e2e.other_owner,
+            display_name='他人',
+            agent_name='x',
         )
     )
     await e2e.session.flush()
@@ -306,6 +369,68 @@ async def test_create_rejects_cross_owner_node_agent(e2e: SimpleNamespace) -> No
     }
     resp = await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=body)
     assert resp.json()['code'] == 404, resp.text
+
+
+async def test_owner_history_api_keeps_orphan_run_read_only(e2e: SimpleNamespace) -> None:
+    """R3：父定义不在云端时，Owner 仍能通过只读 API 打开执行快照。"""
+    workflow_run_uuid = f'wfr_history_{_uid()}'
+    project_id = str(uuid.uuid4())
+    synced = _data(
+        await e2e.client.post(
+            '/api/v1/hasn-task/app/workflow-node-runs:sync',
+            json={
+                'runs': [
+                    {
+                        'workflow_run_uuid': workflow_run_uuid,
+                        'workflow_uuid': f'wf_missing_{_uid()}',
+                        'workflow_name_snapshot': '归档场景',
+                        'template_key_snapshot': 'one_person_company',
+                        'project_id': project_id,
+                        'status': 'failed',
+                        'graph_snapshot': {
+                            'nodes': [{'node_key': 'research'}, {'node_key': 'summary'}],
+                            'edges': [['research', 'summary']],
+                        },
+                    }
+                ],
+                'node_runs': [
+                    {
+                        'node_run_uuid': f'ndr_history_{_uid()}',
+                        'workflow_run_uuid': workflow_run_uuid,
+                        'workflow_uuid': f'wf_unused_{_uid()}',
+                        'node_key': 'research',
+                        'status': 'done',
+                        'output_summary': '调研完成',
+                    },
+                    {
+                        'node_run_uuid': f'ndr_history_{_uid()}',
+                        'workflow_run_uuid': workflow_run_uuid,
+                        'workflow_uuid': f'wf_unused_{_uid()}',
+                        'node_key': 'summary',
+                        'status': 'failed',
+                        'attention_reason': '需要人工补充资料',
+                    },
+                ],
+            },
+        )
+    )
+    assert synced == {'accepted_runs': 1, 'accepted_node_runs': 2, 'rejected': [], 'deferred': []}
+
+    history = _data(await e2e.client.get('/api/v1/hasn-task/app/workflow-runs', params={'project_id': project_id}))
+    item = next(row for row in history['items'] if row['workflow_run_id'] == workflow_run_uuid)
+    assert item['workflow_name'] == '归档场景'
+    assert item['definition_state'] == 'missing'
+    assert item['progress'] == {'done': 1, 'total': 2}
+    assert item['capabilities']['can_mutate'] is False
+
+    detail = _data(await e2e.client.get(f'/api/v1/hasn-task/app/workflow-runs/{workflow_run_uuid}/scenario-view'))
+    assert [node['node_key'] for node in detail['nodes']] == ['research', 'summary']
+    assert detail['capabilities'] == {
+        'can_mutate': False,
+        'mutation_reason': 'remote_execution',
+        'work_session_events': False,
+    }
+    assert detail['availability'] == {'work_session_events': 'unavailable_on_this_node'}
 
 
 # ---------- P9-B 场景工作流项目轴实例化硬闸（doc95 §2.3） ----------
@@ -393,14 +518,12 @@ async def test_instantiate_archived_project_rejected(e2e: SimpleNamespace) -> No
         await workflow_template_service.instantiate_template(
             e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj.id)}
         )
-    assert (ei.value.data or {}).get('error_code') == 'project_archived'
+    assert (ei.value.data or {}).get('error_code') == 'PROJECT_ARCHIVED'
 
 
 async def test_bare_workflow_create_unaffected(e2e: SimpleNamespace) -> None:
     """裸工程图创建路径（template_key IS NULL）不受硬闸影响，仍可建，project_id 为空。"""
-    created = _data(
-        await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=_diamond_body(e2e, f'wf-{_uid()}'))
-    )
+    created = _data(await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=_diamond_body(e2e, f'wf-{_uid()}')))
     assert created['workflow']['project_id'] is None
 
 
@@ -421,9 +544,7 @@ async def test_list_workflows_filters_by_project(e2e: SimpleNamespace) -> None:
     bare = _data(await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=_diamond_body(e2e, f'wf-{_uid()}')))
     bare_id = bare['workflow']['workflow_id']
 
-    only_a = await agent_workflow_service.list_workflows(
-        e2e.session, owner_id=e2e.owner, project_id=str(proj_a.id)
-    )
+    only_a = await agent_workflow_service.list_workflows(e2e.session, owner_id=e2e.owner, project_id=str(proj_a.id))
     ids_a = {w['workflow_id'] for w in only_a}
     assert wf_a['workflow_id'] in ids_a
     assert wf_b['workflow_id'] not in ids_a, '不该串到别的项目'
@@ -446,12 +567,115 @@ async def test_list_workflows_project_filter_never_crosses_owner(e2e: SimpleName
     )
 
     # 用别人的 project_id 过滤自己的列表 → 空集（不报错、也不越权返对方的图）
-    rows = await agent_workflow_service.list_workflows(
-        e2e.session, owner_id=e2e.owner, project_id=str(foreign_proj.id)
-    )
+    rows = await agent_workflow_service.list_workflows(e2e.session, owner_id=e2e.owner, project_id=str(foreign_proj.id))
     assert rows == []
     # 反向：对方拿我的 project_id 也看不到我的图
     foreign_rows = await agent_workflow_service.list_workflows(
         e2e.session, owner_id=e2e.other_owner, project_id=str(my_proj.id)
     )
     assert mine['workflow_id'] not in {w['workflow_id'] for w in foreign_rows}
+
+
+async def test_owner_instantiate_is_idempotent_and_returns_definition_snapshot(e2e: SimpleNamespace) -> None:
+    """R2：Owner 实例化先生成云端定义，网络重放不重复建图。"""
+    template = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    project = await _seed_project(e2e.session, e2e.owner)
+    idempotency_key = f'inst_{_uid()}'
+    payload = {
+        'project_id': str(project.id),
+        'idempotency_key': idempotency_key,
+        'goal': '先在云端建权威定义',
+        'node_overrides': {
+            'origin': {'agent_id': e2e.research},
+            'work': {'agent_id': e2e.writer},
+        },
+    }
+
+    first = _data(
+        await e2e.client.post(
+            f'/api/v1/hasn-task/app/workflow-templates/{template.template_key}:instantiate', json=payload
+        )
+    )
+    replay = _data(
+        await e2e.client.post(
+            f'/api/v1/hasn-task/app/workflow-templates/{template.template_key}:instantiate', json=payload
+        )
+    )
+
+    assert first['workflow_uuid'].startswith('wf_')
+    assert replay['workflow_uuid'] == first['workflow_uuid']
+    assert first['definition_revision'] == 1
+    assert first['project_id'] == str(project.id)
+    assert [node['node_key'] for node in first['graph_snapshot']['nodes']] == ['origin', 'work']
+    count = await e2e.session.execute(
+        text(
+            'SELECT count(*) FROM hasn_task.workflow '
+            'WHERE owner_id = :owner AND instantiation_idempotency_key = :idempotency_key'
+        ),
+        {'owner': e2e.owner, 'idempotency_key': idempotency_key},
+    )
+    assert count.scalar_one() == 1
+
+
+async def test_legacy_definition_import_is_create_only_and_hash_idempotent(e2e: SimpleNamespace) -> None:
+    """R2-c：旧 daemon 定义首次建图、同哈希重放不新增、差异图明确冲突。"""
+    workflow_uuid = f'wf_legacy_{_uid()}'
+    definition = {
+        'workflow_uuid': workflow_uuid,
+        'name': '旧版工程工作流',
+        'goal': '把存量定义补到云端',
+        'nodes': [
+            {'node_key': 'origin', 'agent_id': e2e.research, 'prompt': '主人输入', 'is_origin': True},
+            {'node_key': 'work', 'agent_id': e2e.writer, 'prompt': '完成执行'},
+        ],
+        'edges': [{'parent': 'origin', 'child': 'work'}],
+    }
+    payload = {'sync_protocol_version': 2, 'definitions': [{'workflow': definition}]}
+
+    first = _data(await e2e.client.post('/api/v1/hasn-task/app/workflows:sync', json=payload))
+    assert first == {'created': [workflow_uuid], 'idempotent': []}
+    replay = _data(await e2e.client.post('/api/v1/hasn-task/app/workflows:sync', json=payload))
+    assert replay == {'created': [], 'idempotent': [workflow_uuid]}
+
+    conflicting = {
+        **definition,
+        'nodes': [
+            {'node_key': 'origin', 'agent_id': e2e.research, 'prompt': '已被篡改', 'is_origin': True},
+            {'node_key': 'work', 'agent_id': e2e.writer, 'prompt': '完成执行'},
+        ],
+    }
+    response = await e2e.client.post(
+        '/api/v1/hasn-task/app/workflows:sync',
+        json={'sync_protocol_version': 2, 'definitions': [{'workflow': conflicting}]},
+    )
+    assert response.status_code == 409, response.text
+    assert 'DEFINITION_CONFLICT' in response.text
+
+
+async def test_sync_protocol_v2_defers_orphan_node_run_but_v1_keeps_compatibility(e2e: SimpleNamespace) -> None:
+    """R2-c：新协议缺父 run 保持 pending，旧 daemon 协议仍可兼容写入历史。"""
+    run_uuid = f'wfr_orphan_{_uid()}'
+    node = {
+        'node_run_uuid': f'ndr_orphan_{_uid()}',
+        'workflow_run_uuid': run_uuid,
+        'workflow_uuid': f'wf_orphan_{_uid()}',
+        'node_key': 'legacy',
+        'status': 'done',
+    }
+    deferred = _data(
+        await e2e.client.post(
+            '/api/v1/hasn-task/app/workflow-node-runs:sync',
+            json={'sync_protocol_version': 2, 'node_runs': [node]},
+        )
+    )
+    assert deferred['accepted_node_runs'] == 0
+    assert deferred['rejected'] == []
+    assert deferred['deferred'][0]['uuid'] == node['node_run_uuid']
+    accepted = _data(
+        await e2e.client.post(
+            '/api/v1/hasn-task/app/workflow-node-runs:sync',
+            json={'sync_protocol_version': 1, 'node_runs': [node]},
+        )
+    )
+    assert accepted['accepted_node_runs'] == 1
+    assert accepted['deferred'] == []

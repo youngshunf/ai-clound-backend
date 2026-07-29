@@ -22,12 +22,10 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security.utils import get_authorization_scheme_param
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model import HasnHumans, HasnNodes, HasnOwnerApiKeys
 from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.common.security.jwt import jwt_authentication, jwt_decode
 from backend.core.conf import settings
 from backend.database.db import async_db_session
@@ -645,31 +643,16 @@ async def register_hasn_agent(
     db.add(agent)
     await db.flush()
 
-    # 同事务写入 hasn_contacts（owner→agent 的控制边，social + trust_level=5/connected）
-    # D3：协议 Core/02 §7.4.2 规定控制边 MUST social+5 / MUST NOT service；此前误写
-    # service+5 违反协议与 validate_relation_constraints，已对齐为 social。自有分身的判定
-    # 全链靠 peer_owner_id == owner_id（+ trust_level=5），不依赖 relation_type='service'。
-    # 保证注册 agent 后 contacts 表立即可被 list_contacts 检索到；重复调用通过
-    # ON CONFLICT (owner_id, peer_id, relation_type) DO NOTHING 幂等。
-    await db.execute(
-        pg_insert(HasnContacts)
-        .values(
-            owner_id=owner_hasn_id,
-            peer_id=agent_hasn_id,
-            peer_owner_id=owner_hasn_id,
-            peer_type='agent',
-            relation_type='social',
-            trust_level=5,
-            status='connected',
-            channel_source='system',
-            subscription=False,
-            interaction_count=0,
-            custom_permissions={},
-            connected_at=timezone.now(),
-        )
-        .on_conflict_do_nothing(
-            index_elements=['owner_id', 'peer_id', 'relation_type'],
-        )
+    # Agent 身份和投影命令同事务提交；关系 relay 仅经 IM role 的 RelationGateway 建控制边。
+    # relay 在 IM 已提交但响应丢失时用稳定幂等键重试，不会生成重复关系。
+    from backend.app.hasn.service.hasn_relation_command_outbox_service import (
+        hasn_relation_command_outbox_service,
+    )
+
+    await hasn_relation_command_outbox_service.enqueue_owner_agent_control_edge(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        agent_hasn_id=agent_hasn_id,
     )
 
     return {

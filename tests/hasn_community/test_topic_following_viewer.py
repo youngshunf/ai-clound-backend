@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from backend.app.hasn_community.service.topic_service import topic_service
 from backend.database.db import uuid4_str
-from tests.hasn_community.conftest import seed_human
+from tests.hasn_community.conftest import seed_human, seed_post
 
 
 async def _new_topic(db, owner_hasn_id: str, name: str) -> str:
@@ -50,7 +50,8 @@ async def test_trending_backfills_is_following_for_viewer(db):
     for _ in range(15):
         await db.execute(
             text(
-                'INSERT INTO hasn_content_topics (topic_id, content_type, content_id, owner_hasn_id, '
+                'INSERT INTO hasn_community.hasn_content_topics '
+                '(topic_id, content_type, content_id, owner_hasn_id, '
                 "created_time, updated_time) VALUES (:tid, 'post', :cid, :owner, now(), now())"
             ),
             {'tid': topic_id, 'cid': f'p_{uuid4_str()[:12]}', 'owner': owner['hasn_id']},
@@ -65,7 +66,44 @@ async def test_trending_backfills_is_following_for_viewer(db):
     mine = next((r for r in rows if r['topic_id'] == topic_id), None)
     assert mine is not None, '近期热度高的话题应进入 trending 前 50'
     assert mine['is_following'] is True
+    assert isinstance(mine['rank'], int)
+    assert isinstance(mine['rank_delta'], int)
+    assert mine['new_content_count'] == 15
 
     # 匿名（无 viewer）：不带 is_following 字段
     anon = await topic_service.get_trending(db, limit=50)
     assert all('is_following' not in r for r in anon)
+
+
+@pytest.mark.asyncio
+async def test_following_topics_include_real_activity_summary(db):
+    owner = await seed_human(db, nickname='关注者')
+    name = f'关注动态{uuid4_str().replace("-", "")[:8]}'
+    topic_id = await _new_topic(db, owner['hasn_id'], name)
+    post_id = await seed_post(
+        db,
+        author_hasn_id=owner['hasn_id'],
+        content='这是一条用于关注话题动态摘要的真实帖子内容',
+        tags=[name],
+    )
+    await topic_service.rewrite_content_topics(
+        db,
+        content_type='post',
+        content_id=post_id,
+        owner_hasn_id=owner['hasn_id'],
+        tags=[name],
+    )
+    await topic_service.follow_topic(
+        db,
+        follower_hasn_id=owner['hasn_id'],
+        topic_id=topic_id,
+        following=True,
+    )
+
+    following = await topic_service.get_following(
+        db,
+        follower_hasn_id=owner['hasn_id'],
+    )
+    mine = next(item for item in following if item['topic_id'] == topic_id)
+    assert mine['new_content_count'] == 1
+    assert mine['latest_title'] == '这是一条用于关注话题动态摘要的真实帖子内容'

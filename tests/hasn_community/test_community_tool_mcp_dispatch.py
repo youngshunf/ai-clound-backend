@@ -21,15 +21,10 @@ from backend.app.mcp.auth import AgentContext
 from backend.common.dataclasses import AgentTokenPayload
 from tests.hasn_community.conftest import seed_agent, seed_human
 
-# create_post 工具要求 community:post（见 ai_native_builtin_manifests）。
-_AGENT_SCOPES = ['community:read', 'community:post', 'community:comment', 'community:interact']
-
-
 def _agent_context(owner: dict, agent_row: dict) -> AgentContext:
     return AgentContext(
         hasn_id=agent_row['hasn_id'],
         owner_id=owner['user_id'],
-        scopes=_AGENT_SCOPES,
         agent_status='active',
         metadata={},
         agent_name=agent_row['display_name'],

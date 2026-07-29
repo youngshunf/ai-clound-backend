@@ -4,6 +4,7 @@ import threading
 import weakref
 
 from collections.abc import Awaitable, Callable, Coroutine
+from concurrent.futures import Future
 from functools import wraps
 from typing import Any, TypeVar
 
@@ -33,10 +34,13 @@ class _TaskRunner:
 
     def _target(self) -> None:
         """后台线程的目标函数"""
+        loop = self.__loop
+        if loop is None:
+            return
         try:
-            self.__loop.run_forever()
+            loop.run_forever()
         finally:
-            self.__loop.close()
+            loop.close()
 
     def run(self, coro: Awaitable[T]) -> T:
         """在后台事件循环上运行协程并返回其结果"""
@@ -46,11 +50,16 @@ class _TaskRunner:
                 self.__loop = asyncio.new_event_loop()
                 self.__thread = threading.Thread(target=self._target, daemon=True, name=name)
                 self.__thread.start()
-            future = asyncio.run_coroutine_threadsafe(coro, self.__loop)
+            future: Future[T] = asyncio.run_coroutine_threadsafe(_await_result(coro), self.__loop)
             return future.result()
 
 
-_runner_map = weakref.WeakValueDictionary()
+async def _await_result(awaitable: Awaitable[T]) -> T:
+    """把任意 Awaitable 归一为 run_coroutine_threadsafe 所需的协程。"""
+    return await awaitable
+
+
+_runner_map: weakref.WeakValueDictionary[str, _TaskRunner] = weakref.WeakValueDictionary()
 
 
 def run_await(coro: Callable[..., Awaitable[T]] | Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., T]:

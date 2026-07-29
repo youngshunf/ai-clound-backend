@@ -17,6 +17,8 @@ infra-gated，留阶段 F 活体验证。需要 export DATABASE_PORT=15432。
 
 from __future__ import annotations
 
+from typing import Any
+
 import uuid
 
 from datetime import datetime
@@ -86,7 +88,7 @@ async def e2e():
 
     tag = _uid()
     owner1 = f'h_owner1_{tag}'
-    owner1_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner1_uid = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     owner2 = f'h_owner2_{tag}'
     owner2_uid = owner1_uid + 1
     agent_cloud = f'a_cloud_{tag}'
@@ -268,7 +270,8 @@ async def test_health_cloud_reachable_reports_online() -> None:
         async def get_gateway_status(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, bool]:
             return {'running': False}  # 网关懒启动未起 → detail 标 idle，但不降级
 
-    svc = hasn_agent_runtime_dispatch_service.__class__(runtime_client=_StubReachableClient())
+    runtime_client: Any = _StubReachableClient()
+    svc = hasn_agent_runtime_dispatch_service.__class__(runtime_client=runtime_client)
     result = await svc.cloud_runtime_health(runtime_profile_id='100001-cloud')
     assert result['online'] is True
     assert result['health'] == 'ok'

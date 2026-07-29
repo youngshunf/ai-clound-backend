@@ -211,7 +211,7 @@ class ApiKeyService:
         )
 
         # 保存完整 Key 到临时属性（用于返回给用户）
-        api_key._decrypted_key = full_key
+        api_key.decrypted_key = full_key
 
         return api_key
 
@@ -232,7 +232,7 @@ class ApiKeyService:
         for key in keys:
             if key.status == ApiKeyStatus.ACTIVE:
                 try:
-                    key._decrypted_key = key_encryption.decrypt(key.key_encrypted)
+                    key.decrypted_key = key_encryption.decrypt(key.key_encrypted)
                 except Exception:
                     # 加密密钥变更导致无法解密，标记为失效
                     log.warning(f'API Key id={key.id} 解密失败，可能是加密密钥变更，跳过该 Key')

@@ -44,6 +44,7 @@ WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8'
 NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
 # P2 · W-S1 推进档位：workflow_run.advance_mode 列
 ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
+WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 
 _OWNER_A = 'hasn_owner_a_wf'
 _OWNER_B = 'hasn_owner_b_wf'
@@ -78,6 +79,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(WORKFLOW_SQL)
     await _run_sql(NODE_TABLES_SQL)
     await _run_sql(ADVANCE_MODE_SQL)
+    await _run_sql(WORKFLOW_HISTORY_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     try:
@@ -147,6 +149,7 @@ async def test_workflow_migration_idempotent_and_columns(env: SimpleNamespace) -
     await _run_sql(WORKFLOW_SQL)  # 第二次执行：幂等
     await _run_sql(NODE_TABLES_SQL)  # 节点专属表迁移二次执行：幂等
     await _run_sql(ADVANCE_MODE_SQL)  # advance_mode 迁移二次执行：幂等（可重复跑不报错）
+    await _run_sql(WORKFLOW_HISTORY_SQL)  # 历史恢复迁移二次执行：幂等（可重复跑不报错）
 
     rows = await env.session.execute(
         sa.text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'hasn_task'")
@@ -165,6 +168,10 @@ async def test_workflow_migration_idempotent_and_columns(env: SimpleNamespace) -
     )
     # P2 · W-S1：workflow_run 增 advance_mode 列
     assert 'advance_mode' in await _column_names(env.session, 'workflow_run')
+    assert {'workflow_name_snapshot', 'template_key_snapshot', 'project_id'} <= await _column_names(
+        env.session, 'workflow_run'
+    )
+    assert 'instantiation_idempotency_key' in await _column_names(env.session, 'workflow')
 
 
 async def test_workflow_run_advance_mode_default_manual(env: SimpleNamespace) -> None:

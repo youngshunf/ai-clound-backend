@@ -27,7 +27,7 @@ import sqlalchemy as sa
 from backend.app.hasn.service.agent_message_read_service import agent_message_read_service as svc
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 # 合成 owner，绝不与真实数据撞（h_ 前缀但明显是测试串）。
 _OWNER = 'h_msgtool_test_owner_x'
@@ -38,15 +38,28 @@ _READER = 'h_msgtool_test_group_reader'
 
 async def _seed(db, owner_id: str, conversation_id: str, content: dict, content_type: int = 1) -> None:
     """在当前（未提交）事务里插一条 hasn_messages 行；id 自增 → 插入顺序即 id 升序。"""
+    seq_result = await db.execute(
+        sa.text(
+            """
+            SELECT COALESCE(MAX(conversation_seq), 0) + 1
+            FROM public.hasn_messages
+            WHERE conversation_id = CAST(:conv AS uuid)
+            """
+        ),
+        {'conv': conversation_id},
+    )
+    conversation_seq = int(seq_result.scalar_one())
     await db.execute(
         sa.text(
             """
             INSERT INTO public.hasn_messages
                 (conversation_id, owner_id, hasn_id, from_id, sender_hasn_id,
-                 from_type, to_id, to_type, content_type, content, msg_type, status, created_time)
+                 from_type, to_id, to_type, content_type, content, msg_type, status,
+                 conversation_seq, created_time)
             VALUES
                 (CAST(:conv AS uuid), :owner, :owner, :from_id, :from_id,
-                 2, :owner, 1, :ct, CAST(:content AS jsonb), 'message', 1, now())
+                 2, :owner, 1, :ct, CAST(:content AS jsonb), 'message', 1,
+                 :conversation_seq, now())
             """
         ),
         {
@@ -55,6 +68,7 @@ async def _seed(db, owner_id: str, conversation_id: str, content: dict, content_
             'from_id': 'a_msgtool_sender',
             'ct': content_type,
             'content': json.dumps(content, ensure_ascii=False),
+            'conversation_seq': conversation_seq,
         },
     )
 

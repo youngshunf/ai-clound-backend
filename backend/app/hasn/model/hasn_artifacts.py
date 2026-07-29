@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -27,6 +28,9 @@ class HasnArtifacts(Base):
     body: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='文本/markdown 正文直接入库；二进制走 asset_id，资源走 resource_uri，本地文件走不可逆定位键')
     asset_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='关联资产 ID (public.hasn_assets.asset_id，image/voice/file 主路径)')
     resource_uri: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='hasn:// 资源 URI (客户端无关，deck/webpage/外部结果无 asset 本体时用)')
+    source_asset_uri: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='本地原件显式上传后的 hasn://asset/{id} 私有快照；NULL 表示尚未上传')
+    source_hash: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='已上传快照的 sha256；必须与 source_asset_uri 指向的字节一致')
+    source_synced_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), default=None, comment='已上传快照的上传时间')
     local_locator_key: Mapped[str | None] = mapped_column(sa.String(256), default=None, comment='不可逆本地对象定位键')
     local_entry_kind: Mapped[str | None] = mapped_column(sa.String(16), default=None, comment='本地条目类型')
     node_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='产出设备节点 ID（本地定位键产物必填）')

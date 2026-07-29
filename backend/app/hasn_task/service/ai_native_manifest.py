@@ -17,7 +17,7 @@ Runtime Host / 跨设备读权威），经 Agent JWT + scope 闸直达，本身�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -429,13 +429,16 @@ _SCHEDULE_PROPS = {
     },
 }
 
-HASN_TASK_AI_NATIVE_MANIFEST = {
+HASN_TASK_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'hasn_task',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'task': '任务调度（创建/查询/接续定时任务）', 'workflow': '工作流编排（多任务依赖 DAG）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知：agent 建周期任务 → 「待你确认」提醒卡片（D4，通知非审批票据）；run 完成可发 app 卡。

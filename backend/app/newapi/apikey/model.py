@@ -1,6 +1,7 @@
 """用户 API Key 表"""
 
 from datetime import datetime
+from dataclasses import field
 
 import sqlalchemy as sa
 
@@ -29,3 +30,4 @@ class UserApiKey(Base):
     allowed_models: Mapped[list | None] = mapped_column(sa.JSON, default=None, comment='允许的模型列表')
     metadata_: Mapped[dict | None] = mapped_column('metadata', sa.JSON, default=None, comment='元数据')
     last_used_at: Mapped[datetime | None] = mapped_column(TimeZone, init=False, default=None, comment='最后使用时间')
+    decrypted_key: str | None = field(default=None, init=False, repr=False)

@@ -20,6 +20,8 @@ CREATE TABLE "hasn_knowledge"."kb" (
   "embedding_model"    varchar(128)   NOT NULL,
   "document_count"     int            NOT NULL DEFAULT 0,
   "chunk_count"        int            NOT NULL DEFAULT 0,
+  "platform_project_id" uuid          REFERENCES "hasn_project"."hasn_project"("id") ON DELETE SET NULL,
+  "client_request_id"  varchar(200),
   "status"             varchar(16)    NOT NULL DEFAULT 'active',
   "created_time"       timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time"       timestamptz(6),
@@ -27,7 +29,9 @@ CREATE TABLE "hasn_knowledge"."kb" (
 );
 
 CREATE INDEX "idx_kb_owner" ON "hasn_knowledge"."kb" ("owner_id") WHERE "deleted_time" IS NULL;
+CREATE INDEX "idx_kb_owner_project" ON "hasn_knowledge"."kb" ("owner_id", "platform_project_id") WHERE "platform_project_id" IS NOT NULL;
 CREATE UNIQUE INDEX "uq_kb_ragflow_dataset" ON "hasn_knowledge"."kb" ("ragflow_dataset_id") WHERE "deleted_time" IS NULL;
+CREATE UNIQUE INDEX "uq_kb_owner_client_request" ON "hasn_knowledge"."kb" ("owner_id", "client_request_id") WHERE "client_request_id" IS NOT NULL;
 
 COMMENT ON TABLE  "hasn_knowledge"."kb" IS '知识库（云端权威；RAGFlow dataset 为派生映射）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."id" IS '主键 ID';
@@ -41,6 +45,8 @@ COMMENT ON COLUMN "hasn_knowledge"."kb"."ragflow_dataset_id" IS 'RAGFlow dataset
 COMMENT ON COLUMN "hasn_knowledge"."kb"."embedding_model" IS '向量模型（建库时固化，来自实例 config.default_embd_id）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."document_count" IS '文档数（反规范化计数，状态对账时回写）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."chunk_count" IS '分块数（反规范化计数，状态对账时回写）';
+COMMENT ON COLUMN "hasn_knowledge"."kb"."platform_project_id" IS '挂靠的平台项目 id（doc38 层2 容器级挂靠，可空=不挂；项目不是权限边界/挂载点/容器接管，只是视角）';
+COMMENT ON COLUMN "hasn_knowledge"."kb"."client_request_id" IS 'Owner 范围建库业务幂等键；相同键重试返回原库，参数冲突返回 409';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."status" IS '状态 (active:正常:green/deleting:删除中:orange)';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."created_time" IS '创建时间';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."updated_time" IS '更新时间';

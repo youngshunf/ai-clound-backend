@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import uuid
 
+from typing import Any
+
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
@@ -35,7 +37,7 @@ def _uid() -> str:
 
 
 def _catalog(app_id: str, **over) -> HasnAppCatalog:
-    base = {
+    base: dict[str, Any] = {
         'app_id': app_id,
         'name': '内测测试',
         'icon': 'app-window',

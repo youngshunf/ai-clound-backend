@@ -263,6 +263,7 @@ async def test_contact_list_returns_peer_profile_fields_from_sys_user() -> None:
     ):
         resp = await list_contacts(
             db=db,
+            identity_db=db,
             auth={'hasn_id': SELF},
             relation_type='social',
         )
@@ -302,11 +303,13 @@ async def test_contact_list_allows_unfiltered_full_snapshot() -> None:
     ):
         resp = await list_contacts(
             db=db,
+            identity_db=db,
             auth={'hasn_id': SELF},
             relation_type=None,
         )
 
     item = resp.data['items'][0]
+    assert mock_list_contacts.await_args is not None
     assert mock_list_contacts.await_args.kwargs['relation_type'] is None
     assert item['peer']['hasn_id'] == PEER
 
@@ -337,6 +340,7 @@ async def test_contact_list_hides_own_agent_control_relation() -> None:
     ):
         resp = await list_contacts(
             db=db,
+            identity_db=db,
             auth={'hasn_id': SELF},
             relation_type=None,
         )

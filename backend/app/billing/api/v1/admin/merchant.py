@@ -12,6 +12,7 @@ from backend.app.billing.schema.pay_merchant import (
     UpdatePayMerchantParam,
 )
 from backend.app.billing.service.pay_merchant_service import pay_merchant_service
+from backend.common.exception import errors
 from backend.common.pagination import DependsPagination, PageData, paging_data
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -59,7 +60,7 @@ async def get_merchant(
 ) -> ResponseSchemaModel[GetPayMerchantDetail]:
     merchant = await pay_merchant_service.get(db=db, pk=pk)
     if not merchant:
-        return response_base.fail(msg='商户不存在')
+        raise errors.NotFoundError(msg='商户不存在')
     data = GetPayMerchantDetail.model_validate(merchant)
     return response_base.success(data=data)
 

@@ -66,7 +66,8 @@ class _NewApiHandler(BaseHTTPRequestHandler):
             self._respond(200, {'success': True, 'data': {'quota_per_unit': 500000}})
         elif self.path.startswith('/api/user/token'):  # 需 login 后的 session cookie
             if self.headers.get('Cookie'):
-                self._respond(200, {'success': True, 'data': 'user-access-token-xyz'})
+                # PostgreSQL char(32) 可能把令牌右侧补空格；客户端边界必须归一化后再写 HTTP 头。
+                self._respond(200, {'success': True, 'data': 'user-access-token-xyz   '})
             else:
                 self._respond(401, {'success': False, 'message': 'no session cookie'})
         elif self.path.startswith('/api/user/'):  # GET /api/user/{id}
@@ -131,7 +132,7 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, server: ThreadingHTTPServer):
     port = server.server_address[1]
     monkeypatch.setenv('NEWAPI_ADMIN_BASE_URL', f'http://127.0.0.1:{port}/api')
     monkeypatch.setenv('NEWAPI_ADMIN_ACCESS_TOKEN', 'admin-tok')
-    return NewApiAdminClient()
+    return NewApiAdminClient(admin_user_id=1)
 
 
 @pytest.mark.asyncio

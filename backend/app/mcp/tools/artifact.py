@@ -24,10 +24,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, get_args
 
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
-from backend.app.mcp.context import get_current_project_id
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.hasn_core.app_platform import ai_native_app_registry
+from backend.app.mcp.context import get_current_project_id, get_current_work_session_id
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
@@ -221,9 +221,13 @@ class ArtifactRecordTool(BaseTool):
             asset_id=asset_id,
             resource_uri=resource_uri,
             origin_ref=_str('origin_ref'),
-            # 绑当次工作会话：取系统注入的 `_hasn_session_id`（server.call_tool 已剥进 agent_context，
-            # 分身不可伪造）。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在会话里
-            # 看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，资源栏却空）。
+            # 绑当次工作会话（设计 02 §4.3 会话轴分流）：取工作会话权威——分发入口两级权威
+            # 已落 ContextVar（auth 绑定 > `_hasn_work_session_id` 盖章），
+            # auth 绑定字段兜底。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在
+            # 会话里看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，
+            # 资源栏却空）。
+            work_session_id=get_current_work_session_id() or agent_context.work_session_id,
+            # 运行时会话 id 续传（溯源语义）：record 会把它挪 metadata.runtime_session_id。
             session_id=agent_context.session_id,
             # 本工具**就是**「分身自撰登记」这条通道，来源恒为 agent_note——不由分身自报（doc35 §5）。
             # 旧实现收 source_kind 入参、缺省 'task_result'：前者给了分身一个说谎的旋钮（它可以把
@@ -233,11 +237,12 @@ class ArtifactRecordTool(BaseTool):
         )
 
         # 写类 → .begin() 自动提交（service 只 flush 不 commit）。
+        owner_hasn_id = require_owner_hasn_id(agent_context)
         async with async_db_session.begin() as db:
             artifact_id = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent_context.agent_hasn_id,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 params=params,
             )
         return {'artifact_id': artifact_id}
@@ -300,11 +305,12 @@ async def _query_artifacts(
 
     两档的权限边界都是 owner 隔离，`project_id` 只是聚合过滤键。
     """
+    owner_hasn_id = require_owner_hasn_id(agent_context)
     async with async_db_session() as db:
         if project_id:
             return await hasn_artifacts_service.list_in_project(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 project_id=project_id,
                 page=page,
                 size=size,
@@ -316,7 +322,7 @@ async def _query_artifacts(
             )
         return await hasn_artifacts_service.list_by_agent(
             db,
-            owner_hasn_id=agent_context.owner_hasn_id,
+            owner_hasn_id=owner_hasn_id,
             agent_hasn_id=agent_context.agent_hasn_id,
             page=page,
             size=size,
@@ -588,10 +594,11 @@ class ArtifactGetTool(BaseTool):
         artifact_id = (arguments.get('artifact_id') or '').strip()
         if not artifact_id:
             raise RuntimeError("artifact.get: 'artifact_id' 必填")
+        owner_hasn_id = require_owner_hasn_id(agent_context)
         async with async_db_session() as db:
             detail = await hasn_artifacts_service.get_detail(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 artifact_id=artifact_id,
             )
         return _project_detail(detail)

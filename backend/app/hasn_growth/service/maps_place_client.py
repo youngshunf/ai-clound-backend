@@ -92,7 +92,10 @@ def parse_baidu_pois(data: Any) -> list[dict[str, Any]]:
     if not isinstance(data, dict):
         return []
     try:
-        status = int(data.get('status'))  # 0=成功；None/非数字 → 拒（不能用 `or` 兜底，0 是成功值且 falsy）
+        raw_status = data.get('status')
+        if raw_status is None:
+            return []
+        status = int(raw_status)  # 0=成功；非数字 → 拒（不能用 `or` 兜底，0 是成功值且 falsy）
     except (TypeError, ValueError):
         return []
     if status != 0:

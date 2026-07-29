@@ -1,7 +1,24 @@
 from backend.app.hasn_growth.model.activity import Activity as Activity
+from backend.app.hasn_growth.model.contact_channel import ContactChannel as ContactChannel
+from backend.app.hasn_growth.model.contact_private_access_audit import (
+    ContactPrivateAccessAudit as ContactPrivateAccessAudit,
+)
+from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile as ContactPrivateProfile
 from backend.app.hasn_growth.model.crawled_url import CrawledUrl as CrawledUrl
 from backend.app.hasn_growth.model.customer import Customer as Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission as FormSubmission
+from backend.app.hasn_growth.model.growth_attribution_event import GrowthAttributionEvent as GrowthAttributionEvent
+from backend.app.hasn_growth.model.growth_pii_key_state import GrowthPiiKeyState as GrowthPiiKeyState
+from backend.app.hasn_growth.model.growth_pii_migration_quarantine import (
+    GrowthPiiMigrationQuarantine as GrowthPiiMigrationQuarantine,
+)
+from backend.app.hasn_growth.model.growth_project import GrowthProject as GrowthProject
+from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead as GrowthProjectLead
+from backend.app.hasn_growth.model.growth_project_migration_quarantine import (
+    GrowthProjectMigrationQuarantine as GrowthProjectMigrationQuarantine,
+)
+from backend.app.hasn_growth.model.growth_project_playbook import GrowthProjectPlaybook as GrowthProjectPlaybook
+from backend.app.hasn_growth.model.growth_project_provision import GrowthProjectProvision as GrowthProjectProvision
 from backend.app.hasn_growth.model.industry_tag import IndustryTag as IndustryTag
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog as LeadAuditLog
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob as LeadCollectionJob
@@ -18,4 +35,8 @@ from backend.app.hasn_growth.model.lead_source_config import LeadSourceConfig as
 from backend.app.hasn_growth.model.opportunity import Opportunity as Opportunity
 from backend.app.hasn_growth.model.optout_record import OptoutRecord as OptoutRecord
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage as OutreachMessage
+from backend.app.hasn_growth.model.outreach_message_event import OutreachMessageEvent as OutreachMessageEvent
 from backend.app.hasn_growth.model.playbook import Playbook as Playbook
+from backend.app.hasn_growth.model.playbook_version import PlaybookVersion as PlaybookVersion
+from backend.app.hasn_growth.model.growth_profile_version import GrowthProfileVersion as GrowthProfileVersion
+from backend.app.hasn_growth.model.growth_profile_suggestion import GrowthProfileSuggestion as GrowthProfileSuggestion

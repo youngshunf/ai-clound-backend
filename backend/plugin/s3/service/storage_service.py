@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -30,12 +31,18 @@ from backend.common.exception import errors
 from backend.database.redis import redis_client
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import (
+    abort_multipart_upload,
     build_object_url,
+    complete_multipart_upload,
+    copy_object_between_storages,
+    create_multipart_upload,
     delete_object,
     presign_read_key,
     read_bytes,
+    read_object_stream,
     sha256_object,
     stat_object,
+    upload_multipart_part,
     write_bytes,
     write_immutable_speech_package,
     write_stream,
@@ -57,6 +64,8 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     'general_file': ('public', None),
     'dm_attachment': ('private', 3600),
     'private_doc': ('private', 3600),
+    # 本地优先应用仅在主人显式分享时上传的原件快照；始终进私有桶。
+    'local_source_snapshot': ('private', 3600),
     # 网页发布制品（模块 18）：私有桶；语义独立于 dm_attachment，**不触发 extract 抽取流水线**
     # （extract 由 register_asset(extract_status='pending') 这层显式触发，本类别不进那条路径）。
     'published_artifact': ('private', 3600),
@@ -81,6 +90,7 @@ CATEGORY_DIR: dict[str, str] = {
     'general_file': 'files',
     'dm_attachment': 'dm',
     'private_doc': 'docs',
+    'local_source_snapshot': 'local-source-snapshots',
     'published_artifact': 'published',
     'film_engine': 'film-engine',
     'speech_model': 'speech-models',
@@ -179,6 +189,147 @@ class StorageService:
         if not storage:
             raise errors.ServerError(msg=f'S3 存储 {storage_id} 不存在')
         return storage
+
+    @classmethod
+    async def get_write_storage(cls, db: AsyncSession, *, access: str) -> S3Storage:
+        """取得指定访问级别的存储快照，供数据库事务外执行对象网络 I/O。"""
+        storage = _pick_storage(await cls._storages(db), access)
+        return copy.copy(storage)
+
+    @staticmethod
+    async def upload_stream_to_storage(
+        storage: S3Storage,
+        data: AsyncIterable[bytes],
+        *,
+        size: int,
+        key: str,
+        content_type: str,
+    ) -> ObjectRef:
+        """使用已脱离数据库会话的存储快照流式写入。"""
+        await write_stream(storage, key, data, size=size, content_type=content_type)
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=storage.access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type,
+            size=size,
+        )
+
+    @staticmethod
+    async def stat_on_storage(storage: S3Storage, *, object_key: str) -> ObjectStat:
+        """使用存储快照读取对象元数据。"""
+        size, etag = await stat_object(storage, object_key)
+        return ObjectStat(size=size, etag=etag)
+
+    @staticmethod
+    async def sha256_on_storage(storage: S3Storage, *, object_key: str) -> tuple[str, int]:
+        """使用存储快照流式校验对象哈希。"""
+        return await sha256_object(storage, object_key)
+
+    @staticmethod
+    async def delete_on_storage(storage: S3Storage, *, object_key: str) -> None:
+        """使用存储快照删除受控对象。"""
+        await delete_object(storage, object_key)
+
+    @staticmethod
+    async def create_multipart_on_storage(
+        storage: S3Storage,
+        *,
+        object_key: str,
+        content_type: str,
+    ) -> str:
+        """创建受控 multipart 会话。"""
+        return await create_multipart_upload(
+            storage,
+            object_key,
+            content_type=content_type,
+        )
+
+    @staticmethod
+    async def upload_multipart_part_on_storage(
+        storage: S3Storage,
+        *,
+        object_key: str,
+        upload_id: str,
+        part_number: int,
+        file: BinaryIO,
+        size: int,
+    ) -> str:
+        """上传 multipart 分片。"""
+        return await upload_multipart_part(
+            storage,
+            object_key,
+            upload_id=upload_id,
+            part_number=part_number,
+            file=file,
+            size=size,
+        )
+
+    @staticmethod
+    async def complete_multipart_on_storage(
+        storage: S3Storage,
+        *,
+        object_key: str,
+        upload_id: str,
+        parts: Sequence[tuple[int, str]],
+    ) -> None:
+        """完成受控 multipart 会话。"""
+        await complete_multipart_upload(
+            storage,
+            object_key,
+            upload_id=upload_id,
+            parts=parts,
+        )
+
+    @staticmethod
+    async def abort_multipart_on_storage(
+        storage: S3Storage,
+        *,
+        object_key: str,
+        upload_id: str,
+    ) -> None:
+        """幂等终止受控 multipart 会话。"""
+        await abort_multipart_upload(
+            storage,
+            object_key,
+            upload_id=upload_id,
+        )
+
+    @staticmethod
+    async def copy_between_storages(
+        source: S3Storage,
+        *,
+        source_key: str,
+        target: S3Storage,
+        target_key: str,
+        size: int,
+        content_type: str,
+    ) -> None:
+        """服务端复制或跨存储有界流式中转，不整对象驻留应用内存。"""
+        await copy_object_between_storages(
+            source,
+            source_key,
+            target,
+            target_key,
+            size=size,
+            content_type=content_type,
+        )
+
+    @staticmethod
+    async def read_stream_on_storage(
+        storage: S3Storage,
+        *,
+        object_key: str,
+        expected_size: int,
+    ) -> AsyncIterator[bytes]:
+        """使用存储快照有界流式读取对象。"""
+        async for chunk in read_object_stream(
+            storage,
+            object_key,
+            expected_size=expected_size,
+        ):
+            yield chunk
 
     @classmethod
     async def upload(
@@ -378,6 +529,17 @@ class StorageService:
     ) -> str:
         """私有对象的临时签名读 URL（live 签名，无缓存）。"""
         storage = await cls.get_storage(db, storage_id)
+        return await cls._sign_one(storage, object_key, expires_in)
+
+    @classmethod
+    async def signed_url_on_storage(
+        cls,
+        storage: S3Storage,
+        *,
+        object_key: str,
+        expires_in: int,
+    ) -> str:
+        """使用已脱离数据库会话的存储快照生成临时读 URL。"""
         return await cls._sign_one(storage, object_key, expires_in)
 
     @classmethod

@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[4]
 
 # 采集子域收编（设计 07 §5.0）：app/lead_automation → app/hasn_growth，
@@ -23,6 +21,10 @@ def test_codegen_generated_all_crud_model_schema_api_files() -> None:
         'lead_export_item',
         'lead_audit_log',
     )
+    owner_scoped_generated_routes = {
+        'lead_collection_job',
+        'lead_export_batch',
+    }
 
     for table in tables:
         assert (app_root / f'model/{table}.py').exists()
@@ -30,11 +32,13 @@ def test_codegen_generated_all_crud_model_schema_api_files() -> None:
         assert (app_root / f'crud/crud_{table}.py').exists()
         assert (app_root / f'service/{table}_service.py').exists()
         assert (app_root / f'api/v1/admin/{table}.py').exists()
-        # lead_contact 的 app/agent/open 通用 CRUD 已删（统一线索池 slice3b·福仔决策）：公共池行无按行归属，
-        # 用户/Agent 线索面走 /leads(funnel_service)+lead_ref，仅保留 admin 运维 CRUD；其余表保持四 scope。
+        # 用户与 Agent 业务面已收口到 growth.py；仅仍具 owner 隔离语义的后台任务/导出批次
+        # 保留生成路由，其余采集流水表禁止重新暴露通用写面。
+        for scope in ('app', 'agent'):
+            route = app_root / f'api/v1/{scope}/{table}.py'
+            assert route.exists() is (table in owner_scoped_generated_routes)
+        # 匿名只读历史面仍保留；公共线索池本体 lead_contact 不公开通用详情路由。
         if table != 'lead_contact':
-            assert (app_root / f'api/v1/app/{table}.py').exists()
-            assert (app_root / f'api/v1/agent/{table}.py').exists()
             assert (app_root / f'api/v1/open/{table}.py').exists()
     # lead_contact 三 scope 文件确已删除（防回归再生成）
     for scope in ('app', 'agent', 'open'):
@@ -146,6 +150,20 @@ def test_m2_new_models_map_to_hasn_growth_schema() -> None:
         assert model.__table__.schema == 'hasn_growth', model.__name__
 
 
+def test_s5_profile_tables_use_codegen_artifacts_without_generic_routes() -> None:
+    """画像历史与建议表由 codegen 生成，业务读写只走 Owner/Agent 专用契约。"""
+    app_root = ROOT / 'backend/app/hasn_growth'
+    for table in ('growth_profile_version', 'growth_profile_suggestion'):
+        assert (app_root / f'model/{table}.py').exists()
+        assert (app_root / f'schema/{table}.py').exists()
+        assert (app_root / f'crud/crud_{table}.py').exists()
+        assert (app_root / f'service/{table}_service.py').exists()
+        source = (app_root / f'model/{table}.py').read_text(encoding='utf-8')
+        assert 'HasnGrowthAppBase' in source
+        for scope in ('admin', 'app', 'agent', 'open'):
+            assert not (app_root / f'api/v1/{scope}/{table}.py').exists()
+
+
 def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
     sql = (ROOT / 'backend/sql/hasn_growth/002_create_growth_tables.sql').read_text(encoding='utf-8')
     for table in _GROWTH_TABLES:
@@ -161,23 +179,36 @@ def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
     assert 'pending_approval:待审批:orange' in sql
 
 
-def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
-    """7 张新业务表管理端 CRUD 挂 canonical /api/v1/growth/*；旧 lead-automation 薄转发已 M8 退役。"""
+def test_sensitive_admin_codegen_crud_is_not_mounted() -> None:
+    """高风险生成 CRUD 只保留 codegen 产物，不挂路由绕过脱敏、主体隔离和专用审计。"""
     import backend.app.hasn_growth.api.router as growth_router_mod
 
     from backend.app.hasn_growth.api.router import v1
 
     v1_paths = {getattr(r, 'path', '') for r in v1.routes}
-    assert any(p == '/api/v1/growth/customers' for p in v1_paths)
     assert any(p == '/api/v1/growth/opportunitys' for p in v1_paths)
-    assert any(p == '/api/v1/growth/optout-records' for p in v1_paths)
+    assert any(p == '/api/v1/growth/playbooks' for p in v1_paths)
+    sensitive_prefixes = (
+        '/api/v1/growth/lead/raw/records',
+        '/api/v1/growth/lead/contacts',
+        '/api/v1/growth/lead/contact/sources',
+        '/api/v1/growth/lead/rejected/records',
+        '/api/v1/growth/lead/export/items',
+        '/api/v1/growth/lead/audit/logs',
+        '/api/v1/growth/customers',
+        '/api/v1/growth/outreach-messages',
+        '/api/v1/growth/activitys',
+        '/api/v1/growth/form-submissions',
+        '/api/v1/growth/optout-records',
+    )
+    assert all(not any(path.startswith(prefix) for path in v1_paths) for prefix in sensitive_prefixes)
     # M8 退役：legacy_* 符号已删除，旧 /api/v1/lead-automation/* 转发面整体清零（双中心归一）
     assert not hasattr(growth_router_mod, 'legacy_v1')
     assert not any('lead-automation' in p for p in v1_paths)
 
 
 def test_m2_app_registration_manifest_scope_catalog() -> None:
-    """应用注册：manifest（app_id=growth，22 工具）+ 5 scope + App（manual）齐备。"""
+    """应用注册：manifest、权限 scope 与云端工具声明齐备。"""
     from backend.app.hasn_core.app_platform import AINativeAppRegistry, app_catalog_registry
     from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
     from backend.app.mcp.scopes import SCOPE_CATALOG
@@ -188,8 +219,14 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    # 22 = 19（漏斗+customer_reassign+lead_request）+ lookup/search/enrich_company（GROWTH-QCC-4 企业数据读穿中台）
-    assert len(caps) == 22
+    # 31 = S5 的 27 工具 + S6 项目线索 ingest/list + S8 触达 draft/submit。
+    assert len(caps) == 31
+    assert {
+        'hasn.growth.lead.ingest',
+        'hasn.growth.lead.list',
+        'hasn.growth.outreach.draft',
+        'hasn.growth.outreach.submit',
+    }.issubset({cap['mcp_name'] for cap in caps})
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表
     for c in caps:
@@ -251,12 +288,12 @@ def test_business_api_and_tasks_are_registered_beside_codegen_crud() -> None:
     assert 'run_job(db, job_id, user_id=request.user.id)' in app_business
     assert 'user_id=obj.user_id' not in app_business
     assert 'user_id: int | None = None' not in app_business
-    assert "get('/admin/audit-logs'" in admin_business
-    assert "delete(\n    '/admin/contacts/by-email'" in admin_business
-    assert "delete(\n    '/admin/contacts/by-phone'" in admin_business
-    assert "post('/admin/archive-expired'" in admin_business
-    assert "post(\n    '/admin/source-configs/blacklist'" in admin_business
-    assert "post(\n    '/admin/contacts/{contact_id}/extend-retention'" in admin_business
+    assert "'/admin/audit-logs'" in admin_business
+    assert "'/admin/contacts/by-email'" in admin_business
+    assert "'/admin/contacts/by-phone'" in admin_business
+    assert "'/admin/archive-expired'" in admin_business
+    assert "'/admin/source-configs/blacklist'" in admin_business
+    assert "'/admin/contacts/{contact_id}/extend-retention'" in admin_business
     assert "get('/status'" in agent_business
     assert "get('/healthz'" in open_business
     assert 'def lead_automation_run_job' in task_source
@@ -269,7 +306,7 @@ def test_business_api_and_tasks_are_registered_beside_codegen_crud() -> None:
 def test_business_service_covers_compliance_side_effects() -> None:
     business_source = (ROOT / 'backend/app/hasn_growth/service/business_service.py').read_text(encoding='utf-8')
 
-    assert "event_type='pii_read'" in business_source
+    assert 'mask_contact_fields(row, reveal=False)' in business_source
     assert "event_type='config_change'" in business_source
     assert 'async def update_blacklist' in business_source
     assert 'async def extend_retention' in business_source
@@ -297,10 +334,16 @@ def test_codegen_templates_keep_generated_output_importable() -> None:
 
 def test_generated_frontend_api_paths_match_registered_backend_prefixes() -> None:
     # M1 收编：管理端前端 api 前缀切到 canonical /api/v1/growth/*
-    # 仅当前端仓与后端仓同级（主 clone 布局）时跑；worktree 下前端不在 ROOT.parent 同级 → skip
-    frontend_api_root = ROOT.parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
-    if not frontend_api_root.exists():
-        pytest.skip('前端仓不在 ROOT.parent 同级（worktree 布局），跳过跨仓前缀一致性校验')
+    # 兼容主 clone 与 `.worktrees/<任务>` 两种布局，找不到真实前端仓必须失败。
+    frontend_api_root = next(
+        (
+            parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
+            for parent in (ROOT, *ROOT.parents)
+            if (parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation').is_dir()
+        ),
+        None,
+    )
+    assert frontend_api_root is not None, '未找到真实 huanxing-cloud-frontend 仓，无法校验跨仓 API 前缀'
     for path in frontend_api_root.glob('*.ts'):
         text = path.read_text(encoding='utf-8')
         assert '/api/v1/lead_automation/' not in text

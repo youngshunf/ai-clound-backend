@@ -21,7 +21,7 @@ from backend.app.mcp.tools.plan import _SPECS, _h_delete_milestone, _h_update_mi
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _owner() -> str:

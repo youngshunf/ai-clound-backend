@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,7 @@ class CRUDHasnSkillBundle(CRUDPlus[HasnSkillBundle]):
         :param pk: Skill Bundle 定义表（多个 skill 的组合） ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return cast(HasnSkillBundle | None, await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取Skill Bundle 定义表（多个 skill 的组合）列表查询表达式"""
@@ -30,9 +31,9 @@ class CRUDHasnSkillBundle(CRUDPlus[HasnSkillBundle]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return cast(Sequence[HasnSkillBundle], await self.select_models(db))
 
-    async def create(self, db: AsyncSession, obj: CreateHasnSkillBundleParam) -> None:
+    async def create(self, db: AsyncSession, obj: CreateHasnSkillBundleParam) -> HasnSkillBundle:
         """
         创建Skill Bundle 定义表（多个 skill 的组合）
 
@@ -40,7 +41,7 @@ class CRUDHasnSkillBundle(CRUDPlus[HasnSkillBundle]):
         :param obj: 创建Skill Bundle 定义表（多个 skill 的组合）参数
         :return:
         """
-        await self.create_model(db, obj)
+        return await self.create_model(db, obj, flush=True)
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateHasnSkillBundleParam) -> int:
         """

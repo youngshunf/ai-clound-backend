@@ -4,7 +4,7 @@
 - App 形态（local_tool / 非自动挂载 manual / 原生 webui 路由 ``/apps/copilot`` / ui_kind=None）。
 - 会议副驾 **无 Agent 工具、无 AI-Native tool manifest、无 scope**（走工作会话派发，同 knowledge/community）。
 - 真实 PG：``ensure_catalog_seeded`` 播种 copilot 行（local_tool/builtin/free/manual/sort 60，status=published
-  → 工作台应用网格才出现「会议副驾」入口）；AppCollab default_agent_type=meeting_copilot（打开默认承接会议副驾分身）。
+  → 工作台应用网格才出现「会议副驾」入口）；AppCollab default_agent_type=assistant（打开默认承接全能助理）。
 
 事实源: docs/hasn-node设计文档/桌面端潜行会议副驾/实施/01-分阶段实施计划与施工清单.md（P2/P6）。
 """
@@ -100,6 +100,6 @@ async def test_copilot_seeded_into_catalog(db: AsyncSession) -> None:
     assert row.entry_route == '/apps/copilot'
     assert 'personal' in (row.scope or [])
     assert row.manifest_present is True
-    # AppCollab（doc21 §4.3）：打开会议副驾默认承接「会议副驾」分身（builtin_key=meeting_copilot）。
-    assert row.default_agent_type == 'meeting_copilot'
+    # 2026-07-12 内置分身收敛后，会议副驾默认由全能助理承接；专用会议副驾仅保留为可选模板。
+    assert row.default_agent_type == 'assistant'
     assert row.work_session_system_prompt

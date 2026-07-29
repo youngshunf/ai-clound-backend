@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, Template
 from pydantic.alias_generators import to_pascal
@@ -174,7 +175,7 @@ class GenTemplate:
         processed_models = GenTemplate._rename_reserved_fields(models)
         scopes = GenTemplate._parse_scopes(business)
 
-        vars_dict = {
+        vars_dict: dict[str, Any] = {
             'app_name': business.app_name,
             'table_name': business.table_name,
             'doc_comment': business.doc_comment,

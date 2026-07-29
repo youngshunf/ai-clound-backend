@@ -254,7 +254,6 @@ SERVICE_CASES = (
 GENERATED_API_MODULES = (
     'backend.app.hasn.api.v1.admin.hasn_agent_capabilities',
     'backend.app.hasn.api.v1.admin.hasn_agent_runtime_reports',
-    'backend.app.hasn.api.v1.admin.hasn_agents',
     'backend.app.hasn.api.v1.admin.hasn_audit_log',
     'backend.app.hasn.api.v1.admin.hasn_channel_bindings',
     'backend.app.hasn.api.v1.admin.hasn_clients',
@@ -284,31 +283,11 @@ GENERATED_API_MODULES = (
     'backend.app.hasn.api.v1.open.hasn_notifications',
     'backend.app.hasn.api.v1.open.hasn_trade_sessions',
     'backend.app.hasn.api.v1.open.hasn_unread_counts',
-    'backend.app.hasn.api.v1.agent.hasn_agent_capabilities',
-    'backend.app.hasn.api.v1.agent.hasn_agents',
-    'backend.app.hasn.api.v1.agent.hasn_audit_log',
-    'backend.app.hasn.api.v1.agent.hasn_contacts',
-    'backend.app.hasn.api.v1.agent.hasn_conversations',
-    'backend.app.hasn.api.v1.agent.hasn_group_members',
-    'backend.app.hasn.api.v1.agent.hasn_humans',
-    'backend.app.hasn.api.v1.agent.hasn_messages',
-    'backend.app.hasn.api.v1.agent.hasn_node_bindings',
     'backend.app.hasn.api.v1.agent.hasn_nodes',
-    'backend.app.hasn.api.v1.agent.hasn_notifications',
     'backend.app.hasn.api.v1.agent.hasn_owner_api_keys',
-    'backend.app.hasn.api.v1.agent.hasn_trade_sessions',
-    'backend.app.hasn.api.v1.agent.hasn_unread_counts',
-    'backend.app.hasn.api.v1.app.hasn_agent_capabilities',
-    'backend.app.hasn.api.v1.app.hasn_audit_log',
-    'backend.app.hasn.api.v1.app.hasn_group_members',
     'backend.app.hasn.api.v1.app.hasn_humans',
-    'backend.app.hasn.api.v1.app.hasn_messages',
-    'backend.app.hasn.api.v1.app.hasn_node_bindings',
     'backend.app.hasn.api.v1.app.hasn_nodes',
-    'backend.app.hasn.api.v1.app.hasn_notifications',
     'backend.app.hasn.api.v1.app.hasn_owner_api_keys',
-    'backend.app.hasn.api.v1.app.hasn_trade_sessions',
-    'backend.app.hasn.api.v1.app.hasn_unread_counts',
 )
 
 
@@ -406,7 +385,7 @@ def _module_service_names(module: object) -> list[str]:
     return names
 
 
-def _endpoint_kwargs(endpoint: object, *, owner_user_id: int = 101) -> dict[str, object]:
+def _endpoint_kwargs(endpoint: Any, *, owner_user_id: int = 101) -> dict[str, object]:
     request = SimpleNamespace(
         user=SimpleNamespace(id=owner_user_id),
         state=SimpleNamespace(agent=SimpleNamespace(owner_user_id=owner_user_id)),
@@ -425,7 +404,7 @@ def _endpoint_kwargs(endpoint: object, *, owner_user_id: int = 101) -> dict[str,
     return values
 
 
-async def _call_standard_endpoint(endpoint: object, *, owner_user_id: int = 101) -> object:
+async def _call_standard_endpoint(endpoint: Any, *, owner_user_id: int = 101) -> object:
     return await endpoint(**_endpoint_kwargs(endpoint, owner_user_id=owner_user_id))
 
 
@@ -531,6 +510,7 @@ async def test_generated_api_endpoints_delegate_to_services(
         for name, value in vars(module).items()
         if inspect.iscoroutinefunction(value)
         and not name.startswith('toggle_')
+        and name != 'agent_report_agent_heartbeat'
         and {'db'} <= set(inspect.signature(value).parameters)
     ]
     assert endpoints
@@ -547,8 +527,8 @@ async def test_generated_api_endpoints_delegate_to_services(
     'module_name',
     (
         'backend.app.hasn.api.v1.admin.hasn_agent_capabilities',
-        'backend.app.hasn.api.v1.agent.hasn_agent_capabilities',
-        'backend.app.hasn.api.v1.app.hasn_agent_capabilities',
+        'backend.app.hasn.api.v1.agent.hasn_nodes',
+        'backend.app.hasn.api.v1.app.hasn_humans',
     ),
 )
 @pytest.mark.asyncio
@@ -582,8 +562,10 @@ async def test_generated_api_update_and_delete_fail_when_service_changes_no_rows
 @pytest.mark.parametrize(
     'module_name',
     (
-        'backend.app.hasn.api.v1.agent.hasn_agent_capabilities',
-        'backend.app.hasn.api.v1.app.hasn_agent_capabilities',
+        'backend.app.hasn.api.v1.agent.hasn_nodes',
+        'backend.app.hasn.api.v1.app.hasn_humans',
+        'backend.app.hasn.api.v1.app.hasn_nodes',
+        'backend.app.hasn.api.v1.app.hasn_owner_api_keys',
     ),
 )
 @pytest.mark.asyncio

@@ -14,11 +14,9 @@ from backend.app.huanxing.api.v1.admin.analytics import router as admin_analytic
 # --- open/ 公开（无需认证）---
 # --- agent/ Agent端（X-Agent-Key）---
 from backend.app.huanxing.api.v1.agent.file import router as agent_file_router
-from backend.app.huanxing.api.v1.agent.website import router as agent_website_router
 
 # --- user/ 用户级（Owner Key 认证）---
 from backend.app.huanxing.api.v1.user.file import router as user_file_router
-from backend.app.huanxing.api.v1.user.website import router as user_website_router
 from backend.core.conf import settings
 
 # ========================================
@@ -50,7 +48,6 @@ open_api = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/huanxing/open', tag
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/huanxing/agent', tags=['唤星Agent'])
 
 agent.include_router(agent_file_router, prefix='/files', tags=['唤星Agent-文件'])
-agent.include_router(agent_website_router, prefix='/website', tags=['唤星Agent-网站部署'])
 
 # ========================================
 # 用户级 API（Owner Key 认证，SDK / 桌面端 / Agent 统一入口）
@@ -59,4 +56,3 @@ agent.include_router(agent_website_router, prefix='/website', tags=['唤星Agent
 user_api = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/huanxing/user', tags=['唤星用户级API'])
 
 user_api.include_router(user_file_router, prefix='/files', tags=['唤星用户级-文件'])
-user_api.include_router(user_website_router, prefix='/website', tags=['唤星用户级-网站部署'])

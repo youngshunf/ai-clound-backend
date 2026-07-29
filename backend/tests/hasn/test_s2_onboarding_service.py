@@ -36,7 +36,7 @@ class FakeRedis:
     async def ttl(self, key: str) -> int:
         return self.ttls.get(key, 0)
 
-    async def setex(self, key: str, seconds: int, value: str) -> None:
+    async def setex(self, key: str, seconds: int, value: str | bytes) -> None:
         self.values[key] = value
         self.ttls[key] = seconds
 
@@ -134,7 +134,7 @@ async def test_phone_verify_creates_platform_user_and_issues_bearer_token(monkey
     redis = FakeRedis()
     await redis.setex(f'{SMS_CODE_PREFIX}:13800138000', 1800, b'654321')
     users = FakeUserGateway()
-    db = FakeDb()
+    db: Any = FakeDb()
     captured_token_kwargs: dict[str, Any] = {}
 
     async def fake_token_creator(user_id: int, *, multi_login: bool, **kwargs: Any) -> SimpleNamespace:
@@ -178,7 +178,7 @@ async def test_phone_verify_returns_agent_tokens_when_owner_has_active_agents(
     redis = FakeRedis()
     await redis.setex(f'{SMS_CODE_PREFIX}:13800138000', 1800, b'654321')
     users = FakeUserGateway()
-    db = FakeDb()
+    db: Any = FakeDb()
 
     async def fake_token_creator(user_id: int, *, multi_login: bool, **kwargs: Any) -> SimpleNamespace:
         return SimpleNamespace(access_token='jwt-token', session_uuid='session-phone-verify')
@@ -217,7 +217,7 @@ async def test_phone_verify_returns_agent_tokens_when_owner_has_active_agents(
     assert [item.agent_hasn_id for item in response.agent_tokens] == ['a_1', 'a_2']
     assert response.agent_tokens[0].agent_name == '一号 Agent'
     assert response.agent_tokens[0].access_token == 'agent-token:a_1'
-    assert response.agent_tokens[0].scopes == ['message.read', 'knowledge.read']
+    assert response.agent_tokens[0].scopes == []
     assert response.agent_tokens[0].expire_time == '2026-05-18T00:00:00+00:00'
     assert response.agent_tokens[0].expires_at_unix == 1779062400
     assert response.agent_tokens[1].agent_name == 'agent_two'
@@ -281,7 +281,8 @@ async def test_onboarding_ensure_closes_old_user_default_agent_and_pending_inten
         pending_intent_id='pi_resume_1',
     )
 
-    response = await service.ensure(db=None, user_id=7, request=request)
+    test_db: Any = None
+    response = await service.ensure(db=test_db, user_id=7, request=request)
 
     assert response.human.owner_id == 'h_owner_1'
     assert response.owner_binding.node_id == 'n_device_1'
@@ -289,7 +290,7 @@ async def test_onboarding_ensure_closes_old_user_default_agent_and_pending_inten
     assert response.default_agent.hasn_id == 'a_default_1'
     assert response.default_agent.display_name == DEFAULT_AGENT_DISPLAY_NAME
     assert response.default_agent.access_token == 'agent-token:a_default_1'
-    assert response.default_agent.scopes == ['message.read', 'knowledge.read']
+    assert response.default_agent.scopes == []
     # 沙箱已退役（CLEAN-3·hasn_tenant_sandboxes 恒 None），字段仅兼容 daemon 保留。
     assert response.sandbox is None
     # B2②：bootstrap 游标必须是 gateway 给出的权威 feed 真实 head（42），不再硬编码 0。
@@ -317,10 +318,16 @@ async def test_llm_credential_issuer_never_sends_global_default_model(monkeypatc
     monkeypatch.setattr(
         llm_newapi_user_mapping_service, 'ensure_newapi_user', _fake_ensure_newapi_user
     )
+    monkeypatch.setattr(
+        onboarding_service_module.settings,
+        'LLM_API_BASE_URL',
+        'https://llm.example/v1',
+    )
 
     user = FakeUser(id=42, username='13800000000', nickname='测试主人', phone='13800000000')
-    token, base_url, model = await SqlAlchemyLlmCredentialIssuer().issue(db=None, user=user)
+    test_db: Any = None
+    token, base_url, model = await SqlAlchemyLlmCredentialIssuer().issue(db=test_db, user=user)
 
     assert token == 'sk-tok_xyz'
-    assert base_url  # per-owner base_url 仍下发
+    assert base_url == 'https://llm.example/v1'  # per-owner base_url 仍下发
     assert model is None  # 关键断言：主模型留空，平台默认当权威

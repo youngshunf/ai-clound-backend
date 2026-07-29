@@ -5,6 +5,7 @@ create_workflow 一次声明整图：{name, goal, nodes:[...], edges:[...], sche
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -63,6 +64,11 @@ class CreateWorkflowParam(SchemaBase):
     continuation_enabled: bool = Field(False, description='跨 fire 接续（二期）')
     source: str = Field('owner', description='来源 owner/agent')
     created_by_kind: str = Field('owner', description='创建者类别 owner/agent/builtin')
+    template_key: str | None = Field(None, description='场景实例化来源模板键；裸工程图为空')
+    project_id: UUID | None = Field(None, description='所属平台项目；场景实例化必须为有效 UUID')
+    instantiation_idempotency_key: str | None = Field(
+        None, min_length=1, max_length=128, description='Owner 场景实例化幂等键；重放返回同一工作流'
+    )
     status: str | None = Field(None, description='状态（缺省 active；agent 建定时图服务端置 pending_approval）')
     nodes: list[WorkflowNodeSpec] = Field(description='节点列表')
     edges: list[WorkflowEdgeSpec] = Field(default_factory=list, description='依赖边列表')

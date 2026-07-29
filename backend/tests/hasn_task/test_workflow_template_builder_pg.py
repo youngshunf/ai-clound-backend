@@ -39,6 +39,7 @@ AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encodin
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
 NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
 ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
+WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 TEMPLATE_SQL = (_SQL_DIR / '2026-07-14-workflow-template.sql').read_text(encoding='utf-8')
 
 
@@ -71,6 +72,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(WORKFLOW_SQL)
     await _run_sql(NODE_TABLES_SQL)
     await _run_sql(ADVANCE_MODE_SQL)
+    await _run_sql(WORKFLOW_HISTORY_SQL)
     await _run_sql(TEMPLATE_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()

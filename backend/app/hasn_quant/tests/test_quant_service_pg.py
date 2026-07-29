@@ -19,6 +19,7 @@ import subprocess
 import time
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -144,7 +145,8 @@ async def session():
         await engine.dispose()
 
 
-async def _poll_until_terminal(session, *, owner_hasn_id: str, backtest_id: int, timeout: float = 90.0) -> dict:
+async def _poll_until_terminal(session, *, owner_hasn_id: str, backtest_id: int, timeout: float = 180.0) -> dict:
+    """等待真实引擎终态；首次加载 arm64 原生回测扩展可能需要超过 90 秒。"""
     deadline = time.time() + timeout
     last: dict = {}
     while time.time() < deadline:
@@ -265,7 +267,7 @@ async def test_save_strategy_validation(engine_service, session) -> None:
 
 from types import SimpleNamespace  # noqa: E402
 
-from backend.app.hasn.model.hasn_humans import HasnHumans  # noqa: E402
+from backend.app.hasn_core import HasnHumans  # noqa: E402
 from backend.app.hasn_quant.api.v1.app import quant as owner_api  # noqa: E402
 from backend.app.hasn_quant.schema.owner import SaveStrategyParam, SubmitBacktestParam  # noqa: E402
 
@@ -273,7 +275,7 @@ _OWNER_USER_ID = 990_271  # 测试专用，session 回滚不留痕
 _OWNER_HASN = 'h_test_quant_api'
 
 
-async def _seed_owner(session) -> SimpleNamespace:
+async def _seed_owner(session) -> Any:
     """种一行 hasn_humans 映射 user_id→hasn_id，并返回带 .user.id 的 stub Request。"""
     # star_id 走唯一索引（存量行多为空串）→ 给唯一非空值避撞；session 回滚不留痕。
     session.add(
@@ -283,7 +285,8 @@ async def _seed_owner(session) -> SimpleNamespace:
     return SimpleNamespace(user=SimpleNamespace(id=_OWNER_USER_ID))
 
 
-async def _poll_owner_until_terminal(req, session, *, backtest_id: int, timeout: float = 90.0) -> dict:
+async def _poll_owner_until_terminal(req, session, *, backtest_id: int, timeout: float = 180.0) -> dict:
+    """经 Owner API 等待真实引擎终态，容纳首次原生扩展冷启动。"""
     deadline = time.time() + timeout
     last: dict = {}
     while time.time() < deadline:
@@ -345,6 +348,6 @@ async def test_owner_api_inline_backtest(engine_service, session) -> None:
 
 async def test_owner_api_requires_hasn_identity(session) -> None:
     """无 hasn_humans 映射的账号访问 read-API → ForbiddenError（行级隔离前提，不放行）。"""
-    req = SimpleNamespace(user=SimpleNamespace(id=424_242))  # 未种映射
+    req: Any = SimpleNamespace(user=SimpleNamespace(id=424_242))  # 未种映射
     with pytest.raises(errors.ForbiddenError):
         await owner_api.list_strategies(req, session)

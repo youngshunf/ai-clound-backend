@@ -42,6 +42,7 @@ AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encodin
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
 NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
 ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
+WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 TEMPLATE_SQL = (_SQL_DIR / '2026-07-14-workflow-template.sql').read_text(encoding='utf-8')
 
 
@@ -76,6 +77,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(WORKFLOW_SQL)
     await _run_sql(NODE_TABLES_SQL)
     await _run_sql(ADVANCE_MODE_SQL)
+    await _run_sql(WORKFLOW_HISTORY_SQL)
     await _run_sql(TEMPLATE_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
@@ -245,6 +247,7 @@ async def test_sync_idempotent_and_updates_derived(env: SimpleNamespace, tmp_pat
     assert cnt.scalar_one() == 1
 
     row = await hasn_workflow_template_dao.get_by_key(env.session, key)
+    assert row is not None
     await env.session.refresh(row)
     assert row.name == '金融投研（升级）'  # 派生字段被覆盖
     assert row.sort_order == 5
@@ -283,6 +286,7 @@ async def test_sync_does_not_overwrite_owner_row(env: SimpleNamespace, tmp_path:
     assert results['inserted'] == 0 and results['updated'] == 0
 
     row = await hasn_workflow_template_dao.get_by_key(env.session, key)
+    assert row is not None
     await env.session.refresh(row)
     assert row.owner_id == owner  # 归属未被抹掉
     assert row.name == '用户自建模板'  # 内容未被内置声明覆盖

@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model import HasnAgents, HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn.schema.hasn_sync import ClientEvent
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog
@@ -124,6 +124,9 @@ async def reconcile_builtin_agents(db: AsyncSession, owner_id: str, node_id: str
     created: list[str] = []
     for tpl in templates:
         key = tpl.builtin_key
+        if not key:
+            log.warning('reconcile_builtin_agents: skip template without builtin_key template_id={}', tpl.template_id)
+            continue
         if key == PRIMARY_BUILTIN_KEY:
             continue  # 主脑由 ensure_default_agent 负责
         if key in existing_keys:

@@ -41,17 +41,17 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.hasn_task.model import HasnWorkflowNodeRun, HasnWorkflowRun
+from backend.app.hasn_task.model import HasnWorkflow, HasnWorkflowNodeRun, HasnWorkflowRun
+from backend.app.hasn_task.schema.workflow_sync import WorkflowRunUpstream
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from backend.app.hasn_task.schema.workflow_sync import (
+        WorkflowNodeRunUpstream,
         WorkflowNodeRunsSyncRequest,
         WorkflowNodeRunsSyncResponse,
-        WorkflowNodeRunUpstream,
-        WorkflowRunUpstream,
     )
 
 # 云端 chk_workflow_run_status 允许集
@@ -76,7 +76,7 @@ _NODE_STATUS_ALIAS = {'success': 'done', 'error': 'failed', 'pending_review': 'r
 _ADVANCE_MODES = frozenset({'manual', 'auto'})
 
 
-def _as_datetime(value: datetime | int | float | str | None) -> datetime | None:
+def _as_datetime(value: datetime | float | str | None) -> datetime | None:
     """`int`(Unix 秒) / ISO 串 / `datetime` → aware datetime；认不出的当没给（`None`）。
 
     **别指望 Pydantic 替你转**：入参声明是 `datetime | int | float | str | None` 这样的联合类型，
@@ -105,6 +105,40 @@ def normalize_node_status(status: str) -> str | None:
     return value if value in _NODE_STATUSES else None
 
 
+def build_workflow_run_upsert(*, run: WorkflowRunUpstream, owner_id: str, now: datetime) -> Any:
+    """构造执行记录 UPSERT，并保护已持久化的历史快照不被旧协议清空。"""
+    values = {
+        'workflow_run_uuid': run.workflow_run_uuid,
+        'workflow_uuid': run.workflow_uuid,
+        'owner_id': owner_id,
+        'workflow_name_snapshot': run.workflow_name_snapshot,
+        'template_key_snapshot': run.template_key_snapshot,
+        'project_id': run.project_id,
+        'dedupe_key': run.dedupe_key or run.workflow_run_uuid,
+        'status': (run.status or 'running').strip(),
+        'advance_mode': (run.advance_mode or 'manual').strip(),
+        'scheduled_fire_at': _as_datetime(run.scheduled_fire_at),
+        'graph_snapshot': run.graph_snapshot if isinstance(run.graph_snapshot, dict) else {},
+        'output_summary': run.output_summary,
+        'started_at': _as_datetime(run.started_at),
+        'finished_at': _as_datetime(run.finished_at),
+        'created_time': now,
+        'updated_time': now,
+    }
+    statement = pg_insert(HasnWorkflowRun).values(**values)
+    update_values: dict[str, Any] = {
+        key: value for key, value in values.items() if key not in ('workflow_run_uuid', 'created_time')
+    }
+    for field in ('workflow_name_snapshot', 'template_key_snapshot', 'project_id'):
+        update_values[field] = sa.func.coalesce(getattr(HasnWorkflowRun, field), getattr(statement.excluded, field))
+
+    return statement.on_conflict_do_update(
+        index_elements=[HasnWorkflowRun.workflow_run_uuid],
+        set_=update_values,
+        where=HasnWorkflowRun.owner_id == owner_id,
+    ).returning(HasnWorkflowRun.id)
+
+
 class WorkflowSyncService:
     """daemon 上推的执行态落云端权威表（幂等 UPSERT + owner 越权校验）。"""
 
@@ -125,20 +159,35 @@ class WorkflowSyncService:
         from backend.app.hasn_task.schema.workflow_sync import WorkflowNodeRunsSyncResponse
 
         rejected: list[dict[str, Any]] = []
+        deferred: list[dict[str, Any]] = []
 
         accepted_runs = 0
         for run in request.runs:
-            reason = await self._upsert_run(db, run, owner_id=owner_id)
+            reason, is_deferred = await self._upsert_run(
+                db,
+                run,
+                owner_id=owner_id,
+                sync_protocol_version=request.sync_protocol_version,
+            )
             if reason is None:
                 accepted_runs += 1
+            elif is_deferred:
+                deferred.append({'uuid': run.workflow_run_uuid, 'reason': reason})
             else:
                 rejected.append({'workflow_run_uuid': run.workflow_run_uuid, 'reason': reason})
 
         accepted_node_runs = 0
         for node_run in request.node_runs:
-            reason = await self._upsert_node_run(db, node_run, owner_id=owner_id)
+            reason, is_deferred = await self._upsert_node_run(
+                db,
+                node_run,
+                owner_id=owner_id,
+                sync_protocol_version=request.sync_protocol_version,
+            )
             if reason is None:
                 accepted_node_runs += 1
+            elif is_deferred:
+                deferred.append({'uuid': node_run.node_run_uuid, 'reason': reason})
             else:
                 rejected.append({'node_run_uuid': node_run.node_run_uuid, 'reason': reason})
 
@@ -146,61 +195,59 @@ class WorkflowSyncService:
             accepted_runs=accepted_runs,
             accepted_node_runs=accepted_node_runs,
             rejected=rejected,
+            deferred=deferred,
         )
 
     async def _upsert_run(
-        self, db: AsyncSession, run: WorkflowRunUpstream, *, owner_id: str
-    ) -> str | None:
-        """UPSERT 一条执行实例。返回 `None` = 成功，否则是拒收原因。"""
+        self,
+        db: AsyncSession,
+        run: WorkflowRunUpstream,
+        *,
+        owner_id: str,
+        sync_protocol_version: int,
+    ) -> tuple[str | None, bool]:
+        """UPSERT 一条执行实例。返回 ``(原因, 是否 deferred)``。"""
         status = (run.status or 'running').strip()
         if status not in _RUN_STATUSES:
-            return f'unknown run status: {status}'
+            return f'unknown run status: {status}', False
         advance_mode = (run.advance_mode or 'manual').strip()
         if advance_mode not in _ADVANCE_MODES:
-            return f'unknown advance_mode: {advance_mode}'
+            return f'unknown advance_mode: {advance_mode}', False
 
-        now = timezone.now()
-        values = {
-            'workflow_run_uuid': run.workflow_run_uuid,
-            'workflow_uuid': run.workflow_uuid,
-            'owner_id': owner_id,
-            'dedupe_key': run.dedupe_key or run.workflow_run_uuid,
-            'status': status,
-            'advance_mode': advance_mode,
-            'scheduled_fire_at': _as_datetime(run.scheduled_fire_at),
-            'graph_snapshot': run.graph_snapshot if isinstance(run.graph_snapshot, dict) else {},
-            'output_summary': run.output_summary,
-            'started_at': _as_datetime(run.started_at),
-            'finished_at': _as_datetime(run.finished_at),
-            'created_time': now,
-            'updated_time': now,
-        }
+        parent_owner = (
+            await db.execute(
+                sa.select(HasnWorkflow.owner_id).where(HasnWorkflow.workflow_uuid == run.workflow_uuid)
+            )
+        ).scalar_one_or_none()
+        if parent_owner is not None and parent_owner != owner_id:
+            return 'workflow belongs to another owner', False
+        if parent_owner is None and sync_protocol_version >= 2:
+            # v2 要求先把旧定义导入云端，才允许同步执行态。暂缓而非拒收，daemon 可在导入成功后
+            # 以同一稳定 UUID 重推；v1 保留早期孤儿历史回灌的兼容窗口。
+            return 'PARENT_WORKFLOW_MISSING', True
+
         # 冲突键 workflow_run_uuid = 端云稳定同步主键（本地 workflow_runs.workflow_run_id 即此值）。
         # `where` 挂 owner 相等：别人的 run 撞进来时**不改行也不报错**，RETURNING 空 → 判定越权。
         # 比「先 SELECT 再判」少一次往返，且天然无 TOCTOU。
-        stmt = (
-            pg_insert(HasnWorkflowRun)
-            .values(**values)
-            .on_conflict_do_update(
-                index_elements=[HasnWorkflowRun.workflow_run_uuid],
-                set_={k: v for k, v in values.items() if k not in ('workflow_run_uuid', 'created_time')},
-                where=HasnWorkflowRun.owner_id == owner_id,
-            )
-            .returning(HasnWorkflowRun.id)
-        )
-        return await self._execute_upsert(db, stmt, conflict_hint='workflow_run')
+        stmt = build_workflow_run_upsert(run=run, owner_id=owner_id, now=timezone.now())
+        return await self._execute_upsert(db, stmt, conflict_hint='workflow_run'), False
 
     async def _upsert_node_run(
-        self, db: AsyncSession, node_run: WorkflowNodeRunUpstream, *, owner_id: str
-    ) -> str | None:
-        """UPSERT 一条节点执行态。返回 `None` = 成功，否则是拒收原因。"""
+        self,
+        db: AsyncSession,
+        node_run: WorkflowNodeRunUpstream,
+        *,
+        owner_id: str,
+        sync_protocol_version: int,
+    ) -> tuple[str | None, bool]:
+        """UPSERT 一条节点执行态。返回 ``(原因, 是否 deferred)``。"""
         status = normalize_node_status(node_run.status)
         if status is None:
-            return f'unknown node status: {node_run.status}'
+            return f'unknown node status: {node_run.status}', False
 
         # 父 run 若已在云端且属于别人 → 拒（防止把节点行挂到别人的 run 下）。
-        # 父 run 不在（daemon 只推节点、run 还没上来）→ 放行：本表无 FK，行本身按 owner 隔离仍安全，
-        # 而 §6.2 反查是 node → run 方向，缺父行只影响那一条的可见性，不构成越权。
+        # v1 父 run 不在时仍可放行，以兼容发布前的孤儿历史；v2 则暂缓，等待父定义和父 run
+        # 先落云端，避免新数据再制造不可聚合的孤儿节点。
         parent_owner = (
             await db.execute(
                 sa.select(HasnWorkflowRun.owner_id).where(
@@ -209,7 +256,11 @@ class WorkflowSyncService:
             )
         ).scalar_one_or_none()
         if parent_owner is not None and parent_owner != owner_id:
-            return 'workflow run belongs to another owner'
+            return 'workflow run belongs to another owner', False
+        if parent_owner is None and sync_protocol_version >= 2:
+            # 新协议要求 daemon 先完成旧定义导入，再上行执行态。这里绝不能回 rejected：那会让
+            # daemon 把可恢复历史永久停推；也不能像旧协议一样接受新孤儿。
+            return 'PARENT_WORKFLOW_RUN_MISSING', True
 
         now = timezone.now()
         values = {
@@ -244,7 +295,7 @@ class WorkflowSyncService:
             )
             .returning(HasnWorkflowNodeRun.id)
         )
-        return await self._execute_upsert(db, stmt, conflict_hint='workflow_node_run')
+        return await self._execute_upsert(db, stmt, conflict_hint='workflow_node_run'), False
 
     @staticmethod
     async def _execute_upsert(db: AsyncSession, stmt: Any, *, conflict_hint: str) -> str | None:

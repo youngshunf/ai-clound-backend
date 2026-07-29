@@ -71,7 +71,8 @@ def _normalize_reference_cards(
             raise errors.RequestError(msg=f'非法引用卡片类型：{card_type}')
         if not resource_id or not isinstance(resource_id, str):
             raise errors.RequestError(msg='引用卡片缺少 id')
-        metadata = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
+        raw_metadata = item.get('metadata')
+        metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
         uri = _build_reference_uri(card_type, resource_id, metadata)
         if not uri:
             raise errors.RequestError(msg=f'引用卡片缺少必要字段（{card_type} 需 metadata.agent_hasn_id）')

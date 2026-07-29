@@ -7,7 +7,7 @@ primary_action 的 `hasn://community/{posts|articles}/{id}` 进详情页。
 
 卡片正文做产品化表达：「{分身名}发布了一篇社区{帖子|文章}」+ 状态 + 是否需审核 + 内容预览。
 
-best-effort：投递失败只告警，绝不影响发帖/发文本身（发帖事务已独立提交）。
+卡片命令与帖子/文章同事务写入社区自有 outbox，提交后由公共 relay 可靠投递。
 """
 
 from __future__ import annotations
@@ -16,11 +16,22 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
-from backend.app.hasn_im.application.system_card_deliverer import deliver_system_card
-from backend.common.log import log
-from backend.database.db import async_db_session
+from backend.app.hasn_im.adapters.sqlalchemy_producer_outbox import (
+    enqueue_send_message,
+)
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.dto import (
+    ActorKind,
+    EnsureDirectConversationCommand,
+    SendMessageCommand,
+    ServicePrincipal,
+)
+from backend.app.hasn_im.ports.im_gateway import ImGateway
+from backend.app.hasn_community.service.community_im_outbox import (
+    COMMUNITY_IM_OUTBOX,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,8 +66,7 @@ async def _resolve_agent_display_name(db: AsyncSession, agent_hasn_id: str) -> s
             await db.execute(select(HasnAgents.display_name).where(HasnAgents.hasn_id == agent_hasn_id))
         ).scalar_one_or_none()
         return (value or '').strip() or None
-    except Exception as exc:
-        log.debug(f'社区卡取 Agent display_name 失败（回落入参名）：{exc!r}')
+    except Exception:
         return None
 
 
@@ -129,6 +139,7 @@ def build_community_resource_card(
 
 
 async def notify_owner_resource_card(
+    db: AsyncSession,
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
@@ -138,41 +149,55 @@ async def notify_owner_resource_card(
     status: str | None,
     preview: str,
     resource_title: str | None = None,
-) -> None:
-    """给主人投社区发布知情卡（best-effort）。用独立 db 会话，发帖事务不受影响。"""
+    gateway: ImGateway | None = None,
+) -> str | None:
+    """在社区业务事务内登记给主人发送的资源知情卡。"""
     if not agent_hasn_id or not owner_hasn_id or not resource_id:
-        return
-    try:
-        async with async_db_session() as db:
-            # 作者名取 Agent 权威 display_name（对外展示名）；查不到才回落入参名（agent.agent_name）。
-            resolved_author = await _resolve_agent_display_name(db, agent_hasn_id) or author_name
-            card = build_community_resource_card(
-                resource_type,
-                resource_id,
-                author_name=resolved_author,
-                status=status,
-                preview=preview,
-                resource_title=resource_title,
-            )
-            await deliver_system_card(
-                db,
-                recipient_id=owner_hasn_id,
-                recipient_type='human',
-                from_id=agent_hasn_id,
-                peer_type='agent',
-                relation_type='social',
-                conversation_type='agent',
-                card_body=card,
-                priority='normal',
-                msg_type='message',
-                # local_id 幂等：同一资源重复触发不二次落库/投递（resource_id 短，未超 64 上限）。
-                local_id=f'community-card-{resource_id}'[:64],
-            )
-    except Exception as exc:
-        log.warning(f'社区发布知情卡投递异常（best-effort，不影响发帖）：{exc!r}')
+        return None
+    resolved_author = await _resolve_agent_display_name(db, agent_hasn_id) or author_name
+    card = build_community_resource_card(
+        resource_type,
+        resource_id,
+        author_name=resolved_author,
+        status=status,
+        preview=preview,
+        resource_title=resource_title,
+    )
+    principal = ServicePrincipal(
+        canonical_sender=agent_hasn_id,
+        actor_kind=ActorKind.AGENT,
+    )
+    conversation = await (gateway or get_im_gateway()).ensure_direct_conversation(
+        EnsureDirectConversationCommand(
+            peer_hasn_id=owner_hasn_id,
+            relation_type='social',
+        ),
+        principal,
+    )
+    return await enqueue_send_message(
+        db,
+        table=COMMUNITY_IM_OUTBOX,
+        command=SendMessageCommand(
+            conversation_id=conversation.conversation_id,
+            content=card,
+            content_type=_CT_CARD,
+            idempotency_key=(
+                f'community:{resource_type}:{resource_id}:owner-card'
+            ),
+            msg_type='message',
+            context={
+                'producer': 'community',
+                'resource_type': resource_type,
+                'resource_id': resource_id,
+            },
+        ),
+        principal=principal,
+        causation_id=f'community:{resource_type}:{resource_id}',
+    )
 
 
 async def notify_owner_post_card(
+    db: AsyncSession,
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
@@ -180,9 +205,11 @@ async def notify_owner_post_card(
     post_id: str,
     content: str,
     status: str | None,
-) -> None:
+    gateway: ImGateway | None = None,
+) -> str | None:
     """帖子（无标题）：正文预览作为内容描述。"""
-    await notify_owner_resource_card(
+    return await notify_owner_resource_card(
+        db,
         agent_hasn_id=agent_hasn_id,
         owner_hasn_id=owner_hasn_id,
         resource_type='post',
@@ -190,10 +217,12 @@ async def notify_owner_post_card(
         author_name=author_name,
         status=status,
         preview=_preview(content, 90),
+        gateway=gateway,
     )
 
 
 async def notify_owner_article_card(
+    db: AsyncSession,
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
@@ -203,10 +232,12 @@ async def notify_owner_article_card(
     summary: str | None,
     content: str,
     status: str | None,
-) -> None:
+    gateway: ImGateway | None = None,
+) -> str | None:
     """文章：标题做内容描述（缺则回落摘要/正文预览），resource.title 保留真实标题。"""
     preview = (title or '').strip() or _preview(summary, 90) or _preview(content, 90)
-    await notify_owner_resource_card(
+    return await notify_owner_resource_card(
+        db,
         agent_hasn_id=agent_hasn_id,
         owner_hasn_id=owner_hasn_id,
         resource_type='article',
@@ -215,4 +246,5 @@ async def notify_owner_article_card(
         status=status,
         preview=preview,
         resource_title=title or None,
+        gateway=gateway,
     )

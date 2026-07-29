@@ -128,7 +128,7 @@ class GitHubAppSyncService:
         return old_commit
 
     async def _scan_templates(self) -> list[dict[str, Any]]:
-        templates = []
+        templates: list[dict[str, Any]] = []
         templates_root = Path(self.local_path) / 'templates'
         if not templates_root.exists():
             log.warning(f'Templates directory not found: {templates_root}')

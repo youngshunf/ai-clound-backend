@@ -17,6 +17,7 @@ from backend.app.hasn.service.hasn_onboarding_service import hasn_onboarding_ser
 from backend.common.security.jwt import DependsJwtAuth, create_new_token, get_token, jwt_decode
 from backend.core.conf import settings
 from backend.database.db import CurrentSessionTransaction
+from backend.database.redis import redis_client
 
 router = APIRouter()
 
@@ -76,4 +77,8 @@ async def ensure_onboarding(
     request: Request,
 ) -> OnboardingEnsureResponse:
     token_payload = jwt_decode(get_token(request))
-    return await hasn_onboarding_service.ensure(db, token_payload.id, request_body)
+    response = await hasn_onboarding_service.ensure(db, token_payload.id, request_body)
+    # phone verify 会在 Human 建立前生成 JWT 用户缓存；onboarding 补齐身份后必须失效该缓存，
+    # 让后续 sync 等只信认证上下文的入口立即拿到权威 hasn_id。
+    await redis_client.delete(f'{settings.JWT_USER_REDIS_PREFIX}:{token_payload.id}')
+    return response

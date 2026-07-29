@@ -374,9 +374,8 @@ class DesignSystemSaveTool(BaseTool):
         owner_hasn_id = _owner_hasn_id(agent_context)
         subject = Subject.agent(agent_context.agent_hasn_id, owner_hasn_id)
 
-        # design_system_service.save 内部 self-commit（区别于 plan/artifact 的「只 flush」约定），
-        # 故用**普通 session**（非 begin() 上下文管理器）——后者会被 service 的内部 commit 关闭其事务、
-        # 令随后的 bump 撞 “closed transaction” 守卫。save 自提交后 bump 在新自起事务里写、末尾显式提交。
+        # design_system_service.save 内部提交设计状态与完成卡 outbox，故使用普通 session；
+        # 随后的视图失效通知仍在新事务提交。
         async with async_db_session() as db:
             data = await design_system_service.save(
                 db,
@@ -399,13 +398,10 @@ class DesignSystemSaveTool(BaseTool):
             await _bump_designsystem_sync(db, owner_hasn_id)
             await db.commit()
 
-        # save 已落库后（写事务已提交）的两个 post-commit 副作用（best-effort、独立事务、失败只 warn，
-        # 绝不影响已落库的 save 结果）——完整对齐 deck 的 register-on-write + finalize 完成卡：
-        # ① register-on-write：把该设计系统登记进 hasn_artifacts（hasn://designsystem/{id}），带上
+        # save 已在状态事务内登记可靠完成卡命令；提交后只做既有 register-on-write：
+        # 把该设计系统登记进 hasn_artifacts（hasn://designsystem/{id}），带上
         #    work_session_id → 出现在「工作会话资源栏 / 分身产物 tab」，可点开设计系统详情查看。
-        # ② 完成卡：内容写全时，经 route_message 从分身发一张「打开设计系统」卡进主人主会话。
         registration = await self._register_designsystem_artifact_best_effort(agent_context, data)
-        await self._deliver_completion_card_best_effort(agent_context, data)
         data.pop('completion_card', None)  # 内部完成信号，不外露给调用分身
         # doc36 §3.2：返回体带 `uri`——分身存完规范当场知道怎么打开它，不必二次查询。
         return merge_resource_uri(data, registration)
@@ -434,7 +430,9 @@ class DesignSystemSaveTool(BaseTool):
                     app_id='designsystem',
                     resource_kind='designsystem.spec',
                     server_id=str(ds_id),
-                    session_id=agent_context.session_id,
+                    # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`agent_context.session_id`
+                    # 是运行时/逻辑会话语义，直传会污染工作会话列；缺省走
+                    # ContextVar 两级权威。
                     agent_hasn_id=agent_context.agent_hasn_id,
                     owner_hasn_id=_owner_hasn_id(agent_context),
                     title=(title or '').strip() or '设计系统',
@@ -443,39 +441,6 @@ class DesignSystemSaveTool(BaseTool):
         except Exception as e:  # 独立事务本身开/提交失败（接缝内部已吞登记错），仍 best-effort
             log.warning('[designsystem] register-on-write 事务失败（非致命）: %s', e)
             return None
-
-    @staticmethod
-    async def _deliver_completion_card_best_effort(agent_context: AgentContext, data: dict[str, Any]) -> None:
-        """完成卡（对齐 deck `_run_deck_post_commit`）：save 判定「必填字段齐了」时透出的完成信号
-        （`data['completion_card']`）→ 写事务**提交后**在独立会话里经 route_message 从分身发卡进主人主会话。
-
-        route_message 自管 `db.commit()`，故必须独立会话（绝不能塞进 save 的事务，否则提前结束事务）。
-        投递成功后回填 completed_notified_at（与 save 的门配套；首投失败则留空、下次完整 save 自愈补发，
-        叠加 route_message 的 local_id 幂等 → 双保只发一张、不丢卡）。best-effort：失败只 warn。
-        """
-        card = data.get('completion_card')
-        if not isinstance(card, dict):
-            return
-        ds_id = card.get('design_system_id')
-        if not isinstance(ds_id, str) or not ds_id:
-            return
-        try:
-            from backend.app.hasn.service.hasn_sessions_service import emit_designsystem_completion_card
-
-            async with async_db_session() as db:
-                await emit_designsystem_completion_card(
-                    db,
-                    owner_id=_owner_hasn_id(agent_context),
-                    agent_id=agent_context.agent_hasn_id,
-                    design_system_id=ds_id,
-                    title=str(card.get('title') or ''),
-                    summary=str(card.get('summary') or ''),
-                )
-            # 投递成功 → 回填 completed_notified_at（独立事务，幂等）。
-            async with async_db_session() as db:
-                await design_system_service.mark_completion_notified(db, int(ds_id))
-        except Exception as e:  # 完成卡 best-effort，绝不影响 save 结果
-            log.warning('[designsystem] 完成卡投递失败（非致命）: %s', e)
 
 
 class DesignSystemListTool(BaseTool):

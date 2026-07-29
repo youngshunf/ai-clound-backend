@@ -1,11 +1,12 @@
-"""演示文稿（模块 17）云端 Agent scope API 进程内 HTTP E2E。
+"""演示文稿（模块 17）云端 Agent API 进程内 HTTP E2E。
 
 走真实 HTTP 栈（ASGITransport → 路由 → DependsAgentJwtAuth → service → 真实 PG），
-覆盖：统一信封 {code,msg,data} + owner 隔离（分身 owner=agent.owner_hasn_id）+ scope 闸（deck:read/deck:write）
+覆盖：统一信封 {code,msg,data} + owner 隔离（分身 owner=agent.owner_hasn_id）+
+三态能力 deny 硬闸（deck:read/deck:write）
 + deck/page CRUD 往返。savepoint 事务隔离结束回滚不留痕（零 Mock 零 Fake：连真库不污染）。
 
 鉴权用 dependency_override 注入构造的 AgentTokenPayload（隔离掉 JWT 签名/Redis 验证这类通用 infra，
-聚焦验证 deck 端点自身的隔离/闸门/契约）；check_scopes 仍真实跑在被注入的 payload 上。
+聚焦验证 deck 端点自身的隔离/闸门/契约）；能力策略仍从真实数据库按 Agent 身份读取。
 """
 
 from collections.abc import AsyncGenerator, Generator
@@ -16,12 +17,13 @@ import pytest_asyncio
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.deck.api.router import agent as deck_agent_router
+from backend.app.hasn_deck.api.router import agent as deck_agent_router
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
@@ -31,16 +33,12 @@ from backend.utils.timezone import timezone
 # 本地开发数据库（刻意不依赖 .env，避免 worktree 落到 5432）
 ASYNC_DATABASE_URL = 'postgresql+psycopg://mac@127.0.0.1:15432/huanxing'
 
-_ALL_SCOPES = ['deck:read', 'deck:write']
-
-
-def _payload(owner_id: str, scopes: list[str]) -> AgentTokenPayload:
+def _payload(owner_id: str) -> AgentTokenPayload:
     return AgentTokenPayload(
         agent_hasn_id=f'a_{uuid4_str()}',
         agent_name='测试分身',
         owner_hasn_id=owner_id,
         owner_user_id=1,
-        scopes=scopes,
         session_uuid=uuid4_str(),
         expire_time=timezone.now() + timedelta(hours=1),
     )
@@ -54,7 +52,7 @@ async def harness() -> AsyncGenerator[tuple[AsyncClient, dict], None]:
     trans = await conn.begin()
     session = AsyncSession(bind=conn, expire_on_commit=False, join_transaction_mode='create_savepoint')
 
-    holder: dict = {'payload': None}
+    holder: dict = {'payload': None, 'db': session}
 
     def _override_db() -> Generator[AsyncSession, None, None]:
         yield session
@@ -89,7 +87,7 @@ _BASE = '/api/v1/deck/agent'
 @pytest.mark.asyncio
 async def test_envelope_and_crud_roundtrip(harness: tuple[AsyncClient, dict]) -> None:
     client, holder = harness
-    holder['payload'] = _payload(f'h_{uuid4_str()}', _ALL_SCOPES)
+    holder['payload'] = _payload(f'h_{uuid4_str()}')
 
     # 创建 → 统一信封 + data.id
     resp = await client.post(f'{_BASE}/decks', json={'title': '季度汇报', 'topic': 'Q2 复盘'})
@@ -151,12 +149,12 @@ async def test_owner_isolation(harness: tuple[AsyncClient, dict]) -> None:
     owner_b = f'h_{uuid4_str()}'
 
     # A 建一个 deck
-    holder['payload'] = _payload(owner_a, _ALL_SCOPES)
+    holder['payload'] = _payload(owner_a)
     deck_id = (await client.post(f'{_BASE}/decks', json={'title': 'A 的稿'})).json()['data']['id']
     assert (await client.get(f'{_BASE}/decks')).json()['data']['total'] == 1
 
     # 切到 B（另一主人的分身）→ 看不到 A 的 deck
-    holder['payload'] = _payload(owner_b, _ALL_SCOPES)
+    holder['payload'] = _payload(owner_b)
     assert (await client.get(f'{_BASE}/decks')).json()['data']['total'] == 0
     # 直取 A 的 deck → 404（不泄露存在性）
     assert (await client.get(f'{_BASE}/decks/{deck_id}')).status_code == 404
@@ -166,18 +164,40 @@ async def test_owner_isolation(harness: tuple[AsyncClient, dict]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_scope_gate(harness: tuple[AsyncClient, dict]) -> None:
+async def test_tristate_capability_deny_gate(harness: tuple[AsyncClient, dict]) -> None:
     client, holder = harness
     owner = f'h_{uuid4_str()}'
 
-    # 只读 scope → 写操作 403
-    holder['payload'] = _payload(owner, ['deck:read'])
+    # 写能力被主人显式 deny → 写操作 403，读能力仍放行
+    write_denied = _payload(owner)
+    await holder['db'].execute(
+        text(
+            'INSERT INTO hasn_agent_scopes '
+            '(agent_hasn_id, owner_hasn_id, default_mode, capability_modes, updated_time) '
+            "VALUES (:agent_id, :owner_id, 'allow', "
+            "CAST('{\"deck:write\":\"deny\"}' AS jsonb), now())"
+        ),
+        {'agent_id': write_denied.agent_hasn_id, 'owner_id': owner},
+    )
+    await holder['db'].flush()
+    holder['payload'] = write_denied
     assert (await client.post(f'{_BASE}/decks', json={'title': '应被拒'})).status_code == 403
+    assert (await client.get(f'{_BASE}/decks')).status_code == 200
 
-    # 空 scope → 读操作也 403
-    holder['payload'] = _payload(owner, [])
+    # 默认 deny 且无显式 read 放行 → 读操作 403
+    read_denied = _payload(owner)
+    await holder['db'].execute(
+        text(
+            'INSERT INTO hasn_agent_scopes '
+            '(agent_hasn_id, owner_hasn_id, default_mode, capability_modes, updated_time) '
+            "VALUES (:agent_id, :owner_id, 'deny', '{}'::jsonb, now())"
+        ),
+        {'agent_id': read_denied.agent_hasn_id, 'owner_id': owner},
+    )
+    await holder['db'].flush()
+    holder['payload'] = read_denied
     assert (await client.get(f'{_BASE}/decks')).status_code == 403
 
-    # 写 scope 齐 → 放行
-    holder['payload'] = _payload(owner, _ALL_SCOPES)
+    # 无策略记录按出厂默认 allow → 放行
+    holder['payload'] = _payload(owner)
     assert (await client.post(f'{_BASE}/decks', json={'title': '放行'})).status_code == 200

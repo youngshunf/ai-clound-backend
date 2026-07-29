@@ -33,6 +33,11 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
 
     opera_log_queue: Queue = Queue(maxsize=settings.OPERA_LOG_QUEUE_MAXSIZE)
 
+    @staticmethod
+    def is_request_details_suppressed(path: str) -> bool:
+        """判断请求是否包含禁止进入普通日志的敏感字段。"""
+        return any(path.startswith(prefix) for prefix in settings.OPERA_LOG_REQUEST_DETAILS_PREFIX_EXCLUDE)
+
     async def dispatch(self, request: Request, call_next: Any) -> Response:  # noqa: C901
         """
         处理请求并记录操作日志
@@ -43,18 +48,24 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         """
         path = request.url.path
         method = request.method
-        args = await self.get_request_args(request)
+        suppress_request_details = self.is_request_details_suppressed(path)
+        # 必须在读取 body 前判定；否则即使后续不入库，PII 仍会进入 args 和调试日志。
+        args = None if suppress_request_details else await self.get_request_args(request)
         code = 200
         msg = 'Success'
         status = StatusType.enable
-        elapsed = 0
+        elapsed = 0.0
 
         try:
             username = request.user.username
         except AttributeError:
             username = None
 
-        should_log_opera = path.startswith(settings.FASTAPI_API_V1_PATH) and path not in settings.OPERA_LOG_PATH_EXCLUDE
+        should_log_opera = (
+            path.startswith(settings.FASTAPI_API_V1_PATH)
+            and path not in settings.OPERA_LOG_PATH_EXCLUDE
+            and not suppress_request_details
+        )
 
         try:
             response = await call_next(request)
@@ -111,14 +122,16 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
             summary = route.summary or '' if route else ''
 
             log.debug(f'接口摘要：[{summary}]')
-            log.debug(f'请求地址：[{ctx.ip}]')
-            log.debug(f'请求参数：{args}')
+            request_ip = '[REDACTED]' if suppress_request_details else ctx.ip
+            request_args = '[REDACTED]' if suppress_request_details else args
+            log.debug(f'请求地址：[{request_ip}]')
+            log.debug(f'请求参数：{request_args}')
 
             if request.method != 'OPTIONS':
                 log.debug('<-- 请求结束')
 
             if path.startswith(settings.FASTAPI_API_V1_PATH):
-                log.info(f'{ctx.ip: <15} | {method: <8} | {code!s: <6} | {path} | {elapsed:.3f}ms')
+                log.info(f'{request_ip: <15} | {method: <8} | {code!s: <6} | {path} | {elapsed:.3f}ms')
 
             if should_log_opera and request.method != 'OPTIONS':
                 opera_log_in = CreateOperaLogParam(
@@ -161,7 +174,7 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         :param request: FastAPI 请求对象
         :return:
         """
-        args = {}
+        args: dict[str, Any] = {}
 
         # 查询参数
         query_params = dict(request.query_params)
@@ -193,7 +206,7 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         # 表单参数
         form_data = await request.form()
         if len(form_data) > 0:
-            serialized_form = {}
+            serialized_form: dict[str, Any] = {}
             for k, v in form_data.items():
                 if isinstance(v, UploadFile):
                     serialized_form[k] = {

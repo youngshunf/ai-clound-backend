@@ -45,8 +45,8 @@ async def agent_create_content_insight(
     db: CurrentSessionTransaction,
     obj: CreateContentInsightParam,
 ) -> ResponseModel:
-    result = await content_insight_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await content_insight_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

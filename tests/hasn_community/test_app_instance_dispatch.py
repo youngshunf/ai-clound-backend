@@ -3,7 +3,7 @@
 覆盖：
 - InstanceResolver.resolve 对内置工具返回 gateway_internal 句柄（endpoint=云端自身）
 - _dispatch_tool 去硬编码：经 instance_resolver + internal_handlers 注册表真实路由社区 feed（不再 `if app_id==`）
-- 去掉安装态：无 workspace_app 记录默认可用；仅企业 override status=disabled 时不可用
+- 去掉安装态：published 即可发现；商业化准入在调用面判定
 - 未知 transport → 15052；cloud_relay 尚未配置实例 → 15050（P3 落地真实签名转发）
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from backend.app.hasn.model import HasnAppInstance, HasnWorkspaceApp
+from backend.app.hasn.model import HasnAppInstance
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway as gateway
 from backend.app.hasn.service.app_instance_service import app_instance_service
@@ -28,7 +28,7 @@ from backend.app.hasn.service.instance_resolver import (
     InstanceResolutionError,
     instance_resolver,
 )
-from backend.app.llm.core.encryption import key_encryption
+from backend.common.security.encryption import key_encryption
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -41,7 +41,6 @@ def _agent_payload(owner: dict, agent_row: dict) -> AgentTokenPayload:
         agent_name=agent_row['display_name'],
         owner_hasn_id=owner['hasn_id'],
         owner_user_id=owner['user_id'],
-        scopes=['community:read', 'community:post', 'community:comment', 'community:interact'],
         session_uuid='sess-test-app-instance',
         expire_time=timezone.now() + timedelta(hours=1),
     )
@@ -106,37 +105,6 @@ async def test_internal_handler_registry_covers_knowledge_and_community(db):
     assert 'knowledge.search' in registry and callable(registry['knowledge.search'])
     for tool_id in ('community.get_feed', 'community.get_post', 'community.create_post', 'community.create_doc_node'):
         assert tool_id in registry and callable(registry[tool_id]), tool_id
-
-
-@pytest.mark.asyncio
-async def test_workspace_app_available_by_default_without_record(db):
-    """去掉安装态：个人空间无 workspace_app 记录即默认可用（published 即用，设计 11 §4.2）。"""
-    owner = await seed_human(db, nickname='零配置主人')
-    available = await gateway._is_workspace_app_available(
-        db, workspace=_personal_ws(owner), app_id='community'
-    )
-    assert available is True
-
-
-@pytest.mark.asyncio
-async def test_workspace_app_enterprise_override_disabled_blocks(db):
-    """企业 override status=disabled → 不可用；status=active / 无记录 → 可用（设计 11 §4.2/§4.3）。"""
-    ent_disabled = 990001
-    ent_active = 990002
-    db.add(HasnWorkspaceApp(workspace_kind='enterprise', enterprise_id=ent_disabled, app_id='community', status='disabled'))
-    db.add(HasnWorkspaceApp(workspace_kind='enterprise', enterprise_id=ent_active, app_id='community', status='active'))
-    await db.flush()
-
-    assert await gateway._is_workspace_app_available(
-        db, workspace={'kind': 'enterprise', 'enterprise_id': ent_disabled}, app_id='community'
-    ) is False
-    assert await gateway._is_workspace_app_available(
-        db, workspace={'kind': 'enterprise', 'enterprise_id': ent_active}, app_id='community'
-    ) is True
-    # 无记录的企业空间同样回落为可用
-    assert await gateway._is_workspace_app_available(
-        db, workspace={'kind': 'enterprise', 'enterprise_id': 990999}, app_id='community'
-    ) is True
 
 
 @pytest.mark.asyncio

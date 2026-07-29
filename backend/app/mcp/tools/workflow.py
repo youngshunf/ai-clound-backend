@@ -26,7 +26,9 @@ from typing import Any
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import get_current_work_session_id
 from backend.app.mcp.tools.base import BaseTool
+from backend.common.exception import errors
 from backend.database.db import async_db_session
 
 NAMESPACE = 'hasn.workflow'
@@ -36,6 +38,14 @@ SCOPE_RUN = 'workflow:run'
 Handler = Callable[[Any, AgentContext, dict[str, Any]], Awaitable[Any]]
 
 
+def _owner(ctx: AgentContext) -> str:
+    """获取凭证中的主人 HASN ID；无主人分身按架构不变量拒绝执行。"""
+    owner_hasn_id = ctx.owner_hasn_id
+    if not owner_hasn_id:
+        raise errors.TokenError(msg='AgentContext 缺少主人 HASN ID')
+    return owner_hasn_id
+
+
 # ── handlers（读：owner-scoped；create 用完整 AgentTokenPayload；状态信号用 owner_id）─────
 async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """建图（W2/D4）：节点缺省 agent=发起分身；定时图 → pending_approval。service 需完整凭据。"""
@@ -43,26 +53,28 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_list_agents(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.list_agents(db, owner_id=ctx.owner_hasn_id)
+    return await agent_workflow_service.list_agents(db, owner_id=_owner(ctx))
 
 
 async def _h_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.get_workflow(db, owner_id=ctx.owner_hasn_id, workflow_uuid=str(args['workflow_id']))
+    return await agent_workflow_service.get_workflow(db, owner_id=_owner(ctx), workflow_uuid=str(args['workflow_id']))
 
 
 async def _h_get_node_result(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await agent_workflow_service.get_node_result(
-        db, owner_id=ctx.owner_hasn_id, workflow_uuid=str(args['workflow_id']), node_key=str(args['node_key'])
+        db, owner_id=_owner(ctx), workflow_uuid=str(args['workflow_id']), node_key=str(args['node_key'])
     )
 
 
 async def _h_run_artifacts(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前会话（_hasn_session_id → ctx.session_id）反查所属 run。
+    # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前**工作会话**反查所属 run。会话轴分流
+    # （设计 02 §4.3）：工作会话权威取 ContextVar（两级权威已落）+ auth 绑定字段兜底——
+    # `ctx.session_id` 是运行时/逻辑会话语义，工作会话派发经 `_hasn_work_session_id` 进 ContextVar。
     run_uuid = args.get('workflow_run_uuid')
     return await agent_workflow_service.run_artifacts(
         db,
-        owner_id=ctx.owner_hasn_id,
-        session_id=ctx.session_id,
+        owner_id=_owner(ctx),
+        session_id=get_current_work_session_id() or ctx.work_session_id,
         workflow_run_uuid=str(run_uuid) if run_uuid else None,
     )
 
@@ -73,20 +85,20 @@ async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     # 结果，分身无从判断列表是否完整。要按项目筛就显式给 project_id。
     project_id = args.get('project_id')
     return await agent_workflow_service.list_workflows(
-        db, owner_id=ctx.owner_hasn_id, project_id=str(project_id) if project_id else None
+        db, owner_id=_owner(ctx), project_id=str(project_id) if project_id else None
     )
 
 
 async def _h_run(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.run(db, owner_id=ctx.owner_hasn_id, workflow_uuid=str(args['workflow_id']))
+    return await agent_workflow_service.run(db, owner_id=_owner(ctx), workflow_uuid=str(args['workflow_id']))
 
 
 async def _h_pause(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.pause(db, owner_id=ctx.owner_hasn_id, workflow_uuid=str(args['workflow_id']))
+    return await agent_workflow_service.pause(db, owner_id=_owner(ctx), workflow_uuid=str(args['workflow_id']))
 
 
 async def _h_cancel(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.cancel(db, owner_id=ctx.owner_hasn_id, workflow_uuid=str(args['workflow_id']))
+    return await agent_workflow_service.cancel(db, owner_id=_owner(ctx), workflow_uuid=str(args['workflow_id']))
 
 
 # ── schema 片段（与 manifest _WORKFLOW_CAPABILITIES 1:1）──────────────────────────
@@ -318,24 +330,24 @@ _GRAPH_SPEC_SCHEMA = {
 
 
 async def _h_tpl_draft(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await workflow_template_service.draft_template(db, owner_id=ctx.owner_hasn_id, params=args)
+    return await workflow_template_service.draft_template(db, owner_id=_owner(ctx), params=args)
 
 
 async def _h_tpl_update(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await workflow_template_service.update_template(
-        db, owner_id=ctx.owner_hasn_id, template_key=str(args['template_key']), params=args
+        db, owner_id=_owner(ctx), template_key=str(args['template_key']), params=args
     )
 
 
 async def _h_tpl_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await workflow_template_service.get_template(
-        db, owner_id=ctx.owner_hasn_id, template_key=str(args['template_key'])
+        db, owner_id=_owner(ctx), template_key=str(args['template_key'])
     )
 
 
 async def _h_tpl_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await workflow_template_service.list_templates(
-        db, owner_id=ctx.owner_hasn_id, domain=args.get('domain'), status=args.get('status')
+        db, owner_id=_owner(ctx), domain=args.get('domain'), status=args.get('status')
     )
 
 
@@ -348,7 +360,7 @@ async def _h_tpl_instantiate(db: Any, ctx: AgentContext, args: dict[str, Any]) -
 
 async def _h_tpl_publish(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await workflow_template_service.publish_template(
-        db, owner_id=ctx.owner_hasn_id, template_key=str(args['template_key'])
+        db, owner_id=_owner(ctx), template_key=str(args['template_key'])
     )
 
 

@@ -89,6 +89,7 @@ async def create_project(request: Request, db: CurrentSessionTransaction, obj: C
         pipeline_mode=obj.pipeline_mode,
         playbook_id=obj.playbook_id,
         assignee_agent_id=obj.assignee_agent_id,
+        platform_project_id=obj.platform_project_id,
     )
     return response_base.success(data=data)
 

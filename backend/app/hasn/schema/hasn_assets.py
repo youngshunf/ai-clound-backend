@@ -15,6 +15,7 @@ class HasnAssetsSchemaBase(SchemaBase):
     kind: str = Field(description='资产类型 (image:图片:blue/voice:语音:purple/file:文件:gray)')
     mime: str = Field(description='MIME 类型')
     size_bytes: int = Field(description='字节大小')
+    content_sha256: str | None = Field(None, description='资产内容 sha256；本地原件快照据此幂等上传')
     width: int | None = Field(None, description='图片宽 (px)')
     height: int | None = Field(None, description='图片高 (px)')
     duration_ms: int | None = Field(None, description='语音时长 (毫秒)')

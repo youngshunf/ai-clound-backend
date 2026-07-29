@@ -21,6 +21,8 @@ from backend.app.hasn_im.consumers.base import IntegrationEvent
 
 # send 事务落库时追加的唯一集成事件类型（aggregate_type='conversation'，aggregate_id=会话 id）
 IM_MESSAGE_COMMITTED = 'im.message.committed.v1'
+IM_MESSAGE_RECALLED = 'im.message.recalled.v1'
+IM_CONVERSATION_UPDATED = 'im.conversation.updated.v1'
 
 
 @dataclass(frozen=True)
@@ -59,3 +61,77 @@ class MessageCommittedFacts:
             local_id=p.get('local_id'),
             created_at=int(p.get('created_at') or 0),
         )
+
+
+@dataclass(frozen=True)
+class MessageRecalledFacts:
+    """一条已撤回消息的事实。"""
+
+    conversation_id: str
+    message_id: str
+    conversation_seq: int | None
+    recalled_by: str
+    recalled_at: int
+
+    @classmethod
+    def from_event(cls, event: IntegrationEvent) -> MessageRecalledFacts:
+        """从集成事件解析撤回事实。"""
+        payload = event.payload or {}
+        return cls(
+            conversation_id=str(
+                payload.get('conversation_id') or event.aggregate_id
+            ),
+            message_id=str(payload.get('message_id') or ''),
+            conversation_seq=(
+                int(payload['conversation_seq'])
+                if payload.get('conversation_seq') is not None
+                else None
+            ),
+            recalled_by=str(payload.get('recalled_by') or ''),
+            recalled_at=int(payload.get('recalled_at') or 0),
+        )
+
+    def payload(self) -> dict[str, Any]:
+        """生成 daemon 可直接应用的撤回载荷。"""
+        return {
+            'conversation_id': self.conversation_id,
+            'message_id': self.message_id,
+            'conversation_seq': self.conversation_seq,
+            'recalled_by': self.recalled_by,
+            'recalled_at': self.recalled_at,
+        }
+
+
+@dataclass(frozen=True)
+class ConversationUpdatedFacts:
+    """一条会话元数据变更事实。"""
+
+    conversation_id: str
+    revision: int
+    audience_hasn_ids: tuple[str, ...]
+
+    @classmethod
+    def from_event(
+        cls,
+        event: IntegrationEvent,
+    ) -> ConversationUpdatedFacts:
+        """从集成事件解析会话变更及变更前后冻结受众。"""
+        payload = event.payload or {}
+        return cls(
+            conversation_id=str(
+                payload.get('conversation_id') or event.aggregate_id
+            ),
+            revision=int(payload.get('revision') or 0),
+            audience_hasn_ids=tuple(
+                str(value)
+                for value in payload.get('audience_hasn_ids') or ()
+                if value
+            ),
+        )
+
+    def payload(self) -> dict[str, Any]:
+        """生成触发会话 read-through 的最小载荷。"""
+        return {
+            'conversation_id': self.conversation_id,
+            'revision': self.revision,
+        }

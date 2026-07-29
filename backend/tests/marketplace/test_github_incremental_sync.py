@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 
 from types import SimpleNamespace
+from typing import Any
 
 from backend.app.marketplace.service import github_sync_service as mod
 from backend.app.marketplace.service.github_sync_service import (
@@ -110,7 +111,7 @@ def test_common_and_bundles_change_gates() -> None:
 
 # ---------- metadata change-gate ----------
 
-def _row(**kw) -> SimpleNamespace:
+def _row(**kw) -> Any:
     base = {
         'skill_id': 'huanxing/official/a',
         'name': '社区助手',
@@ -202,6 +203,10 @@ class _FakeDB:
         return _FakeResult(self._rows)
 
 
+def _fake_db(rows: list[Any]) -> Any:
+    return _FakeDB(rows)
+
+
 def test_batch_translate_only_sends_changed_skills_to_llm(monkeypatch) -> None:
     # 库内已有 a（未变）、b（描述变了）；c 是新增（库内无）。
     existing = [
@@ -238,7 +243,7 @@ def test_batch_translate_only_sends_changed_skills_to_llm(monkeypatch) -> None:
 
     monkeypatch.setattr(mod.translation_service, 'batch_translate_skill_metadata', _recorder)
 
-    results = asyncio.run(mod.github_sync_service._batch_translate(_FakeDB(existing), skills_data))
+    results = asyncio.run(mod.github_sync_service._batch_translate(_fake_db(existing), skills_data))
 
     # 只 b、c 被送 LLM（a 未变复用缓存）；a 的结果来自现有行。
     assert len(sent) == 1
@@ -269,7 +274,7 @@ def test_batch_translate_all_cached_zero_llm(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(mod.translation_service, 'batch_translate_skill_metadata', _recorder)
-    results = asyncio.run(mod.github_sync_service._batch_translate(_FakeDB(existing), skills_data))
+    results = asyncio.run(mod.github_sync_service._batch_translate(_fake_db(existing), skills_data))
 
     assert called['n'] == 0
     assert results[0]['name_en'] == 'Community Assistant'

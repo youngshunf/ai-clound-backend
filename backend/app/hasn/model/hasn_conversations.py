@@ -8,12 +8,14 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, UniversalText
+from backend.database.schema_names import IM_SCHEMA
 
 
 class HasnConversations(Base):
     """HASN 会话表"""
 
     __tablename__ = 'hasn_conversations'
+    __table_args__ = {'schema': IM_SCHEMA}
 
     id: Mapped[UUID] = mapped_column(sa.UUID(), primary_key=True, default=uuid.uuid4, init=False, comment='会话主键 ID')
     type: Mapped[str] = mapped_column(sa.String(10), default='', comment='会话类型 (direct:单聊:blue/group:群聊:green)')

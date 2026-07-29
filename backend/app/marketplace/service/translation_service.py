@@ -19,7 +19,7 @@ class TranslationService:
     """Translation service for marketplace content"""
 
     def __init__(self) -> None:
-        self._translation_cache = {}  # Simple in-memory cache
+        self._translation_cache: dict[str, Any] = {}
         # 统一 LLM 客户端：翻译走 TRANSLATION_MODEL/FALLBACK/TIMEOUT，默认 new-api 网关。
         self._llm = LLMChatClient(
             model=getattr(settings, 'TRANSLATION_MODEL', 'gpt-4o-mini'),
@@ -82,10 +82,11 @@ class TranslationService:
 
         # Auto-detect source language if not provided
         if source_lang is None:
-            source_lang = self.detect_language(text)
-            if source_lang == 'unknown':
+            detected_language = self.detect_language(text)
+            if detected_language == 'unknown':
                 log.warning(f"Could not detect language for text: {text[:50]}...")
                 return text
+            source_lang = detected_language
 
         # Skip translation if source and target are the same
         if source_lang == target_lang:
@@ -675,7 +676,7 @@ Translation:"""
         chunk: list[dict[str, Any]],
         categories: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        normalized_inputs = [
+        normalized_inputs: list[dict[str, Any]] = [
             {
                 'name': self._clean_text(item.get('name')),
                 'description': self._clean_text(item.get('description')),

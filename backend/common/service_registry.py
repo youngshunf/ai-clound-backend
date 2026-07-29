@@ -120,6 +120,20 @@ _REGISTRY: dict[str, ServiceSpec] = {
             derive_token=True,
             default_timeout=120.0,
         ),
+        # publish：Growth 公开表单解析站点权威绑定的内部 HTTP 接缝。当前可与主云端同进程部署，
+        # 但 Growth 仍只经 provider 调用收敛接口；令牌显式配置，不允许匿名或派生回落。
+        ServiceSpec(
+            name='publish',
+            title='网页发布服务',
+            default_port=8000,
+            url_attr='PUBLISH_INTERNAL_BASE_URL',
+            token_attr='PUBLISH_INTERNAL_TOKEN',
+            timeout_attr='PUBLISH_INTERNAL_TIMEOUT',
+            health_path=None,
+            pooled=True,
+            derive_token=False,
+            default_timeout=5.0,
+        ),
         # 以下为外部/已部署服务：用各自第三方/bespoke 真实鉴权，绝不派生令牌（derive_token=False）。
         # ragflow/hermes 自有 transport（RSA / 双向 bespoke token）维持原样，目录登记仅供健康可见。
         ServiceSpec(
@@ -222,7 +236,7 @@ def _resolve_timeout(spec: ServiceSpec, overrides: dict) -> float:
     if not raw_timeout:
         return spec.default_timeout
     try:
-        return float(raw_timeout)
+        return float(str(raw_timeout))
     except (TypeError, ValueError):
         return spec.default_timeout
 

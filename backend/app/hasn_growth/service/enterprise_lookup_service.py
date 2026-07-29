@@ -2,21 +2,21 @@
 
 `hasn.growth.lookup_company / search_companies / enrich_company` 三高层工具的业务实现：
 **查公共池命中即返回（省 qcc 调用费 + 秒回）→ 未命中调通用网关 `call_system_tool(hasn.ext.qcc_*.*)`
-→ 结构化全量入池 → 返回带 `lead_contact_id`**。
+→ 结构化拆分公共事实与 Owner 私有 PII → 返回带 `lead_contact_id`**。
 
 职责边界（doc10 §10 铁律）：qcc 的**连接 / 凭据 / 代理 / 配额全归通用 MCP 网关**
 （`external_mcp_gateway.call_system_tool`，架构A：system-origin 平台 key，绕 per-agent binding，
 配额按 caller owner 归因）；本模块只做**业务层二次加工**——查池 / 结构化映射 / 入池 / 带 lead_id 返回，
 **绝不**自拼 qcc HTTP、绝不碰 qcc token（doc09 §3 v2.1）。
 
-入池复用既有统一线索池引擎（**单一实现，避免去重/脱敏漂移**）：
+入池复用统一隐私写入引擎（**单一实现，避免去重/脱敏漂移**）：
 - 池查询 → `lead_pool_query_service.query_pool`（公共池 pool_visibility=public 维度检索）；
-- 核心企业画像入池 → `lead_automation_business_service._upsert_contact`（全局去重 + 恒落公共池）；
+- 核心企业画像入池 → `lead_ingestion_privacy_service.upsert`（公共事实去重 + Owner PII 私有化）；
 - 用户引用 → `_grant_refs`（让发起 owner「拥有」入池线索，统一池众包语义）；
 - 字段归一 → `enterprise_record_to_structured`（qcc 多键 → cleaner 认得的 structured_payload）+ `clean_raw_record`。
 
-qcc 全量维度（registration 落核心列；risk/ipr/operation/executive/history 经 enrich 落 `contact.meta_data`
-JSONB 保真，dimension 级 TTL 按 `fetched_at` 判定，对齐 doc09 §4.3「全量入池」混合模型，零改表）。
+qcc 登记结果只将可共享企业事实落核心列，原始载荷只生成带密钥指纹；其他富化维度继续按
+dimension 级 TTL 读穿，但必须经过公共投影后才可进入 `contact.meta_data`。
 
 > live qcc 受基础设施门控（需平台 Bearer + 出站可达 agent.qcc.com，runbook 实施/100）；
 > 本服务的查池命中路径、结构化映射纯函数、入池写穿（经真实 stub qcc MCP server）均零 mock 可测。
@@ -24,6 +24,10 @@ JSONB 保真，dimension 级 TTL 按 `fetched_at` 判定，对齐 doc09 §4.3「
 
 from __future__ import annotations
 
+import json
+
+from datetime import timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from backend.app.external_mcp.service.gateway_service import external_mcp_gateway
@@ -35,8 +39,15 @@ from backend.app.hasn_growth.service.enterprise_info_client import (
 )
 from backend.app.hasn_growth.service.funnel_service import _lead_to_dict
 from backend.app.hasn_growth.service.industry_tagging_service import IndustryTaggingService
+from backend.app.hasn_growth.service.lead_ingestion_privacy_service import (
+    PrivateLeadWrite,
+    lead_ingestion_privacy_service,
+)
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
+from backend.common.exception import errors
 from backend.common.log import log
+from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -71,6 +82,18 @@ _ENRICH_NAMESPACE = {
 # 富化缓存默认时效（小时）：dimension 级 read-through TTL（doc09 §3.3）。命中且未过期 → 不重复调 qcc。
 _DEFAULT_ENRICH_TTL_HOURS = 24 * 7
 _SEARCH_HARD_CAP = 20
+_PUBLIC_REGISTRATION_FIELDS = frozenset({
+    'City',
+    'Industry',
+    'Name',
+    'Province',
+    'business_status',
+    'creditCode',
+    'establishDate',
+    'regNo',
+    'status',
+    'unified_social_credit_code',
+})
 
 
 def _qcc_records(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -117,10 +140,16 @@ class EnterpriseLookupService:
     async def _ingest_record(
         self, db: AsyncSession, *, record: dict[str, Any], user_id: int, keyword: str
     ) -> LeadContact | None:
-        """单条 qcc 企业记录 → 结构化 → 入公共池（复用 _upsert_contact 去重）→ 全量保真存 meta_data → 建 owner 引用。
+        """单条 qcc 企业记录拆为公共登记事实与 Owner 私有 PII，再建立 owner 引用。
 
-        返回入池/命中复用的 `LeadContact`（空壳无公司名/联系人名 → None，对齐 _upsert_contact 拒空壳）。
+        返回入池/命中复用的 `LeadContact`（公司名和联系人名均空时拒绝入池）。
         """
+        if not settings.GROWTH_PII_NEW_WRITE_ENABLED:
+            raise errors.ConflictError(
+                msg='联系人 PII 新写尚未启用',
+                data={'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED'},
+            )
+        keyring = require_growth_pii_keyring()
         structured = enterprise_record_to_structured(record)
         raw_dict: dict[str, Any] = {
             'structured_payload': structured,
@@ -128,7 +157,7 @@ class EnterpriseLookupService:
             'keyword': keyword,
             'metadata': {'qcc_source': 'registration'},
         }
-        # 经统一清洗器归一（email/phone/domain 标准化 + 评分）。company-only 也入池——_upsert_contact 只拒
+        # 经统一清洗器归一（email/phone/domain 标准化 + 评分）。company-only 也入池——这里只拒
         # 「公司名+联系人名全空」的真空壳，不靠 cleaned.accepted（accepted 的 email/phone 门是网爬线索语义，
         # 工商企业数据天然可无对外联系方式，不应据此拒入池）。
         cleaned = clean_raw_record(raw_dict, country_hint='CN')
@@ -137,15 +166,55 @@ class EnterpriseLookupService:
         )
         if code:
             cleaned.industry = code
-        _created, contact, _dim = await lead_automation_business_service._upsert_contact(
-            db, cleaned=cleaned, keyword=keyword
-        )
-        if contact is None:
+        if not ((cleaned.company_name or '').strip() or (cleaned.contact_name or '').strip()):
             return None
-        # qcc 原始结构化结果全量保真存 meta_data['qcc']（doc09 §4.3 全量入池，零改表）；JSONB 列须重赋值触发更新。
+        result = await lead_ingestion_privacy_service.upsert(
+            db,
+            keyring=keyring,
+            write=PrivateLeadWrite(
+                user_id=user_id,
+                pool_visibility='public',
+                company_name=cleaned.company_name,
+                contact_name=cleaned.contact_name,
+                email=cleaned.email,
+                phone=cleaned.phone,
+                address=cleaned.address,
+                website=cleaned.website,
+                domain=cleaned.domain,
+                country=cleaned.country,
+                region=cleaned.region,
+                city=cleaned.city,
+                industry=cleaned.industry,
+                source_type='qcc',
+                source_url=None,
+                lawful_basis='public_business_source',
+                source_ref='qcc:registration',
+                retention_until=timezone.now() + timedelta(days=365),
+                confidence_score=Decimal(str(cleaned.system_score)),
+                public_metadata={},
+            ),
+        )
+        contact = result.contact
+        # 只保留可共享登记字段名和带密钥指纹；原始法人与渠道值不得进入公共 JSONB。
         meta = dict(contact.meta_data or {})
         qcc_meta = dict(meta.get('qcc') or {})
-        qcc_meta['registration'] = record
+        qcc_meta.pop('registration', None)
+        qcc_meta['registration_fields'] = sorted(
+            str(field)
+            for field in record
+            if str(field) in _PUBLIC_REGISTRATION_FIELDS
+        )
+        serialized_record = json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+            default=str,
+        )
+        qcc_meta['registration_fingerprint'] = (
+            f'v{keyring.active_hmac_version}:'
+            f'{keyring.hmac_for("qcc_registration", serialized_record)}'
+        )
         qcc_meta['fetched_at'] = timezone.now().isoformat()
         meta['qcc'] = qcc_meta
         contact.meta_data = meta
@@ -320,9 +389,23 @@ class EnterpriseLookupService:
                 agent_hasn_id=agent_hasn_id,
                 trace_id=trace_id,
             )
+            serialized_result = json.dumps(
+                {
+                    'structured': result.get('structured'),
+                    'text': result.get('text'),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(',', ':'),
+                default=str,
+            )
             entry = {
-                'data': result.get('structured') if result.get('structured') is not None else result.get('text'),
                 'summary': _summarize(result),
+                'result_count': _enrichment_result_count(result),
+                'result_fingerprint': (
+                    f'v{require_growth_pii_keyring().active_hmac_version}:'
+                    f'{require_growth_pii_keyring().hmac_for(f"qcc_enrichment:{dim}", serialized_result)}'
+                ),
                 'source': 'qcc',
                 'tool': tool_name,
                 'fetched_at': now.isoformat(),
@@ -365,11 +448,23 @@ def _is_fresh(fetched_at: str | None, *, ttl_hours: int) -> bool:
 
 
 def _summarize(result: dict[str, Any]) -> str | None:
-    """qcc 返回的一句话摘要（便于列表展示）：取 text 前缀，无则 None（零 fake）。"""
-    text = result.get('text')
-    if isinstance(text, str) and text.strip():
-        return text.strip()[:500]
-    return None
+    """只返回派生统计摘要，绝不复制 QCC 原始文本。"""
+    count = _enrichment_result_count(result)
+    return f'已获取 {count} 条结果' if count is not None else None
+
+
+def _enrichment_result_count(result: dict[str, Any]) -> int | None:
+    """从常见结构化容器派生条目数；无法判定时不猜测。"""
+    payload = result.get('structured')
+    if isinstance(payload, list):
+        return len(payload)
+    if not isinstance(payload, dict):
+        return None
+    for key in ('data', 'items', 'records', 'result', 'results'):
+        nested = payload.get(key)
+        if isinstance(nested, list):
+            return len(nested)
+    return 1 if payload else 0
 
 
 async def _resolve_namespace_tool(namespace: str) -> str | None:

@@ -5,6 +5,8 @@
 不再是 owner 硬隔离——被共享的产物也可见 / 可编辑（按 permission）。
 """
 
+from uuid import UUID
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -108,9 +110,21 @@ async def create_deck(request: Request, db: CurrentSessionTransaction, body: Cre
 
 
 @router.get('/decks', summary='演示文稿列表（我的 ∪ 共享给我的 ∪ 企业可见）', dependencies=[DependsJwtAuth])
-async def list_decks(request: Request, db: CurrentSession, limit: int = 50, offset: int = 0) -> ResponseModel:
+async def list_decks(
+    request: Request,
+    db: CurrentSession,
+    limit: int = 50,
+    offset: int = 0,
+    platform_project_id: UUID | None = None,
+) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
-    data = await deck_service.list_accessible_decks(db, subject=Subject.human(owner_id), limit=limit, offset=offset)
+    data = await deck_service.list_accessible_decks(
+        db,
+        subject=Subject.human(owner_id),
+        limit=limit,
+        offset=offset,
+        platform_project_id=platform_project_id,
+    )
     return response_base.success(data=data)
 
 

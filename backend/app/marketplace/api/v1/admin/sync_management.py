@@ -1,16 +1,13 @@
-"""
-Marketplace Admin Sync API
-
-Admin endpoints for managing marketplace syncs.
-"""
+"""技能市场管理员同步 API。"""
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 
+from backend.app.marketplace.model import MarketplaceSyncLog
 from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
 from backend.app.marketplace.service.github_app_sync_service import github_app_sync_service
-from backend.app.marketplace.service.github_sync_service import github_sync_service
 from backend.app.marketplace.service.package_service import package_service
 from backend.app.marketplace.service.skill_translation_backfill_service import backfill_skill_translations
 from backend.common.security.rbac import DependsRBAC
@@ -20,17 +17,19 @@ router = APIRouter(dependencies=[DependsRBAC])
 
 
 class SyncRequest(BaseModel):
-    """Sync request model"""
+    """同步请求。"""
+
     force: bool = False
     skill_ids: list[str] | None = None
-    # ClawHub 同步专用（github 同步忽略）：
+    # ClawHub 同步专用：
     limit: int | None = None  # top-N 上限（None=用配置默认；0=不截断）
     min_downloads: int | None = None  # 下载量阈值：只同步 downloads 严格大于该值（None=用配置默认）
     dry_run: bool = False  # 只评估不落库：返回命中数量+占用预估
 
 
 class RetranslateRequest(BaseModel):
-    """Translation backfill request model"""
+    """翻译回填请求。"""
+
     only_missing: bool = False
     skill_ids: list[str] | None = None
     limit: int | None = None
@@ -38,17 +37,19 @@ class RetranslateRequest(BaseModel):
     concurrency: int = 4
 
 
-@router.post('/github', summary='Trigger GitHub sync')
+@router.post('/github', summary='已退役：服务器 GitHub 技能同步')
 async def trigger_github_sync(
-    db: CurrentSession,
-    request: SyncRequest
+    _db: CurrentSession,
+    _request: SyncRequest,
 ) -> dict[str, Any]:
-    """Trigger sync from GitHub repository"""
-    result = await github_sync_service.sync_from_github(
-        db=db,
-        force=request.force
+    """明确拒绝服务器克隆和打包技能的旧入口。"""
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            'GitHub 技能服务器同步已退役，请在可信 huanxing-hub 工作区运行 '
+            'scripts/publish_skills.py'
+        ),
     )
-    return result
 
 
 @router.post('/github/templates', summary='Trigger GitHub template sync')
@@ -99,18 +100,31 @@ async def trigger_retranslate(
 
 @router.get('/status', summary='Get sync status')
 async def get_sync_status(db: CurrentSession) -> dict[str, Any]:
-    """Get current sync status and statistics"""
-    # This would query the sync_log table for recent syncs
-    # For now, return a simple status
+    """返回来源链路状态和最近一次真实 ClawHub 同步日志。"""
+    result = await db.execute(
+        select(MarketplaceSyncLog)
+        .where(MarketplaceSyncLog.sync_type == 'clawhub')
+        .order_by(MarketplaceSyncLog.started_at.desc())
+        .limit(1)
+    )
+    clawhub_log = result.scalar_one_or_none()
     return {
         'github': {
-            'status': 'idle',
-            'last_sync': None
+            'status': 'retired',
+            'distribution': 'source_release',
+            'publisher': 'scripts/publish_skills.py',
         },
         'clawhub': {
-            'status': 'idle',
-            'last_sync': None
-        }
+            'status': clawhub_log.status if clawhub_log else 'never_synced',
+            'last_sync': (
+                (clawhub_log.completed_at or clawhub_log.started_at).isoformat()
+                if clawhub_log
+                else None
+            ),
+            'items_synced': clawhub_log.items_synced if clawhub_log else None,
+            'items_failed': clawhub_log.items_failed if clawhub_log else None,
+            'error_message': clawhub_log.error_message if clawhub_log else None,
+        },
     }
 
 

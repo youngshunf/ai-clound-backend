@@ -45,8 +45,8 @@ async def agent_create_hasn_sessions(
     db: CurrentSessionTransaction,
     obj: CreateHasnSessionsParam,
 ) -> ResponseModel:
-    result = await hasn_sessions_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await hasn_sessions_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

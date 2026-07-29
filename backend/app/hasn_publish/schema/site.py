@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -14,6 +15,7 @@ class SiteSchemaBase(SchemaBase):
     slug: str = Field(description='不可枚举短码（base62 ≥10 位），分享路径 /s/{slug}')
     source_app: str | None = Field(None, description='来源应用（deck 等，便于回到来源编辑，可空）')
     source_ref: str | None = Field(None, description='来源实体 id（如 deck_id，便于更新/反查，可空）')
+    platform_project_id: UUID | None = Field(None, description='挂靠的平台项目云端权威 UUID（可空）')
     current_revision_id: int | None = Field(None, description='当前对外版本指针（引用 hasn_publish.revision.id，可空）')
     status: str = Field(description='状态 (active:生效:green/revoked:已撤销:gray)')
     visibility: str = Field(description='可见性 (private:私有:gray/password:口令:orange/unlisted:不公开:blue/public:公开:green)')

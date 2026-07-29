@@ -68,7 +68,7 @@ def _patch_resolver(
 
 def test_router_exposes_get_hasn_id_path(test_app: FastAPI) -> None:
     paths_methods = {
-        (route.path, tuple(sorted(route.methods)))
+        (getattr(route, 'path'), tuple(sorted(getattr(route, 'methods'))))
         for route in test_app.routes
         if hasattr(route, 'methods') and getattr(route, 'methods', None)
     }

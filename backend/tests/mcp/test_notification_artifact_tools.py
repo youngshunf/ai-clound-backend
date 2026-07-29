@@ -68,12 +68,12 @@ def test_tools_are_cloud_platform() -> None:
     notif = NOTIFICATION_TOOLS[0]
     assert notif.source == 'platform'
     assert notif.namespace == 'hasn.notifications'
-    assert notif.execution_location == 'cloud'
+    assert getattr(notif, 'execution_location') == 'cloud'
 
     art = ARTIFACT_TOOLS[0]
     assert art.source == 'platform'
     assert art.namespace == 'hasn.artifact'
-    assert art.execution_location == 'cloud'
+    assert getattr(art, 'execution_location') == 'cloud'
 
 
 def test_tools_declare_no_capability_scope() -> None:
@@ -109,7 +109,7 @@ def test_artifact_kind_enum_is_six_and_source_kind_not_agent_settable() -> None:
     assert 'source_kind' not in props, 'source_kind 应由工具钉死为 agent_note，不接受分身传入'
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_notification_emit_rejects_missing_required() -> None:
     """缺必填（app_id）→ RuntimeError（校验在打 DB 前，无需活体库）。"""
     with pytest.raises(RuntimeError, match='app_id'):
@@ -118,14 +118,14 @@ async def test_notification_emit_rejects_missing_required() -> None:
         )
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_artifact_record_rejects_missing_kind() -> None:
     """缺 kind → RuntimeError（校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='kind'):
         await ArtifactRecordTool().execute(_agent_ctx('h_x'), {'body': 'x'})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_artifact_record_requires_one_body_asset_resource() -> None:
     """kind 有但 body/asset_id/resource_uri 全缺 → RuntimeError（三选一，校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='body'):
@@ -133,7 +133,7 @@ async def test_artifact_record_requires_one_body_asset_resource() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_artifact_record_text_roundtrip_real_db() -> None:
     """真实 PG：record 文本产物（kind=document + body + origin_ref）→ 落库可查、绑上工作会话；测试后清理。"""
     if not await _db_reachable():
@@ -141,14 +141,20 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
 
     from sqlalchemy import delete, select
 
-    from backend.app.hasn.model import HasnArtifacts
+    from backend.app.hasn.model import (
+        HasnArtifactContributions,
+        HasnArtifactRegistrationOutbox,
+        HasnArtifacts,
+    )
     from backend.database.db import async_db_session
 
     owner = f'h_artifact_tool_{uuid.uuid4().hex[:16]}'
     ctx = _agent_ctx(owner)
-    # 工作会话派发态：server.call_tool 剥 `_hasn_session_id` 后落在这里（分身不可伪造）。
+    # 工作会话派发态（设计 02 §4.3 分流后）：CLI 直连面 streamable 从 `X-Hasn-Work-Session-Id`
+    # header 落 `agent_context.work_session_id`（auth 绑定、分身不可伪造）；测试直接调 execute
+    # 跳过分发入口，设 auth 绑定字段即与真实派发同态。runtime 语义 session_id 与本断言无关，不设。
     work_session_id = f'ws_artifact_tool_{uuid.uuid4().hex[:12]}'
-    ctx.session_id = work_session_id
+    ctx.work_session_id = work_session_id
     try:
         res = await ArtifactRecordTool().execute(
             ctx,
@@ -169,6 +175,7 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
             assert row.owner_hasn_id == owner
             assert row.agent_hasn_id == ctx.agent_hasn_id
             assert row.kind == 'document'
+            assert row.body is not None
             assert row.body.startswith('# 竞品调研')
             assert row.origin_ref == 'resource:plan:todo:42'
             # 绑当次工作会话：漏了这条，产物只进分身产物 tab、挂不进工作会话资源栏
@@ -180,10 +187,20 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
             assert row.status == 'active'
     finally:
         async with async_db_session.begin() as db:
+            await db.execute(
+                delete(HasnArtifactRegistrationOutbox).where(
+                    HasnArtifactRegistrationOutbox.owner_hasn_id == owner
+                )
+            )
+            await db.execute(
+                delete(HasnArtifactContributions).where(
+                    HasnArtifactContributions.owner_hasn_id == owner
+                )
+            )
             await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_notification_emit_unauthorized_app_forbidden_real_db() -> None:
     """真实 PG：未发布/未声明 emit 的 App → service registry 返回 None → ForbiddenError。
 

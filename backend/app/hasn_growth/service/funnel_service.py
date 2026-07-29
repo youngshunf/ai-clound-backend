@@ -9,24 +9,36 @@ dismiss（线索不合格）、客户列表/详情/时间线、画像更新、�
 
 from __future__ import annotations
 
+from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 import sqlalchemy as sa
 
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
-from backend.app.hasn_growth.service.dedupe_service import dedupe_key
-from backend.app.hasn_growth.service.pii import mask_contact_fields
+from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
+from backend.app.hasn_growth.service.lead_ingestion_privacy_service import (
+    PrivateLeadWrite,
+    lead_ingestion_privacy_service,
+)
+from backend.app.hasn_growth.service.pii import mask_contact_fields, redact_pii_value
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
+from backend.app.hasn_growth.service.project_lead_compatibility_service import (
+    CompatibleLeadReference,
+    project_lead_compatibility_service,
+)
 from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope, can_manage_assignment
 from backend.common.exception import errors
+from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
 # 采集来源 → 客户来源映射（contact.source_type 多样，归一到 customer.source_kind 字典）。
@@ -44,9 +56,10 @@ def _gen_no(prefix: str) -> str:
     return f'{prefix}{uuid4().hex[:12].upper()}'
 
 
-def _customer_to_dict(c: Customer, *, reveal_pii: bool) -> dict[str, Any]:
+def _customer_to_dict(c: Customer, *, reveal_pii: bool = False) -> dict[str, Any]:
     data = {
         'id': c.id,
+        'growth_project_id': (str(c.growth_project_id) if c.growth_project_id is not None else None),
         'customer_no': c.customer_no,
         'lead_contact_id': c.lead_contact_id,
         'source_kind': c.source_kind,
@@ -70,10 +83,16 @@ def _customer_to_dict(c: Customer, *, reveal_pii: bool) -> dict[str, Any]:
         'silent_round_count': c.silent_round_count,
         'created_time': c.created_time,
     }
-    return mask_contact_fields(data, reveal=reveal_pii)
+    # 历史 reveal_pii 参数只为稳定内部签名保留；普通读永远不得绕过专用单渠道 reveal。
+    return mask_contact_fields(data, reveal=False)
 
 
-def _lead_to_dict(c: LeadContact, *, ref: LeadRef | None = None, reveal_pii: bool) -> dict[str, Any]:
+def _lead_to_dict(
+    c: LeadContact,
+    *,
+    ref: LeadRef | CompatibleLeadReference | None = None,
+    reveal_pii: bool = False,
+) -> dict[str, Any]:
     # 统一线索池：用户级状态（new/qualified/dismissed）与备注来自 lead_ref（非池行）；
     # 无 ref（如刚 request 交付的池行）默认 'new'。
     data = {
@@ -95,7 +114,100 @@ def _lead_to_dict(c: LeadContact, *, ref: LeadRef | None = None, reveal_pii: boo
         'note': ref.note if ref is not None else None,
         'confidence_score': float(c.confidence_score) if c.confidence_score is not None else 0.0,
     }
-    return mask_contact_fields(data, reveal=reveal_pii)
+    # 历史 reveal_pii 参数只为稳定内部签名保留；普通读永远不得绕过专用单渠道 reveal。
+    return mask_contact_fields(data, reveal=False)
+
+
+def _apply_masked_private_contact(
+    lead: dict[str, Any],
+    private_contact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """把私有表生成的脱敏视图覆盖到响应，不把明文写回公共 ORM。"""
+    if private_contact is None:
+        return lead
+    lead['contact_name'] = private_contact.get('contact_name')
+    channels = private_contact.get('channels', [])
+    lead['channels'] = channels
+    for channel in channels:
+        channel_name = channel.get('channel')
+        if channel_name in {'email', 'phone', 'wechat'}:
+            lead[channel_name] = channel.get('masked_value')
+    return lead
+
+
+async def _masked_contact_for_lead(
+    db: AsyncSession,
+    *,
+    lead_contact_id: int,
+    owner_scope: str,
+    user_id: int | None,
+    enterprise_id: int | None,
+) -> dict[str, Any] | None:
+    """读取同一授权主体的脱敏私有资料，不允许个人与企业资料互相回退。"""
+    return await contact_privacy_service.find_masked_contact_for_lead(
+        db,
+        lead_contact_id=lead_contact_id,
+        owner_scope=owner_scope,
+        user_id=user_id,
+        enterprise_id=enterprise_id,
+    )
+
+
+async def _lead_response(
+    db: AsyncSession,
+    *,
+    contact: LeadContact,
+    ref: LeadRef | CompatibleLeadReference | None,
+    user_id: int,
+) -> dict[str, Any]:
+    data = _lead_to_dict(contact, ref=ref, reveal_pii=False)
+    private_contact = await _masked_contact_for_lead(
+        db,
+        lead_contact_id=contact.id,
+        owner_scope='personal',
+        user_id=user_id,
+        enterprise_id=None,
+    )
+    return _apply_masked_private_contact(data, private_contact)
+
+
+async def _customer_response(db: AsyncSession, customer: Customer) -> dict[str, Any]:
+    """客户普通读优先投影同主体私有资料；历史公共联系人只在响应边界脱敏。"""
+    data = _customer_to_dict(customer, reveal_pii=False)
+    if customer.lead_contact_id is None:
+        return data
+    private_contact = await _masked_contact_for_lead(
+        db,
+        lead_contact_id=customer.lead_contact_id,
+        owner_scope=customer.owner_scope,
+        user_id=customer.user_id if customer.owner_scope == 'personal' else None,
+        enterprise_id=customer.enterprise_id if customer.owner_scope == 'enterprise' else None,
+    )
+    if private_contact is not None:
+        return _apply_masked_private_contact(data, private_contact)
+    legacy_contact = await db.get(LeadContact, customer.lead_contact_id)
+    if legacy_contact is None:
+        return data
+    legacy_view = mask_contact_fields(
+        {
+            'contact_name': legacy_contact.contact_name,
+            'email': legacy_contact.email,
+            'phone': legacy_contact.phone,
+        },
+        reveal=False,
+    )
+    data['contact_name'] = legacy_view['contact_name']
+    data['email'] = legacy_view['email']
+    data['phone'] = legacy_view['phone']
+    return data
+
+
+async def masked_customer_response(
+    db: AsyncSession,
+    customer: Customer,
+) -> dict[str, Any]:
+    """返回客户的通用脱敏视图，供项目化写服务复用同一隐私边界。"""
+    return await _customer_response(db, customer)
 
 
 class GrowthFunnelService:
@@ -112,10 +224,68 @@ class GrowthFunnelService:
         min_score: float | None = None,
         limit: int = 20,
         reveal_pii: bool = False,
+        growth_project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """检索「该用户引用的线索」（lead_ref JOIN contact），关键词/评分过滤，默认脱敏。已忽略的不返回。"""
+        """项目读优先；迁移窗口缺行时才审计回落旧引用。"""
+        if growth_project_id is not None:
+            validated_project_id = await project_lead_compatibility_service.require_owned_project(
+                db,
+                user_id=user_id,
+                growth_project_id=growth_project_id,
+            )
+            growth_project_id = str(validated_project_id)
+            project_ids = sa.select(GrowthProjectLead.lead_contact_id).where(
+                GrowthProjectLead.growth_project_id == growth_project_id,
+                GrowthProjectLead.user_id == user_id,
+            )
+            candidate_ids: Any = project_ids
+            if not settings.GROWTH_PROJECT_READ_CUTOVER_ENABLED:
+                candidate_ids = project_ids.union(sa.select(LeadRef.lead_contact_id).where(LeadRef.user_id == user_id))
+            project_stmt = sa.select(LeadContact).where(LeadContact.id.in_(candidate_ids))
+            if query:
+                like = f'%{query}%'
+                project_stmt = project_stmt.where(
+                    sa.or_(
+                        LeadContact.company_name.ilike(like),
+                        LeadContact.industry.ilike(like),
+                        LeadContact.keyword.ilike(like),
+                        LeadContact.contact_name.ilike(like),
+                    )
+                )
+            if min_score is not None:
+                project_stmt = project_stmt.where(LeadContact.confidence_score >= min_score)
+            contacts = (
+                (
+                    await db.execute(
+                        project_stmt.order_by(LeadContact.confidence_score.desc().nullslast()).limit(min(limit, 100))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            results: list[dict[str, Any]] = []
+            for contact in contacts:
+                ref = await project_lead_compatibility_service.get_reference(
+                    db,
+                    user_id=user_id,
+                    lead_contact_id=contact.id,
+                    growth_project_id=growth_project_id,
+                )
+                if ref is None or ref.status == 'dismissed':
+                    continue
+                results.append(
+                    await _lead_response(
+                        db,
+                        contact=contact,
+                        ref=ref,
+                        user_id=user_id,
+                    )
+                )
+            return results
+
         stmt = (
-            sa.select(LeadContact, LeadRef)
+            sa
+            .select(LeadContact, LeadRef)
             .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
             .where(LeadRef.user_id == user_id, LeadRef.status != 'dismissed')
         )
@@ -133,21 +303,43 @@ class GrowthFunnelService:
             stmt = stmt.where(LeadContact.confidence_score >= min_score)
         stmt = stmt.order_by(LeadContact.confidence_score.desc().nullslast()).limit(min(limit, 100))
         rows = (await db.execute(stmt)).all()
-        return [_lead_to_dict(c, ref=r, reveal_pii=reveal_pii) for c, r in rows]
+        return [await _lead_response(db, contact=contact, ref=ref, user_id=user_id) for contact, ref in rows]
 
     @staticmethod
     async def get_lead(
-        db: AsyncSession, *, user_id: int, lead_contact_id: int, reveal_pii: bool = False
+        db: AsyncSession,
+        *,
+        user_id: int,
+        lead_contact_id: int,
+        reveal_pii: bool = False,
+        growth_project_id: str | None = None,
     ) -> dict[str, Any]:
+        if growth_project_id is not None:
+            project_ref = await project_lead_compatibility_service.get_reference(
+                db,
+                user_id=user_id,
+                lead_contact_id=lead_contact_id,
+                growth_project_id=growth_project_id,
+            )
+            contact = await db.get(LeadContact, lead_contact_id)
+            if project_ref is None or contact is None:
+                raise errors.NotFoundError(msg='线索不存在或无权访问')
+            return await _lead_response(
+                db,
+                contact=contact,
+                ref=project_ref,
+                user_id=user_id,
+            )
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
-        return _lead_to_dict(contact, ref=ref, reveal_pii=reveal_pii)
+        return await _lead_response(db, contact=contact, ref=ref, user_id=user_id)
 
     @staticmethod
     async def _load_lead(db: AsyncSession, *, user_id: int, lead_contact_id: int) -> tuple[LeadContact, LeadRef]:
         """加载「该用户引用的某条线索」(contact, ref)；无引用 → NotFound（统一池：拥有 = 有 lead_ref）。"""
         row = (
             await db.execute(
-                sa.select(LeadContact, LeadRef)
+                sa
+                .select(LeadContact, LeadRef)
                 .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
                 .where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == lead_contact_id)
             )
@@ -171,11 +363,7 @@ class GrowthFunnelService:
         note: str | None = None,
         confidence_score: float | None = None,
     ) -> dict[str, Any]:
-        """主人在 UI 手动登记线索（统一线索池：默认私有 pool_visibility='private'，不进公共匹配·福仔决策）。
-
-        AI-native 宗旨：UI 给人操作。手动登记先按全局 dedupe_key 查池，命中则复用既有池行（统一池一份），
-        否则建私有池行；再建用户引用（lead_ref，note 落引用层）。至少公司名或联系人名之一。
-        """
+        """主人手工登记线索；池行只留公开事实，姓名和联系方式进入 Owner 私有表。"""
         from urllib.parse import urlparse
 
         from backend.app.hasn_growth.service.cleaner_service import normalize_email, normalize_phone
@@ -188,6 +376,11 @@ class GrowthFunnelService:
         contact_name = _clean(contact_name)
         if not company_name and not contact_name:
             raise errors.RequestError(msg='请至少填写公司名或联系人名')
+        if not settings.GROWTH_PII_NEW_WRITE_ENABLED:
+            raise errors.ConflictError(
+                msg='联系人 PII 新写尚未启用',
+                data={'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED'},
+            )
 
         email = _clean(email)
         phone = _clean(phone)
@@ -198,59 +391,58 @@ class GrowthFunnelService:
         if website:
             netloc = urlparse(website if '://' in website else f'http://{website}').netloc
             domain = netloc.removeprefix('www.').lower() or None
-        keys = {'email': dedupe_key(email_n), 'phone': dedupe_key(phone_n), 'domain': dedupe_key(domain)}
-
-        # 全局去重：池中已有同 email/phone/domain 的线索 → 复用（统一池一份），否则建私有池行。
-        contact = None
-        for dim in ('email', 'phone', 'domain'):
-            if keys[dim]:
-                contact = await db.scalar(
-                    sa.select(LeadContact).where(getattr(LeadContact, f'dedupe_key_{dim}') == keys[dim])
-                )
-                if contact is not None:
-                    break
-        if contact is None:
-            contact = LeadContact(
-                lead_no=_gen_no('LEAD'),
-                pool_visibility='private',  # 手动登记默认仅自己可见，不进公共匹配
+        if email and email_n is None:
+            raise errors.RequestError(msg='邮箱格式无效')
+        if phone and phone_n is None:
+            raise errors.RequestError(msg='电话格式无效')
+        write_result = await lead_ingestion_privacy_service.upsert(
+            db,
+            keyring=require_growth_pii_keyring(),
+            write=PrivateLeadWrite(
+                user_id=user_id,
+                pool_visibility='private',
                 company_name=company_name,
                 contact_name=contact_name,
-                email=email,
-                email_normalized=email_n,
-                phone=phone,
-                phone_normalized=phone_n,
+                email=email_n,
+                phone=phone_n,
+                address=None,
                 website=website,
                 domain=domain,
-                industry=_clean(industry),
+                country=None,
+                region=None,
                 city=_clean(city),
+                industry=_clean(industry),
                 source_type='manual',
-                status='active',
-                confidence_score=confidence_score if confidence_score is not None else 60,
-                dedupe_key_email=keys['email'],
-                dedupe_key_phone=keys['phone'],
-                dedupe_key_domain=keys['domain'],
-                meta_data={},
-            )
-            db.add(contact)
-            await db.flush()
+                source_url=None,
+                lawful_basis='owner_provided',
+                source_ref='manual_entry',
+                retention_until=timezone.now() + timedelta(days=365),
+                confidence_score=Decimal(str(confidence_score if confidence_score is not None else 60)),
+                public_metadata={},
+                preserve_existing_private=False,
+            ),
+        )
+        contact = write_result.contact
 
         # 建用户引用（幂等：已引用则跳过）；note 为用户私有备注，落引用层。
-        await db.execute(
-            pg_insert(LeadRef)
-            .values(
-                user_id=user_id,
-                lead_contact_id=contact.id,
-                source='manual',
-                status='new',
-                note=(note.strip() if note and note.strip() else None),
-            )
-            .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
+        safe_note = redact_pii_value(note.strip()) if note and note.strip() else None
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=contact.id,
+            source='manual',
+            status='new',
+            note=safe_note,
+            update_existing=False,
         )
         await db.flush()
         ref = await db.scalar(
             sa.select(LeadRef).where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == contact.id)
         )
-        return _lead_to_dict(contact, ref=ref, reveal_pii=True)
+        return _apply_masked_private_contact(
+            _lead_to_dict(contact, ref=ref, reveal_pii=False),
+            write_result.masked_private_contact,
+        )
 
     # ----------------------------- 晋级 / 淘汰 -----------------------------
 
@@ -272,41 +464,54 @@ class GrowthFunnelService:
         """
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
 
-        is_ent = scope is not None and scope.is_enterprise
-        # 去重键双模：enterprise 按 (enterprise_id, lead)；personal 按 (user_id, lead)。不含 assignee（同企业同线索唯一）。
+        enterprise_scope = scope if scope is not None and scope.is_enterprise else None
+        # 去重键双模：enterprise 按 (enterprise_id, lead)，personal 按 (user_id, lead)；
+        # 不含 assignee（同企业同线索唯一）。
         dedupe_stmt = sa.select(Customer).where(Customer.lead_contact_id == lead_contact_id)
-        if is_ent:
-            dedupe_stmt = dedupe_stmt.where(Customer.owner_scope == 'enterprise', Customer.enterprise_id == scope.enterprise_id)
+        if enterprise_scope is not None:
+            dedupe_stmt = dedupe_stmt.where(
+                Customer.owner_scope == 'enterprise',
+                Customer.enterprise_id == enterprise_scope.enterprise_id,
+            )
         else:
             dedupe_stmt = dedupe_stmt.where(Customer.owner_scope == 'personal', Customer.user_id == user_id)
         existing = (await db.execute(dedupe_stmt)).scalar_one_or_none()
         if existing:
-            return _customer_to_dict(existing, reveal_pii=False)
+            return await _customer_response(db, existing)
 
-        score = intent_score if intent_score is not None else (float(contact.confidence_score or 0))
+        score = Decimal(str(intent_score if intent_score is not None else (contact.confidence_score or 0)))
         customer = Customer(
             customer_no=_gen_no('CUS'),
             user_id=user_id,
             lead_contact_id=lead_contact_id,
             source_kind=_SOURCE_KIND_MAP.get(contact.source_type or 'manual', 'outbound_crawl'),
             company_name=contact.company_name,
-            contact_name=contact.contact_name,
-            email=contact.email,
-            phone=contact.phone,
+            contact_name=None,
+            email=None,
+            phone=None,
             im_refs={},
-            profile_json=profile or {},
+            profile_json=redact_pii_value(profile or {}),
             intent_score=score,
             lifecycle_status='active',
             owner_agent_id=owner_agent_id,
-            owner_scope='enterprise' if is_ent else 'personal',
-            enterprise_id=scope.enterprise_id if is_ent else None,
-            assignee=scope.owner_hasn_id if is_ent else None,
+            owner_scope='enterprise' if enterprise_scope is not None else 'personal',
+            enterprise_id=enterprise_scope.enterprise_id if enterprise_scope is not None else None,
+            assignee=enterprise_scope.owner_hasn_id if enterprise_scope is not None else None,
             tags=[],
             silent_round_count=0,
             last_activity_at=timezone.now(),
         )
         db.add(customer)
-        ref.status = 'qualified'  # 用户级状态落引用层，不污染公共池行
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=lead_contact_id,
+            source=ref.source,
+            status='qualified',
+            dismiss_reason=ref.dismiss_reason,
+            note=ref.note,
+            update_source=False,
+        )
         await db.flush()
         await GrowthFunnelService._add_activity(
             db,
@@ -317,18 +522,24 @@ class GrowthFunnelService:
             actor_kind='agent' if owner_agent_id else 'owner',
             actor_id=owner_agent_id,
         )
-        return _customer_to_dict(customer, reveal_pii=False)
+        return await _customer_response(db, customer)
 
     @staticmethod
-    async def dismiss_lead(
-        db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str
-    ) -> dict[str, Any]:
+    async def dismiss_lead(db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str) -> dict[str, Any]:
         """用户忽略该线索（ref.status=dismissed + dismiss_reason，落引用层不污染公共池行；列表/检索不再返回）。"""
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
-        ref.status = 'dismissed'
-        ref.dismiss_reason = reason
-        await db.flush()
-        return {'lead_contact_id': contact.id, 'status': 'dismissed', 'reason': reason}
+        safe_reason = redact_pii_value(reason)
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=lead_contact_id,
+            source=ref.source,
+            status='dismissed',
+            dismiss_reason=safe_reason,
+            note=ref.note,
+            update_source=False,
+        )
+        return {'lead_contact_id': contact.id, 'status': 'dismissed', 'reason': safe_reason}
 
     # ----------------------------- 客户 -----------------------------
 
@@ -351,13 +562,15 @@ class GrowthFunnelService:
             stmt = stmt.where(Customer.assignee == assignee)
         stmt = stmt.order_by(Customer.intent_score.desc(), Customer.id.desc()).limit(min(limit, 100))
         rows = (await db.execute(stmt)).scalars().all()
-        return [_customer_to_dict(r, reveal_pii=reveal_pii) for r in rows]
+        return [await _customer_response(db, customer) for customer in rows]
 
     @staticmethod
     async def _load_customer(
         db: AsyncSession, *, user_id: int, customer_id: int, scope: GrowthScope | None = None
     ) -> Customer:
-        stmt = apply_scope(sa.select(Customer).where(Customer.id == customer_id), Customer, user_id=user_id, scope=scope)
+        stmt = apply_scope(
+            sa.select(Customer).where(Customer.id == customer_id), Customer, user_id=user_id, scope=scope
+        )
         customer = (await db.execute(stmt)).scalar_one_or_none()
         if not customer:
             raise errors.NotFoundError(msg='客户不存在或无权访问')
@@ -368,7 +581,7 @@ class GrowthFunnelService:
         db: AsyncSession, *, user_id: int, customer_id: int, reveal_pii: bool = False, scope: GrowthScope | None = None
     ) -> dict[str, Any]:
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
-        return _customer_to_dict(customer, reveal_pii=reveal_pii)
+        return await _customer_response(db, customer)
 
     @staticmethod
     async def customer_timeline(
@@ -377,18 +590,23 @@ class GrowthFunnelService:
         # 先 _load_customer（按 scope 校验可见性），通过后按 customer_id 取时间线（已门控，无需再按 user_id 隔离）。
         await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         rows = (
-            await db.execute(
-                sa.select(Activity)
-                .where(Activity.customer_id == customer_id)
-                .order_by(Activity.occurred_at.desc(), Activity.id.desc())
-                .limit(min(limit, 100))
+            (
+                await db.execute(
+                    sa
+                    .select(Activity)
+                    .where(Activity.customer_id == customer_id)
+                    .order_by(Activity.occurred_at.desc(), Activity.id.desc())
+                    .limit(min(limit, 100))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [
             {
                 'id': a.id,
                 'kind': a.kind,
-                'content': a.content,
+                'content': redact_pii_value(a.content),
                 'actor_kind': a.actor_kind,
                 'actor_id': a.actor_id,
                 'opportunity_id': a.opportunity_id,
@@ -412,11 +630,11 @@ class GrowthFunnelService:
     ) -> dict[str, Any]:
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         if profile is not None:
-            customer.profile_json = profile
+            customer.profile_json = redact_pii_value(profile)
         if intent_score is not None:
-            customer.intent_score = intent_score
+            customer.intent_score = Decimal(str(intent_score))
         if tags is not None:
-            customer.tags = tags
+            customer.tags = redact_pii_value(tags)
         if lifecycle_status is not None:
             customer.lifecycle_status = lifecycle_status
             # 止损标 silent：累计静默轮次（设计 §7 止损）
@@ -424,10 +642,19 @@ class GrowthFunnelService:
                 customer.silent_round_count = (customer.silent_round_count or 0) + 1
         if followup_task_id is not None:
             # 绑定/换绑当前跟进任务（J3 即时跟进据此触发 run_now）；空串解绑。
-            customer.followup_task_id = followup_task_id or None
+            normalized_task_id = followup_task_id.strip()
+            if normalized_task_id and (
+                len(normalized_task_id) > 64
+                or not all(character.isalnum() or character in {'_', '-'} for character in normalized_task_id)
+            ):
+                raise errors.RequestError(
+                    msg='跟进任务 ID 格式无效',
+                    data={'error_code': 'GROWTH_FOLLOWUP_TASK_ID_INVALID'},
+                )
+            customer.followup_task_id = normalized_task_id or None
         customer.last_activity_at = timezone.now()
         await db.flush()
-        return _customer_to_dict(customer, reveal_pii=False)
+        return await _customer_response(db, customer)
 
     @staticmethod
     async def log_activity(
@@ -490,7 +717,7 @@ class GrowthFunnelService:
             actor_kind='owner',
             actor_id=scope.owner_hasn_id if scope else None,
         )
-        return _customer_to_dict(customer, reveal_pii=False)
+        return await _customer_response(db, customer)
 
     @staticmethod
     async def _add_activity(
@@ -510,16 +737,29 @@ class GrowthFunnelService:
         # 单条轻量 SELECT，免去把 scope 透传到每个调用点（DRY）。
         cust = (
             await db.execute(
-                sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(Customer.id == customer_id)
+                sa
+                .select(
+                    Customer.growth_project_id,
+                    Customer.owner_scope,
+                    Customer.enterprise_id,
+                    Customer.assignee,
+                )
+                .where(Customer.id == customer_id)
             )
         ).first()
-        o_scope, ent_id, assignee = cust or ('personal', None, None)
+        project_id, o_scope, ent_id, assignee = cust or (
+            None,
+            'personal',
+            None,
+            None,
+        )
         activity = Activity(
             customer_id=customer_id,
             opportunity_id=opportunity_id,
             user_id=user_id,
+            growth_project_id=project_id,
             kind=kind,
-            content=content,
+            content=redact_pii_value(content),
             actor_kind=actor_kind,
             actor_id=actor_id,
             ref_table=ref_table,
@@ -531,9 +771,7 @@ class GrowthFunnelService:
         )
         db.add(activity)
         # 同步客户最近活动游标（按 id，已由调用方门控可见性；不再按 user_id 过滤以兼容企业客户）。
-        await db.execute(
-            sa.update(Customer).where(Customer.id == customer_id).values(last_activity_at=timezone.now())
-        )
+        await db.execute(sa.update(Customer).where(Customer.id == customer_id).values(last_activity_at=timezone.now()))
         await db.flush()
         return activity
 

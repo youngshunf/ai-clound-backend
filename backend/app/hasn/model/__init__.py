@@ -15,7 +15,12 @@ from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement as Ha
 from backend.app.hasn.model.hasn_app_instance import HasnAppInstance as HasnAppInstance
 from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAppPublisher
 from backend.app.hasn.model.hasn_app_seat import HasnAppSeat as HasnAppSeat
+from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions as HasnArtifactContributions
+from backend.app.hasn.model.hasn_artifact_registration_outbox import (
+    HasnArtifactRegistrationOutbox as HasnArtifactRegistrationOutbox,
+)
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts as HasnArtifacts
+from backend.app.hasn.model.hasn_asset_bindings import HasnAssetBindings as HasnAssetBindings
 from backend.app.hasn.model.hasn_asset_grants import HasnAssetGrants as HasnAssetGrants
 from backend.app.hasn.model.hasn_assets import HasnAssets as HasnAssets
 from backend.app.hasn.model.hasn_audit_log import HasnAuditLog as HasnAuditLog
@@ -34,8 +39,16 @@ from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMem
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership as HasnEnterpriseMembership
 from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole as HasnEnterpriseRole
 from backend.app.hasn.model.hasn_group_agent_invites import HasnGroupAgentInvites as HasnGroupAgentInvites
+from backend.app.hasn.model.hasn_group_im_command_outbox import HasnGroupImCommandOutbox as HasnGroupImCommandOutbox
 from backend.app.hasn.model.hasn_group_members import HasnGroupMembers as HasnGroupMembers
 from backend.app.hasn.model.hasn_humans import HasnHumans as HasnHumans
+from backend.app.hasn.model.hasn_im_history_snapshot_conversations import (
+    HasnImHistorySnapshotConversations as HasnImHistorySnapshotConversations,
+)
+from backend.app.hasn.model.hasn_im_history_snapshot_messages import (
+    HasnImHistorySnapshotMessages as HasnImHistorySnapshotMessages,
+)
+from backend.app.hasn.model.hasn_im_history_snapshots import HasnImHistorySnapshots as HasnImHistorySnapshots
 from backend.app.hasn.model.hasn_judge_verdict import HasnJudgeVerdict as HasnJudgeVerdict
 from backend.app.hasn.model.hasn_messages import HasnMessages as HasnMessages
 from backend.app.hasn.model.hasn_node_bindings import HasnNodeBindings as HasnNodeBindings
@@ -51,9 +64,13 @@ from backend.app.hasn.model.hasn_platform_default_config import (
 from backend.app.hasn.model.hasn_platform_operator_grants import (
     HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
 )
+from backend.app.hasn.model.hasn_relation_command_outbox import HasnRelationCommandOutbox as HasnRelationCommandOutbox
 from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as HasnResourceShare
 from backend.app.hasn.model.hasn_session_artifacts import HasnSessionArtifacts as HasnSessionArtifacts
 from backend.app.hasn.model.hasn_session_events import HasnSessionEvents as HasnSessionEvents
+from backend.app.hasn.model.hasn_session_im_command_outbox import (
+    HasnSessionImCommandOutbox as HasnSessionImCommandOutbox,
+)
 from backend.app.hasn.model.hasn_sessions import HasnSessions as HasnSessions
 from backend.app.hasn.model.hasn_speech_catalog import HasnSpeechCatalog as HasnSpeechCatalog
 from backend.app.hasn.model.hasn_speech_catalog_release import HasnSpeechCatalogRelease as HasnSpeechCatalogRelease
@@ -61,7 +78,15 @@ from backend.app.hasn.model.hasn_speech_catalog_release_package import (
     HasnSpeechCatalogReleasePackage as HasnSpeechCatalogReleasePackage,
 )
 from backend.app.hasn.model.hasn_speech_package import HasnSpeechPackage as HasnSpeechPackage
+from backend.app.hasn.model.hasn_storage_accounts import HasnStorageAccounts as HasnStorageAccounts
+from backend.app.hasn.model.hasn_storage_entries import HasnStorageEntries as HasnStorageEntries
+from backend.app.hasn.model.hasn_storage_export_items import HasnStorageExportItems as HasnStorageExportItems
+from backend.app.hasn.model.hasn_storage_jobs import HasnStorageJobs as HasnStorageJobs
+from backend.app.hasn.model.hasn_storage_migration_items import HasnStorageMigrationItems as HasnStorageMigrationItems
+from backend.app.hasn.model.hasn_storage_objects import HasnStorageObjects as HasnStorageObjects
+from backend.app.hasn.model.hasn_storage_reservations import HasnStorageReservations as HasnStorageReservations
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages as HasnSuppressedMessages
+from backend.app.hasn.model.hasn_sync_business_receipts import HasnSyncBusinessReceipts as HasnSyncBusinessReceipts
 from backend.app.hasn.model.hasn_sync_events import HasnSyncEvents as HasnSyncEvents
 from backend.app.hasn.model.hasn_sync_inbox_events import HasnSyncInboxEvents as HasnSyncInboxEvents
 
@@ -74,5 +99,3 @@ from backend.app.hasn.model.hasn_task_run_summary import HasnTaskRunSummary as H
 from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
 from backend.app.hasn.model.hasn_unread_projection import HasnUnreadProjection as HasnUnreadProjection
-from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions as HasnArtifactContributions
-from backend.app.hasn.model.hasn_artifact_registration_outbox import HasnArtifactRegistrationOutbox as HasnArtifactRegistrationOutbox

@@ -128,6 +128,11 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     # 关闭 redis 连接
     await redis_client.aclose()
 
+    # 关闭主库及 IM/sync/python 受限角色连接池；须在 lifespan 所属 loop 内完成，
+    # 避免应用重启后复用绑定旧事件循环的 asyncpg 连接。
+    from backend.database.db import close_database_engines
+    await close_database_engines()
+
 
 def register_app() -> FastAPI:
     """注册 FastAPI 应用"""

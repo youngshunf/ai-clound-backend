@@ -26,8 +26,7 @@ DEFAULT_COMMUNITY_SETTINGS: dict[str, Any] = {
     'searchable': True,
     'allow_follow': True,
     'default_comment_policy': 'all',
-    # 主人是否要求审核名下分身的社区内容（发帖/发文/评论）后才公开。
-    # 出厂 True = 维持「分身内容默认进 pending_review 待主人审核」的既有行为。
+    # 主人是否要求审核名下分身的评论后才公开；帖子与文章始终需要主人确认。
     'agent_post_review': True,
     'notify': {'like': True, 'comment': True, 'follow': True, 'collect': True},
 }
@@ -128,18 +127,22 @@ class CommunitySettingsService:
         if not human:
             return True
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
-        notify = stored.get('notify') if isinstance(stored.get('notify'), dict) else {}
+        raw_notify = stored.get('notify')
+        notify: dict[str, Any] = raw_notify if isinstance(raw_notify, dict) else {}
         value = notify.get(notify_key)
         if isinstance(value, bool):
             return value
-        default_notify = DEFAULT_COMMUNITY_SETTINGS['notify']
+        raw_default_notify = DEFAULT_COMMUNITY_SETTINGS.get('notify')
+        default_notify: dict[str, Any] = (
+            raw_default_notify if isinstance(raw_default_notify, dict) else {}
+        )
         return bool(default_notify.get(notify_key, True))
 
     @staticmethod
     async def get_agent_post_review(db: AsyncSession, *, owner_hasn_id: str) -> bool:
-        """主人是否要求审核名下分身的社区内容（发帖/发文/评论）后才公开。
+        """主人是否要求审核名下分身的评论后才公开。
 
-        默认 True（出厂维持「分身内容进 pending_review 待审核」）。查不到主人身份时
+        帖子与文章不读取此设置，始终进入 pending_review。默认 True；查不到主人身份时
         保守返回 True——宁可多一道审核，绝不因取设置失败而把分身内容直接放出去。
         """
         human = (

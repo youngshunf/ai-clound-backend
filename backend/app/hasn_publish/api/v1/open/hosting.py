@@ -1,7 +1,7 @@
 """通用网页发布与分享 公开查看面 /s/{slug}（模块 18，P3）。
 
 > 整个 /s/* 落独立分享域名（usercontent 模式，[04] §5）：API 主域 cookie 在该域不可见。
-> /content 响应恒带 `Content-Security-Policy: sandbox allow-scripts`——直开导航也被沙箱；
+> /content 响应恒带 `Content-Security-Policy: sandbox allow-scripts allow-forms`——直开导航也被沙箱；
 >   资源指令用**显式 host-source**（opaque origin 下 'self' 永不匹配，会拦死制品自己的 assets）。
 > connect-src 'none' 阻断数据外联（打包期已收敛外链，[02]）。
 
@@ -18,14 +18,17 @@
 from __future__ import annotations
 
 import html
+import json
 
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn_publish.model.site import Site
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.core.conf import settings
 from backend.database.db import CurrentSession
@@ -71,9 +74,9 @@ def _share_origin(request: Request) -> str:
 
 
 def _content_csp(origin: str) -> str:
-    """/content 的 CSP：sandbox allow-scripts（opaque origin）+ 显式 host-source 资源指令 + 断外联。"""
+    """/content 的 CSP：允许受控 submit 事件，仍以 opaque origin、form-action 与断外联约束。"""
     return (
-        'sandbox allow-scripts; '
+        'sandbox allow-scripts allow-forms; '
         "default-src 'none'; "
         f'img-src {origin} data: blob:; '
         f"style-src {origin} 'unsafe-inline'; "
@@ -84,6 +87,24 @@ def _content_csp(origin: str) -> str:
         "base-uri 'none'; "
         "form-action 'none'"
     )
+
+
+def _growth_form_api_origin(request: Request) -> str:
+    """解析受信任表单 broker 的 API origin，拒绝可注入 CSP/脚本的非 origin 配置。"""
+    configured = (settings.GROWTH_PUBLIC_FORM_API_ORIGIN or '').strip()
+    raw = configured or _share_origin(request)
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {'', '/'}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError('GROWTH_PUBLIC_FORM_API_ORIGIN 必须是合法的 http(s) origin')
+    return f'{parsed.scheme}://{parsed.netloc}'
 
 
 def _noindex_headers(site) -> dict[str, str]:  # noqa: ANN001
@@ -97,7 +118,7 @@ def _noindex_headers(site) -> dict[str, str]:  # noqa: ANN001
 
 async def _authorize_view(
     db: CurrentSession, request: Request, slug: str, vt: str | None
-) -> tuple[object, Response | None]:
+) -> tuple[Site | None, Response | None]:
     """返回 (site, error_response)。error_response 非 None 时直接返回它。"""
     site = await publish_service.get_site_by_slug(db, slug=slug)
     if site is None or site.status == 'revoked':
@@ -112,7 +133,7 @@ async def _authorize_view(
     if site.current_revision_id is None:
         return None, JSONResponse(status_code=410, content={'code': 410, 'msg': '分享内容不可用', 'data': None})
 
-    ticket_ok = bool(vt) and publish_service.verify_view_ticket(vt, site_id=site.id)
+    ticket_ok = publish_service.verify_view_ticket(vt, site_id=site.id) if vt else False
     if site.visibility == 'private' and not ticket_ok:
         return None, JSONResponse(
             status_code=401, content={'code': 401, 'msg': '私有分享，请在唤星桌面端打开', 'data': None}
@@ -138,12 +159,14 @@ async def viewer_shell(
         ):
             return HTMLResponse(content=_password_page(slug), headers={'X-Robots-Tag': 'noindex, nofollow'})
         return err
+    if site is None:
+        raise RuntimeError('分享授权成功但站点实体缺失')
     await publish_service.increment_view_count(db, site_id=site.id)
     origin = _share_origin(request)
     # 查看器外壳是本服务生成的**可信** HTML（title 经 html.escape，无用户脚本注入面）：
     # 必须允许它**自身的内联 style/script**，否则 `#frame{width/height:100%}` 等内联样式被 CSP
     # 拦掉 → iframe 退化成浏览器默认 ~300×150、外壳脚本（全屏/底栏）也失效 → 演示只剩一小块。
-    # 真正不可信的发布制品在 /content 子 iframe，自带 `sandbox allow-scripts` 的独立 CSP，
+    # 真正不可信的发布制品在 /content 子 iframe，自带 `sandbox allow-scripts allow-forms` 的独立 CSP，
     # 与本外壳 CSP 互不影响（见 _content_csp）。
     headers = {
         'X-Frame-Options': 'SAMEORIGIN',
@@ -153,8 +176,23 @@ async def viewer_shell(
         ),
         **_noindex_headers(site),
     }
+    form_api_origin = (
+        _growth_form_api_origin(request) if site.source_app == 'growth' and site.source_ref else None
+    )
+    if form_api_origin:
+        headers['Content-Security-Policy'] += f'; connect-src {form_api_origin}'
     vt_qs = f'?vt={html.escape(vt)}' if vt else ''
-    return HTMLResponse(content=_viewer_shell_html(slug, site.title, site.allow_present, vt_qs), headers=headers)
+    return HTMLResponse(
+        content=_viewer_shell_html(
+            slug,
+            site.title,
+            site.allow_present,
+            vt_qs,
+            form_api_origin=form_api_origin,
+            form_view_ticket=vt,
+        ),
+        headers=headers,
+    )
 
 
 @router.post('/s/{slug}/unlock', summary='口令解锁（发短时访问票）')
@@ -179,11 +217,13 @@ async def content(
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
+    if site is None:
+        raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
     if revision is None:
         return JSONResponse(status_code=410, content={'code': 410, 'msg': '内容不可用', 'data': None})
     asset = await hasn_asset_service.get_by_asset_id(db, revision.asset_id)
-    if asset is None:
+    if asset is None or asset.object_state == 'missing':
         return JSONResponse(status_code=410, content={'code': 410, 'msg': '制品丢失', 'data': None})
 
     from backend.plugin.s3.service.storage_service import storage_service
@@ -230,6 +270,8 @@ async def asset(
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
+    if site is None:
+        raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
     if revision is None or revision.runtime != 'bundle-zip':
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})
@@ -238,7 +280,7 @@ async def asset(
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})
 
     asset = await hasn_asset_service.get_by_asset_id(db, revision.asset_id)
-    if asset is None:
+    if asset is None or asset.object_state == 'missing':
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '制品丢失', 'data': None})
 
     from backend.plugin.s3.service.storage_service import storage_service
@@ -334,11 +376,132 @@ document.getElementById('pw').addEventListener('keydown',function(e){{if(e.key==
 </script></body></html>"""
 
 
-def _viewer_shell_html(slug: str, title: str, allow_present: bool, vt_qs: str) -> str:
+def _growth_form_broker_script(
+    *,
+    slug: str,
+    api_origin: str,
+    view_ticket: str | None,
+) -> str:
+    """生成受信任外壳表单 broker；不可信制品只能 postMessage，不能读取 token 或访问父页。"""
+    config = json.dumps(
+        {
+            'apiOrigin': api_origin,
+            'slug': slug,
+            'formRef': 'growth-lead-v1',
+            'viewTicket': view_ticket,
+        },
+        ensure_ascii=True,
+        separators=(',', ':'),
+    )
+    return f"""
+var growthFormBroker={config};
+var growthFormKeys=new Map();
+function growthFormReply(event,requestId,result){{
+  event.source.postMessage({{type:'hasn:growth-form-result',requestId:requestId,...result}},'*');
+}}
+async function growthFormJson(response){{
+  try{{return await response.json();}}catch(_error){{return null;}}
+}}
+window.addEventListener('message',async function(event){{
+  if(event.source!==frame.contentWindow||!event.data||event.data.type!=='hasn:growth-form-submit')return;
+  var requestId=typeof event.data.requestId==='string'?event.data.requestId:'';
+  var payload=event.data.payload;
+  if(!requestId||requestId.length>128||!payload||typeof payload!=='object'||Array.isArray(payload)){{
+    growthFormReply(event,requestId,{{ok:false,status:422,message:'表单请求格式无效'}});
+    return;
+  }}
+  var idempotencyKey=growthFormKeys.get(requestId);
+  if(!idempotencyKey){{
+    if(!globalThis.crypto||typeof globalThis.crypto.randomUUID!=='function'){{
+      growthFormReply(event,requestId,{{ok:false,status:503,message:'当前浏览器无法生成幂等标识'}});
+      return;
+    }}
+    idempotencyKey=globalThis.crypto.randomUUID();
+    if(growthFormKeys.size>=100)growthFormKeys.delete(growthFormKeys.keys().next().value);
+    growthFormKeys.set(requestId,idempotencyKey);
+  }}
+  var base=growthFormBroker.apiOrigin;
+  var slug=encodeURIComponent(growthFormBroker.slug);
+  try{{
+    var tokenResponse=await fetch(
+      base+'/api/v1/publish/open/sites/'+slug+'/forms/'+growthFormBroker.formRef+'/access-token',
+      {{
+        method:'POST',
+        credentials:'omit',
+        referrerPolicy:'no-referrer',
+        headers:{{'Content-Type':'application/json'}},
+        body:JSON.stringify({{view_ticket:growthFormBroker.viewTicket}})
+      }}
+    );
+    var tokenPayload=await growthFormJson(tokenResponse);
+    var token=tokenPayload&&tokenPayload.data&&tokenPayload.data.form_access_token;
+    if(!tokenResponse.ok||typeof token!=='string'){{
+      growthFormReply(event,requestId,{{
+        ok:false,
+        status:tokenResponse.status,
+        message:(tokenPayload&&tokenPayload.msg)||'无法取得表单访问令牌'
+      }});
+      return;
+    }}
+    var submitResponse=await fetch(
+      base+'/api/v1/growth/open/forms/'+slug+'/submit',
+      {{
+        method:'POST',
+        credentials:'omit',
+        referrerPolicy:'no-referrer',
+        headers:{{
+          'Content-Type':'application/json',
+          'Idempotency-Key':idempotencyKey,
+          'X-Publish-Form-Token':token
+        }},
+        body:JSON.stringify(payload)
+      }}
+    );
+    var submitPayload=await growthFormJson(submitResponse);
+    if(!submitResponse.ok){{
+      growthFormReply(event,requestId,{{
+        ok:false,
+        status:submitResponse.status,
+        message:(submitPayload&&submitPayload.msg)||'留资提交失败',
+        retryAfter:submitResponse.headers.get('Retry-After')
+      }});
+      return;
+    }}
+    growthFormReply(event,requestId,{{
+      ok:true,
+      status:submitResponse.status,
+      receiptRef:submitPayload&&submitPayload.data&&submitPayload.data.receipt_ref
+    }});
+  }}catch(_error){{
+    growthFormReply(event,requestId,{{ok:false,status:0,message:'网络不可用，请稍后重试'}});
+  }}
+}});
+"""
+
+
+def _viewer_shell_html(
+    slug: str,
+    title: str,
+    allow_present: bool,
+    vt_qs: str,
+    *,
+    form_api_origin: str | None = None,
+    form_view_ticket: str | None = None,
+) -> str:
     t = html.escape(title or '分享')
     s = html.escape(slug)
     present = 'true' if allow_present else 'false'
-    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在 `sandbox="allow-scripts"`
+    form_broker = (
+        _growth_form_broker_script(
+            slug=slug,
+            api_origin=form_api_origin,
+            view_ticket=form_view_ticket,
+        )
+        if form_api_origin
+        else ''
+    )
+    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在
+    # `sandbox="allow-scripts allow-forms"`
     # 的 opaque origin 子帧里跑，内置查看运行时点「放映」会 `element.requestFullscreen()`。沙箱本身不含
     # fullscreen flag、不拦全屏，但**全屏须经 Permissions-Policy 委派**——没有 allow，浏览器静默拒绝内层
     # requestFullscreen → 只剩运行时的 CSS 放映态（铺满 iframe=铺满浏览器视口），用户看到「只是浏览器全屏、
@@ -353,14 +516,15 @@ opacity:0;transition:opacity .2s;pointer-events:none}}
 #bar.show{{opacity:1;pointer-events:auto}}#bar button{{background:transparent;border:1px solid #3f3f46;color:#e5e7eb;
 border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer}}
 </style></head><body>
-<iframe id="frame" sandbox="allow-scripts" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
+<iframe id="frame" sandbox="allow-scripts allow-forms" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
 <div id="bar"><span>{t}</span><button onclick="fs()">全屏</button></div>
 <script>
-var presentable={present};var bar=document.getElementById('bar');var idle;
+var presentable={present};var bar=document.getElementById('bar');var frame=document.getElementById('frame');var idle;
 function show(){{if(!presentable)return;bar.classList.add('show');clearTimeout(idle);
 idle=setTimeout(function(){{bar.classList.remove('show');}},2000);}}
 document.addEventListener('mousemove',show);show();
 function fs(){{var el=document.documentElement;if(document.fullscreenElement){{document.exitFullscreen();}}
 else if(el.requestFullscreen){{el.requestFullscreen();}}}}
 document.addEventListener('keydown',function(e){{if(e.key==='f'||e.key==='F')fs();}});
+{form_broker}
 </script></body></html>"""

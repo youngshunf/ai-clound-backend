@@ -75,7 +75,9 @@ async def rbac_verify(request: Request, _token: str = DependsJwtAuth) -> None:  
     else:
         # casbin 模式
         try:
-            from backend.plugin.casbin_rbac.rbac import casbin_verify
+            from importlib import import_module
+
+            casbin_verify = getattr(import_module('backend.plugin.casbin_rbac.rbac'), 'casbin_verify')
         except ImportError:
             raise errors.ServerError(msg='Casbin RBAC 插件用法导入失败，请联系系统管理员')
 

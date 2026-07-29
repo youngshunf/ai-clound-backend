@@ -21,7 +21,6 @@ from sqlalchemy import and_, or_, select
 
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.model import HasnEnterpriseMemberRole, HasnEnterpriseMembership, HasnResourceShare
-from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -303,6 +302,9 @@ class ResourceShareService:
         # finance 策略含可执行代码，服务端永不允许分享（doc38 §6 / 05 §6 · C5）——先于 fail-closed 判。
         if resource_type in _NON_SHAREABLE_RESOURCE_TYPES:
             raise errors.ForbiddenError(msg='策略含可执行代码，不支持分享')
+        # 延迟导入打断 authz 包初始化时的 resource_gate → 本服务反向环；注册表只在写分享行时使用。
+        from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
+
         # fail-closed：注册表无此 resource_type 的 adapter → 拒绝建行（能分享必能判·doc33 S2-5）。
         if resource_type not in resource_kind_registry.registered_types():
             raise errors.ServerError(

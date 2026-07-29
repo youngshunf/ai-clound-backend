@@ -70,8 +70,9 @@ class NotificationService:
     @staticmethod
     def _actor_source(actor: dict[str, Any]) -> dict[str, Any]:
         """actor → NotificationSource（社区互动 source 即触发者）。"""
+        actor_type = actor.get('type')
         return {
-            'kind': _ACTOR_KIND.get(actor.get('type'), 'system'),
+            'kind': _ACTOR_KIND.get(actor_type, 'system') if isinstance(actor_type, str) else 'system',
             'id': actor.get('hasn_id'),
             'display_name': actor.get('display_name', ''),
             'avatar': actor.get('avatar', ''),
@@ -125,6 +126,7 @@ class NotificationService:
         owner_hasn_id: str | None,
         preview: str | None = None,
         extra_recipient_hasn_id: str | None = None,
+        link: str | None = None,
     ) -> None:
         """点赞/评论/收藏：通知内容作者；Agent 内容 relay 给主人；可选额外接收方（被回复者）。"""
         actor = await cls._resolve_actor(db, actor_hasn_id)
@@ -135,12 +137,12 @@ class NotificationService:
             'community_comment': '评论了你的',
             'community_collect': '收藏了你的',
         }.get(ntype, '互动了你的')
-        link = cls._content_link(content_type, content_id)
+        resolved_link = link or cls._content_link(content_type, content_id)
         base_data = {
             'actor': actor,
             'target': {'type': content_type, 'id': content_id},
             'preview': (preview or '')[:80],
-            'link': link,
+            'link': resolved_link,
         }
 
         # 1) 通知内容作者（自己互动自己跳过）
@@ -259,6 +261,92 @@ class NotificationService:
                 'preview': (preview or '')[:80],
                 'link': link,
                 'relay_from': agent_hasn_id,
+            },
+        )
+
+    @classmethod
+    async def notify_circle_event(
+        cls,
+        db: AsyncSession,
+        *,
+        recipient_hasn_id: str,
+        actor_hasn_id: str,
+        ntype: str,
+        title: str,
+        circle_id: str,
+        circle_name: str,
+        content_type: str | None = None,
+        content_id: str | None = None,
+        recipient_type: str = 'human',
+        recipient_owner_hasn_id: str | None = None,
+    ) -> None:
+        """发送圈子申请、邀请与治理结果通知，并透明转发分身收件人的主人。"""
+        if not recipient_hasn_id or recipient_hasn_id == actor_hasn_id:
+            return
+        actor = await cls._resolve_actor(db, actor_hasn_id)
+        source = cls._actor_source(actor)
+        data: dict[str, Any] = {
+            'actor': actor,
+            'target': {'type': 'circle', 'id': circle_id},
+            'circle': {'id': circle_id, 'name': circle_name},
+            'link': f'/community/circles/{circle_id}',
+        }
+        if content_type and content_id:
+            data['content_target'] = {'type': content_type, 'id': content_id}
+        await cls._emit(
+            db,
+            recipient_hasn_id=recipient_hasn_id,
+            source=source,
+            ntype=ntype,
+            category='social',
+            title=title,
+            data=dict(data),
+        )
+        if (
+            recipient_type == 'agent'
+            and recipient_owner_hasn_id
+            and recipient_owner_hasn_id not in (actor_hasn_id, recipient_hasn_id)
+        ):
+            relay_data = dict(data)
+            relay_data['relay_from'] = recipient_hasn_id
+            await cls._emit(
+                db,
+                recipient_hasn_id=recipient_owner_hasn_id,
+                source=source,
+                ntype=ntype,
+                category='social',
+                title=f'你的分身收到圈子通知：{title}',
+                data=relay_data,
+            )
+
+    @classmethod
+    async def notify_doc_space_updated(
+        cls,
+        db: AsyncSession,
+        *,
+        recipient_hasn_id: str,
+        actor_hasn_id: str,
+        space_id: str,
+        space_title: str,
+        article_id: str,
+        article_title: str,
+    ) -> None:
+        """通知订阅者文集已有公开文章发布或更新。"""
+        if not recipient_hasn_id or recipient_hasn_id == actor_hasn_id:
+            return
+        actor = await cls._resolve_actor(db, actor_hasn_id)
+        await cls._emit(
+            db,
+            recipient_hasn_id=recipient_hasn_id,
+            source=cls._actor_source(actor),
+            ntype='community_doc_space_updated',
+            category='social',
+            title=f'「{space_title}」有新内容',
+            data={
+                'actor': actor,
+                'target': {'type': 'doc_space', 'id': space_id},
+                'preview': f'{article_id} · {article_title}'[:80],
+                'link': f'/community/docs/{space_id}',
             },
         )
 

@@ -24,7 +24,7 @@ import uuid
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -77,7 +77,7 @@ async def ws() -> AsyncIterator[SimpleNamespace]:
     tag = _uid()
     owner = f'h_ws_{tag}'
     other = f'h_ws2_{tag}'
-    owner_uid = 960000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 9_600_000_000 + int(uuid.uuid4().int % 1_000_000_000)
     session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='W', status='active'))
     session.add(
         HasnHumans(hasn_id=other, star_id=f's_{owner_uid + 1}', user_id=owner_uid + 1, nickname='W2', status='active')
@@ -93,7 +93,11 @@ async def ws() -> AsyncIterator[SimpleNamespace]:
     _APP.dependency_overrides[get_db] = _yield_session
     _APP.dependency_overrides[DependsJwtAuth.dependency] = _owner_auth
 
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://ws.test')
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_APP),
+        base_url='http://ws.test',
+        headers={'x-forwarded-for': f'2001:db8::{tag}'},
+    )
     try:
         yield SimpleNamespace(client=client, session=session, owner=owner, other=other)
     finally:
@@ -105,7 +109,7 @@ async def ws() -> AsyncIterator[SimpleNamespace]:
 
 
 async def _make_site(
-    ws: SimpleNamespace, *, owner_id: str | None = None, visibility: str, password: str | None = None, **extra: object
+    ws: SimpleNamespace, *, owner_id: str | None = None, visibility: str, password: str | None = None, **extra: Any
 ) -> dict:
     data = await publish_service.create_site(
         ws.session,

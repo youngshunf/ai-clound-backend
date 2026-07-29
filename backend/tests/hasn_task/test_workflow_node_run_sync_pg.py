@@ -19,7 +19,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
@@ -33,8 +33,8 @@ from backend.app.hasn_task.crud.crud_workflow import (
     hasn_workflow_run_dao,
 )
 from backend.app.hasn_task.schema.workflow_sync import (
-    WorkflowNodeRunsSyncRequest,
     WorkflowNodeRunUpstream,
+    WorkflowNodeRunsSyncRequest,
     WorkflowRunUpstream,
 )
 from backend.app.hasn_task.service.workflow_sync_service import (
@@ -53,6 +53,7 @@ AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encodin
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
 NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
 ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
+WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 
 
 def _uid() -> str:
@@ -86,6 +87,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(WORKFLOW_SQL)
     await _run_sql(NODE_TABLES_SQL)
     await _run_sql(ADVANCE_MODE_SQL)
+    await _run_sql(WORKFLOW_HISTORY_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     try:
@@ -97,7 +99,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
 
 
 def _run(run_uuid: str, wf_uuid: str, **over: object) -> WorkflowRunUpstream:
-    payload = {
+    payload: dict[str, Any] = {
         'workflow_run_uuid': run_uuid,
         'workflow_uuid': wf_uuid,
         'dedupe_key': f'{wf_uuid}:1',
@@ -105,11 +107,11 @@ def _run(run_uuid: str, wf_uuid: str, **over: object) -> WorkflowRunUpstream:
         'graph_snapshot': {'nodes': [{'node_key': 'research'}, {'node_key': 'summary'}], 'edges': []},
     }
     payload.update(over)
-    return WorkflowRunUpstream(**payload)
+    return WorkflowRunUpstream(**cast(dict[str, Any], payload))
 
 
 def _node(node_uuid: str, run_uuid: str, wf_uuid: str, node_key: str, **over: object) -> WorkflowNodeRunUpstream:
-    payload = {
+    payload: dict[str, Any] = {
         'node_run_uuid': node_uuid,
         'workflow_run_uuid': run_uuid,
         'workflow_uuid': wf_uuid,
@@ -360,6 +362,35 @@ async def test_backfilled_placeholder_row_converges_to_daemon_uuid(env: SimpleNa
     assert len(nodes) == 1, '不得留下占位行 + 新行两条'
     assert nodes[0].node_run_uuid == authoritative
     assert nodes[0].work_session_id == 'ws_real'
+
+
+async def test_protocol_v2_defers_run_until_parent_workflow_definition_exists(env: SimpleNamespace) -> None:
+    """新协议不得为缺失定义的运行记录制造孤儿；旧协议仍可回灌历史。"""
+    owner, db = env.owner, env.session
+    workflow_uuid, workflow_run_uuid = f'wf_{_uid()}', f'wfr_{_uid()}'
+
+    v2_result = await workflow_sync_service.sync_node_runs(
+        db,
+        WorkflowNodeRunsSyncRequest(
+            sync_protocol_version=2,
+            runs=[_run(workflow_run_uuid, workflow_uuid)],
+        ),
+        owner_id=owner,
+    )
+    assert v2_result.accepted_runs == 0
+    assert v2_result.rejected == []
+    assert v2_result.deferred == [
+        {'uuid': workflow_run_uuid, 'reason': 'PARENT_WORKFLOW_MISSING'}
+    ]
+    assert await hasn_workflow_run_dao.get_by_uuid(db, workflow_run_uuid) is None
+
+    v1_result = await workflow_sync_service.sync_node_runs(
+        db,
+        WorkflowNodeRunsSyncRequest(runs=[_run(workflow_run_uuid, workflow_uuid)]),
+        owner_id=owner,
+    )
+    assert v1_result.accepted_runs == 1
+    assert v1_result.deferred == []
 
 
 async def test_node_run_under_another_owners_run_is_rejected(env: SimpleNamespace) -> None:

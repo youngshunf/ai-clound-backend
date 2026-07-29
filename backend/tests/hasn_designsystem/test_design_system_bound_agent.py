@@ -20,6 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -57,11 +59,41 @@ def _content() -> dict:
     }
 
 
+async def _seed_identities(session, owner: str, *agents: str, extra_owners: tuple[str, ...] = ()) -> None:
+    """提交真实主人/分身身份，使独立 IM 事务能够执行严格身份校验。"""
+    identities: list[HasnHumans | HasnAgents] = []
+    for index, human_id in enumerate((owner, *extra_owners)):
+        user_id = 1_500_000_000 + int(uuid.uuid4().int % 400_000_000)
+        identities.append(
+            HasnHumans(
+                hasn_id=human_id,
+                star_id=f's_{uuid.uuid4().hex[:12]}_{index}',
+                user_id=user_id,
+                nickname=f'设计系统主人 {human_id[-8:]} {index + 1}',
+                status='active',
+            )
+        )
+    for index, agent_id in enumerate(agents):
+        identities.append(
+            HasnAgents(
+                hasn_id=agent_id,
+                star_id=f'sa_{uuid.uuid4().hex[:12]}_{index}',
+                owner_id=owner,
+                display_name=f'设计系统分身 {index + 1}',
+                agent_name=f'ds_{uuid.uuid4().hex[:8]}',
+                status='active',
+            )
+        )
+    session.add_all(identities)
+    await session.commit()
+
+
 async def test_agent_save_binds_generating_agent(session) -> None:
     """分身 save 一套新设计系统 → bound_agent_id 自动 = 该分身（创建即绑）。"""
     tag = uuid.uuid4().hex[:8]
     owner = f'h_owner_{tag}'
     agent = f'a_ds_{tag}'
+    await _seed_identities(session, owner, agent)
     saved = await design_system_service.save(
         session,
         subject=Subject.agent(agent, owner),
@@ -78,6 +110,7 @@ async def test_owner_save_does_not_bind(session) -> None:
     """owner 本人 save → 不绑（无分身可绑），bound_agent_id 保持 None。"""
     tag = uuid.uuid4().hex[:8]
     owner = f'h_owner_{tag}'
+    await _seed_identities(session, owner)
     saved = await design_system_service.save(
         session,
         subject=Subject.human(owner),
@@ -94,6 +127,7 @@ async def test_bind_only_if_unbound_keeps_first_agent(session) -> None:
     tag = uuid.uuid4().hex[:8]
     owner = f'h_owner_{tag}'
     agent = f'a_ds_{tag}'
+    await _seed_identities(session, owner, agent)
     first = await design_system_service.save(
         session,
         subject=Subject.agent(agent, owner),
@@ -123,6 +157,7 @@ async def test_owner_rebind_and_unbind(session) -> None:
     owner = f'h_owner_{tag}'
     agent1 = f'a_ds1_{tag}'
     agent2 = f'a_ds2_{tag}'
+    await _seed_identities(session, owner, agent1, agent2)
     saved = await design_system_service.save(
         session,
         subject=Subject.agent(agent1, owner),
@@ -151,6 +186,7 @@ async def test_non_owner_cannot_rebind(session) -> None:
     owner = f'h_owner_{tag}'
     other = f'h_other_{tag}'
     agent = f'a_ds_{tag}'
+    await _seed_identities(session, owner, agent, extra_owners=(other,))
     saved = await design_system_service.save(
         session,
         subject=Subject.agent(agent, owner),

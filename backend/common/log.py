@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import inspect
 import logging
 import os
 import re
 import sys
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
@@ -10,6 +13,9 @@ from backend.core.conf import settings
 from backend.core.path_conf import LOG_DIR
 from backend.utils.timezone import timezone
 from backend.utils.trace_id import get_request_trace_id
+
+if TYPE_CHECKING:
+    from loguru import BasicHandlerConfig, Record
 
 
 class InterceptHandler(logging.Handler):
@@ -21,6 +27,7 @@ class InterceptHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         # 获取对应的 Loguru 级别（如果存在）
+        level: str | int
         try:
             level = logger.level(record.levelname).name
         except ValueError:
@@ -35,7 +42,7 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-def default_formatter(record: logging.LogRecord) -> str:
+def default_formatter(record: Record) -> str:
     """默认日志格式化程序"""
 
     # 重写 sqlalchemy echo 输出
@@ -47,11 +54,11 @@ def default_formatter(record: logging.LogRecord) -> str:
     return settings.LOG_FORMAT if settings.LOG_FORMAT.endswith('\n') else f'{settings.LOG_FORMAT}\n'
 
 
-def request_id_filter(record: logging.LogRecord) -> logging.LogRecord:
+def request_id_filter(record: Record) -> bool:
     """请求 ID 过滤器"""
     rid = get_request_trace_id()
-    record['request_id'] = rid[: settings.TRACE_ID_LOG_LENGTH]
-    return record
+    cast(dict[str, Any], record)['request_id'] = rid[: settings.TRACE_ID_LOG_LENGTH]
+    return True
 
 
 def setup_logging() -> None:
@@ -83,16 +90,14 @@ def setup_logging() -> None:
     logger.remove()
 
     # 配置 loguru 处理器
-    logger.configure(
-        handlers=[
-            {
-                'sink': sys.stdout,
-                'level': settings.LOG_STD_LEVEL,
-                'format': default_formatter,
-                'filter': lambda record: request_id_filter(record) and not record.get('extra', {}).get('llm_debug', False),
-            },
-        ],
-    )
+    stdout_handler: BasicHandlerConfig = {
+        'sink': sys.stdout,
+        'level': settings.LOG_STD_LEVEL,
+        'format': default_formatter,
+        'filter': lambda record: request_id_filter(record)
+        and not record.get('extra', {}).get('llm_debug', False),
+    }
+    logger.configure(handlers=[stdout_handler])
 
 
 def set_custom_logfile() -> None:
@@ -105,31 +110,25 @@ def set_custom_logfile() -> None:
     log_error_file = LOG_DIR / settings.LOG_ERROR_FILENAME
 
     # 日志压缩回调
-    def compression(filepath: str) -> str:
+    def compressed_path(filepath: str) -> str:
         filename = filepath.split(os.sep)[-1]
         original_filename = filename.split('.')[0]
         if '-' in original_filename:
-            return LOG_DIR / f'{original_filename}.log'
-        return LOG_DIR / f'{original_filename}_{timezone.now().strftime("%Y-%m-%d")}.log'
-
-    # 日志文件通用配置
-    # https://loguru.readthedocs.io/en/stable/api/logger.html#loguru._logger.Logger.add
-    log_config = {
-        'format': default_formatter,
-        'enqueue': True,
-        'rotation': '00:00',
-        'retention': '7 days',
-        'compression': lambda filepath: os.rename(filepath, compression(filepath)),
-    }
+            return str(LOG_DIR / f'{original_filename}.log')
+        return str(LOG_DIR / f'{original_filename}_{timezone.now().strftime("%Y-%m-%d")}.log')
 
     # 标准输出文件
     logger.add(
         str(log_access_file),
         level=settings.LOG_FILE_ACCESS_LEVEL,
         filter=lambda record: record['level'].no <= 25 and not record.get('extra', {}).get('llm_debug', False),
+        format=default_formatter,
         backtrace=False,
         diagnose=False,
-        **log_config,
+        enqueue=True,
+        rotation='00:00',
+        retention='7 days',
+        compression=lambda filepath: os.rename(filepath, compressed_path(filepath)),
     )
 
     # 标准错误文件
@@ -137,9 +136,13 @@ def set_custom_logfile() -> None:
         str(log_error_file),
         level=settings.LOG_FILE_ERROR_LEVEL,
         filter=lambda record: record['level'].no >= 30 and not record.get('extra', {}).get('llm_debug', False),
+        format=default_formatter,
         backtrace=True,
         diagnose=True,
-        **log_config,
+        enqueue=True,
+        rotation='00:00',
+        retention='7 days',
+        compression=lambda filepath: os.rename(filepath, compressed_path(filepath)),
     )
 
 

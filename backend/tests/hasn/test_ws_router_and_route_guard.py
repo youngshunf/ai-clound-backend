@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import builtins
 
 from types import SimpleNamespace
 from typing import Any
@@ -11,7 +12,7 @@ import pytest
 class FakeRedis:
     def __init__(self) -> None:
         self.hashes: dict[str, dict[str, Any]] = {}
-        self.sets: dict[str, set[Any]] = {}
+        self.sets: dict[str, builtins.set[Any]] = {}
         self.lists: dict[str, list[Any]] = {}
         self.strings: dict[str, Any] = {}
         self.deleted: list[str] = []
@@ -38,7 +39,7 @@ class FakeRedis:
     async def srem(self, key: str, value: Any) -> None:
         self.sets.get(key, set()).discard(value)
 
-    async def smembers(self, key: str) -> set[Any]:
+    async def smembers(self, key: str) -> builtins.set[Any]:
         return set(self.sets.get(key, set()))
 
     async def rpush(self, key: str, value: Any) -> None:
@@ -88,7 +89,7 @@ class FakeRedis:
         raise AssertionError(f'unexpected eval numkeys={numkeys}')
 
 
-class FakeWebSocket:
+class _FakeWebSocket:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.sent: list[str] = []
@@ -121,7 +122,10 @@ class ScalarResult:
         return Scalars()
 
 
-class FakeDb:
+FakeWebSocket: Any = _FakeWebSocket
+
+
+class _FakeDb:
     def __init__(self, results: list[ScalarResult]) -> None:
         self.results = results
         self.flush_count = 0
@@ -132,6 +136,9 @@ class FakeDb:
 
     async def flush(self) -> None:
         self.flush_count += 1
+
+
+FakeDb: Any = _FakeDb
 
 
 @pytest.mark.asyncio
@@ -177,7 +184,8 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
     module._ws_connections.clear()
 
     router = module.NodeSessionService()
-    node_ws = FakeWebSocket()
+    fake_node_ws = FakeWebSocket()
+    node_ws: Any = fake_node_ws
     connection_id = await router.register_node('node-1', 'desktop', node_ws, capacity=2)
     module._ws_ready_connection_ids['node-1'] = connection_id
     assert module._ws_connections['node-1'] is node_ws
@@ -221,7 +229,7 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
 
     pushed = await router.push_message_to('h_owner', {'created_time': '2', 'body': 'hi'})
     assert pushed is True
-    assert json.loads(node_ws.sent[-1])['body'] == 'hi'
+    assert json.loads(fake_node_ws.sent[-1])['body'] == 'hi'
 
     agent_push = await router.push_message_to('a_agent', {'created_time': '1', 'body': 'agent'})
     assert agent_push is True

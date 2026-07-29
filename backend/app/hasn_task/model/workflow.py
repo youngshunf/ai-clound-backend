@@ -35,18 +35,18 @@ class HasnWorkflow(HasnTaskAppBase):
     )
     owner_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='工作流归属 owner')
     name: Mapped[str] = mapped_column(sa.String(200), default='', comment='工作流名称')
-    goal: Mapped[str | None] = mapped_column(
-        UniversalText, default=None, comment='总目标（也作整图验收口径）'
+    template_key: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='实例溯源的工作流模板键；手工编排为 NULL'
     )
+    instantiation_idempotency_key: Mapped[str | None] = mapped_column(
+        sa.String(128), default=None, comment='Owner 场景实例化幂等键；同一 owner 重放返回同一工作流'
+    )
+    goal: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='总目标（也作整图验收口径）')
     schedule_type: Mapped[str] = mapped_column(
         sa.String(20), default='once', comment='整图定时 (once:一次性:blue/interval:间隔:green/cron:定时:orange)'
     )
-    schedule_config: Mapped[dict] = mapped_column(
-        postgresql.JSONB(), default_factory=dict, comment='调度配置 JSON'
-    )
-    schedule_display: Mapped[str | None] = mapped_column(
-        sa.String(200), default=None, comment='人类可读调度描述'
-    )
+    schedule_config: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='调度配置 JSON')
+    schedule_display: Mapped[str | None] = mapped_column(sa.String(200), default=None, comment='人类可读调度描述')
     timezone: Mapped[str] = mapped_column(sa.String(64), default='Asia/Shanghai', comment='时区')
     misfire_policy: Mapped[str] = mapped_column(sa.String(20), default='run_once', comment='错过补跑策略')
     catchup_limit: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='补偿执行上限')

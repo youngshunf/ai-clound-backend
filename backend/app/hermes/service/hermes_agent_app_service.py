@@ -4,7 +4,7 @@ import secrets
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -358,12 +358,12 @@ class HermesAgentAppService:
         if not version:
             raise errors.NotFoundError(msg='template_not_found')
         return {
-            'app_id': app.template_id,
-            'name': app.name,
-            'description': getattr(app, 'description', None),
-            'emoji': getattr(app, 'emoji', None),
-            'icon_url': getattr(app, 'icon_url', None),
-            'skill_dependencies': getattr(app, 'skill_dependencies', None),
+            'template_id': template.template_id,
+            'name': template.name,
+            'description': getattr(template, 'description', None),
+            'emoji': getattr(template, 'emoji', None),
+            'icon_url': getattr(template, 'icon_url', None),
+            'skill_dependencies': getattr(template, 'skill_dependencies', None),
             'version': version.version,
             'package_url': getattr(version, 'package_url', None),
             'file_hash': getattr(version, 'file_hash', None),
@@ -392,7 +392,7 @@ class HermesAgentAppService:
             agent_id=agent_id,
             user_id=user_id,
             agent_name=payload.agent_name,
-            template=template['app_id'],
+            template=template['template_id'],
             timezone=payload.timezone or 'Asia/Shanghai',
             status='creating',
             llm_mode='platform',
@@ -452,7 +452,7 @@ class HermesAgentAppService:
             user_phone = (getattr(user_row, 'phone', None) if user_row else None) or ''
 
             apply_payload: dict[str, Any] = {
-                'template_id': template['app_id'],
+                'template_id': template['template_id'],
                 'template_version': template['version'],
                 'package_url': template.get('package_url'),
                 'file_hash': template.get('file_hash'),
@@ -578,11 +578,16 @@ class HermesAgentAppService:
 
     async def list_agents(self, db: AsyncSession, *, user_id: int, status: str | None = None, channel: str | None = None, page: int = 1, size: int = 20) -> dict[str, Any]:
         if hasattr(db, 'hermes_agents'):
-            agents_all = [item for item in db.hermes_agents if item.user_id == user_id and item.deleted_time is None]
+            memory_db = cast(Any, db)
+            agents_all = [item for item in memory_db.hermes_agents if item.user_id == user_id and item.deleted_time is None]
             if status:
                 agents_all = [item for item in agents_all if item.status == status]
             if channel:
-                allowed = {item.agent_id for item in db.channel_bindings if item.user_id == user_id and item.channel == channel}
+                allowed = {
+                    item.agent_id
+                    for item in memory_db.channel_bindings
+                    if item.user_id == user_id and item.channel == channel
+                }
                 agents_all = [item for item in agents_all if item.agent_id in allowed]
             agents_all.sort(key=lambda item: item.id or 0, reverse=True)
             total = len(agents_all)
@@ -758,7 +763,8 @@ class HermesAgentAppService:
                 if not isinstance(item, dict):
                     continue
                 channel = str(item.get('channel') or '')
-                metadata = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
+                raw_metadata = item.get('metadata')
+                metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
                 channels.append(
                     {
                         'channel': channel,
@@ -812,7 +818,15 @@ class HermesAgentAppService:
 
     async def _upsert_channel_binding(self, db: AsyncSession, *, user_id: int, agent_id: str, channel: str, data: dict[str, Any], action: str) -> None:
         if hasattr(db, 'channel_bindings'):
-            item = next((row for row in db.channel_bindings if row.user_id == user_id and row.agent_id == agent_id and row.channel == channel), None)
+            memory_db = cast(Any, db)
+            item = next(
+                (
+                    row
+                    for row in memory_db.channel_bindings
+                    if row.user_id == user_id and row.agent_id == agent_id and row.channel == channel
+                ),
+                None,
+            )
         else:
             result = await db.execute(sa.select(HermesAgentChannelBinding).where(HermesAgentChannelBinding.user_id == user_id, HermesAgentChannelBinding.agent_id == agent_id, HermesAgentChannelBinding.channel == channel))
             item = result.scalar_one_or_none()
@@ -822,7 +836,8 @@ class HermesAgentAppService:
         item.status = data.get('status', item.status)
         item.runtime_session_id = data.get('session_id', item.runtime_session_id)
         item.expires_at = _parse_datetime(data.get('expires_at')) or item.expires_at
-        metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
+        raw_metadata = data.get('metadata')
+        metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
         item.metadata_json = _safe_json(metadata)
         item.bound_account_display = metadata.get('account_display') or metadata.get('open_id') or item.bound_account_display
         await db.flush()

@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -346,7 +346,7 @@ _CAPABILITIES = [
 ]
 
 
-FINANCE_AI_NATIVE_MANIFEST = {
+FINANCE_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'finance',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'finance': '金融投研（数据、专家团队、策略回测、交易复盘与盯盘简报）'},
@@ -355,6 +355,7 @@ FINANCE_AI_NATIVE_MANIFEST = {
     'collaboration_mode': 'workspace_shared',
     'project_aware': True,
     'project_required': False,
+    'project_integration': 'project_aware',
     # 六类产物资源描述符（05 §1.1）：完成卡 / 工作会话资源栏 / URI 解析 / 详情跳转全从这份声明派生。
     'resources': _FINANCE_RESOURCES,
     'execution_mode': 'local_tool',

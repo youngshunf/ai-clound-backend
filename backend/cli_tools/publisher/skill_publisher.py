@@ -22,6 +22,8 @@ from backend.cli_tools.cli.common import (
 from backend.cli_tools.packager.skill_packager import SkillPackager
 from backend.cli_tools.validator.skill_validator import SkillValidator
 
+BumpType = Literal['patch', 'minor', 'major']
+
 
 @dataclass
 class PublishResult:
@@ -46,7 +48,7 @@ class SkillPublisher:
     async def publish(
         self,
         db: AsyncSession,
-        bump: Literal['patch', 'minor', 'major'] | None = None,
+        bump: BumpType | None = None,
         version: str | None = None,
         changelog: str | None = None,
     ) -> PublishResult:
@@ -174,7 +176,7 @@ class SkillPublisher:
         db: AsyncSession,
         skill_id: str,
         config_version: str,
-        bump: str | None,
+        bump: BumpType | None,
         explicit_version: str | None,
     ) -> str | None:
         """解析最终版本号"""
@@ -261,7 +263,7 @@ class SkillPublisher:
         skill = MarketplaceSkill(
             skill_id=config.id,
             name=config.name,
-            description=config.description,
+            description_zh=config.description,
             icon_url=icon_url,
             emoji=getattr(config, 'emoji', None),
             author_name=config.author_name,

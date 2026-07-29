@@ -1,0 +1,123 @@
+// 生产 OTLP 入口只通过 Docker 端口映射发布到宿主机回环地址。
+otelcol.receiver.otlp "application" {
+  grpc {
+    endpoint             = "0.0.0.0:4317"
+    max_concurrent_streams = 128
+    max_recv_msg_size    = "4MiB"
+  }
+
+  output {
+    logs    = [otelcol.processor.memory_limiter.application.input]
+    metrics = [otelcol.processor.memory_limiter.application.input]
+    traces  = [otelcol.processor.memory_limiter.application.input]
+  }
+}
+
+// 在过载时优先丢弃遥测，禁止观测系统拖垮业务主机。
+otelcol.processor.memory_limiter "application" {
+  check_interval = "1s"
+  limit          = "384MiB"
+  spike_limit    = "96MiB"
+
+  output {
+    logs    = [otelcol.processor.attributes.redact.input]
+    metrics = [otelcol.processor.attributes.redact.input]
+    traces  = [otelcol.processor.attributes.redact.input]
+  }
+}
+
+// 删除常见凭据、查询串、SQL 语句、用户标识和客户端地址。
+otelcol.processor.attributes "redact" {
+  action {
+    pattern = "(?i).*(authorization|cookie|token|password|secret|api[_-]?key).*"
+    action  = "delete"
+  }
+
+  action {
+    key    = "url.full"
+    action = "delete"
+  }
+
+  action {
+    key    = "url.query"
+    action = "delete"
+  }
+
+  action {
+    key    = "http.target"
+    action = "delete"
+  }
+
+  action {
+    key    = "db.statement"
+    action = "delete"
+  }
+
+  action {
+    key    = "db.connection_string"
+    action = "delete"
+  }
+
+  action {
+    key    = "enduser.id"
+    action = "delete"
+  }
+
+  action {
+    key    = "user.id"
+    action = "delete"
+  }
+
+  action {
+    key    = "client.address"
+    action = "delete"
+  }
+
+  output {
+    logs    = [otelcol.processor.batch.application.input]
+    metrics = [otelcol.processor.batch.application.input]
+    traces  = [otelcol.processor.batch.application.input]
+  }
+}
+
+otelcol.processor.batch "application" {
+  timeout             = "1s"
+  send_batch_size     = 1024
+  send_batch_max_size = 2048
+
+  output {
+    logs    = [otelcol.exporter.loki.application.input]
+    metrics = [otelcol.exporter.prometheus.application.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.loki "application" {
+  forward_to = [loki.write.application.receiver]
+}
+
+loki.write "application" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+otelcol.exporter.prometheus "application" {
+  forward_to = [prometheus.remote_write.application.receiver]
+}
+
+prometheus.remote_write "application" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+
+    tls {
+      insecure = true
+    }
+  }
+}

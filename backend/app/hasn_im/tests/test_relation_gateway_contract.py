@@ -30,6 +30,11 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.crud.crud_hasn_contact_requests import hasn_contact_requests_dao
 from backend.app.hasn.model import HasnContacts
+from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn.service.inbound_gatekeeper import (
+    SUPPRESS,
+    evaluate_inbound,
+)
 from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import (
     RelationGatewayError,
     SqlAlchemyRelationGateway,
@@ -45,7 +50,7 @@ async def _dispose_global_engine():
     """每测试结束（其自身事件循环内）dispose 全局应用引擎池，根除跨 loop teardown 噪声。
 
     收编期 gateway 委托的现网 service（如 remove_contact 的 post-commit 通知推送）会在
-    **全局引擎池**（pool_size=10 的 AsyncAdaptedQueuePool）上开连接。pytest-asyncio 每测试
+    **全局引擎池**（容量由数据库池配置控制）上开连接。pytest-asyncio 每测试
     新建事件循环；若全局池连接跨 loop 存活，GC 时 asyncpg 会在已关闭 loop 上 cancel，抛
     「Future attached to a different loop / Event loop is closed」——被 unraisable 插件算作
     随机测试失败（本套件里随机命中 update_trust_missing / resolve_blocked_missing 等）。
@@ -76,11 +81,65 @@ def _hid(prefix: str) -> str:
     return f'{prefix}_{uuid.uuid4().hex[:18]}'
 
 
+async def _seed_identity(
+    sessionmaker,
+    hasn_id: str,
+    *,
+    owner_id: str | None = None,
+    status: str = 'active',
+) -> None:
+    """幂等建立真实身份行，供关系写的 fail-closed 前置使用。"""
+    async with sessionmaker() as db:
+        if hasn_id.startswith('h_'):
+            exists = await db.scalar(
+                sa.select(HasnHumans.id).where(HasnHumans.hasn_id == hasn_id)
+            )
+            if exists is None:
+                marker = uuid.uuid4().hex
+                db.add(
+                    HasnHumans(
+                        hasn_id=hasn_id,
+                        star_id=f'h{marker[:24]}',
+                        user_id=int(marker[:15], 16),
+                        nickname=f'关系测试主人{marker[:10]}',
+                        status=status,
+                    )
+                )
+        elif hasn_id.startswith('a_'):
+            if not owner_id:
+                raise AssertionError('Agent 测试身份必须提供 owner_id')
+            exists = await db.scalar(
+                sa.select(HasnAgents.id).where(HasnAgents.hasn_id == hasn_id)
+            )
+            if exists is None:
+                marker = uuid.uuid4().hex
+                db.add(
+                    HasnAgents(
+                        hasn_id=hasn_id,
+                        star_id=f'a{marker[:24]}',
+                        owner_id=owner_id,
+                        display_name=f'关系测试分身{marker[:8]}',
+                        agent_name=f'rel{marker[:12]}',
+                        api_key_hash=marker,
+                        status=status,
+                        created_via='client',
+                    )
+                )
+        await db.commit()
+
+
 async def _seed_contact(
     sessionmaker, *, owner_id: str, peer_id: str, peer_type: str = 'human',
     trust_level: int = 3, status: str = 'connected', peer_owner_id: str | None = None,
 ) -> None:
     """直接落一条 hasn_contacts 关系行（种子，精确控制 trust/status）。"""
+    await _seed_identity(sessionmaker, owner_id)
+    if peer_type == 'agent':
+        agent_owner = peer_owner_id or _hid('h')
+        await _seed_identity(sessionmaker, agent_owner)
+        await _seed_identity(sessionmaker, peer_id, owner_id=agent_owner)
+    else:
+        await _seed_identity(sessionmaker, peer_id)
     async with sessionmaker() as db:
         db.add(HasnContacts(
             owner_id=owner_id, peer_id=peer_id, peer_type=peer_type,
@@ -95,6 +154,16 @@ async def _seed_request(
     from_type: str = 'human', to_type: str = 'human', add_source: str = 'manual',
 ) -> int:
     """直接落一条 pending hasn_contact_requests，返回 request_id。"""
+    if from_type == 'agent':
+        await _seed_identity(sessionmaker, to_owner_id)
+        await _seed_identity(sessionmaker, from_id, owner_id=to_owner_id)
+    else:
+        await _seed_identity(sessionmaker, from_id)
+    if to_type == 'agent':
+        await _seed_identity(sessionmaker, to_owner_id)
+        await _seed_identity(sessionmaker, to_id, owner_id=to_owner_id)
+    else:
+        await _seed_identity(sessionmaker, to_id)
     async with sessionmaker() as db:
         req = await hasn_contact_requests_dao.create_request(
             db, from_id=from_id, to_id=to_id, to_owner_id=to_owner_id,
@@ -124,6 +193,8 @@ async def _cleanup(sessionmaker, *ids: str) -> None:
             (HasnContactRequests, (HasnContactRequests.from_id, HasnContactRequests.to_id, HasnContactRequests.to_owner_id)),
         ):
             await db.execute(sa.delete(table).where(sa.or_(*[c.in_(ids) for c in cols])))
+        await db.execute(sa.delete(HasnAgents).where(HasnAgents.hasn_id.in_(ids)))
+        await db.execute(sa.delete(HasnHumans).where(HasnHumans.hasn_id.in_(ids)))
         await db.commit()
 
 
@@ -162,6 +233,126 @@ async def test_resolve_effective_relation_blocked_and_missing(sessionmaker_pg):
         await _cleanup(sessionmaker_pg, owner, peer)
 
 
+async def test_auto_first_contact_is_transactional_and_idempotent(
+    sessionmaker_pg,
+):
+    """普通朋友的分身首次联系时，只建立一条待审批请求并保持消息门控。"""
+    receiver_owner = _hid('h')
+    receiver_agent = _hid('a')
+    sender_owner = _hid('h')
+    sender_agent = _hid('a')
+    try:
+        await _seed_identity(sessionmaker_pg, receiver_owner)
+        await _seed_identity(
+            sessionmaker_pg,
+            receiver_agent,
+            owner_id=receiver_owner,
+        )
+        await _seed_identity(sessionmaker_pg, sender_owner)
+        await _seed_identity(
+            sessionmaker_pg,
+            sender_agent,
+            owner_id=sender_owner,
+        )
+        await _seed_contact(
+            sessionmaker_pg,
+            owner_id=receiver_owner,
+            peer_id=sender_owner,
+            trust_level=2,
+        )
+
+        async with sessionmaker_pg() as db:
+            first = await evaluate_inbound(
+                db,
+                from_id=sender_agent,
+                agent_info={
+                    'hasn_id': receiver_agent,
+                    'owner_id': receiver_owner,
+                },
+            )
+            replay = await evaluate_inbound(
+                db,
+                from_id=sender_agent,
+                agent_info={
+                    'hasn_id': receiver_agent,
+                    'owner_id': receiver_owner,
+                },
+            )
+            await db.commit()
+
+        assert first.action == SUPPRESS
+        assert first.reason == 'permission_denied'
+        assert first.snapshot['pending_request_id'] == replay.snapshot[
+            'pending_request_id'
+        ]
+
+        from backend.app.hasn.model import HasnContactRequests
+
+        async with sessionmaker_pg() as db:
+            requests = list(
+                (
+                    await db.execute(
+                        sa.select(HasnContactRequests).where(
+                            HasnContactRequests.from_id == sender_agent,
+                            HasnContactRequests.to_id == receiver_agent,
+                            HasnContactRequests.status == 'pending',
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(requests) == 1
+        assert requests[0].to_owner_id == receiver_owner
+        assert requests[0].add_source == 'auto_first_contact'
+        assert await _get_contact(
+            sessionmaker_pg,
+            receiver_owner,
+            sender_agent,
+        ) is None
+    finally:
+        await _cleanup(
+            sessionmaker_pg,
+            receiver_owner,
+            receiver_agent,
+            sender_owner,
+            sender_agent,
+        )
+
+
+async def test_inbound_gate_fails_closed_when_target_identity_disappears(
+    sessionmaker_pg,
+):
+    """目标身份缺失或主人归属缺失时不得误判为放行。"""
+    owner = _hid('h')
+    missing_agent = _hid('a')
+    sender = _hid('h')
+    try:
+        await _seed_identity(sessionmaker_pg, owner)
+        await _seed_identity(sessionmaker_pg, sender)
+        async with sessionmaker_pg() as db:
+            missing_identity = await evaluate_inbound(
+                db,
+                from_id=sender,
+                agent_info={
+                    'hasn_id': missing_agent,
+                    'owner_id': owner,
+                },
+            )
+            missing_owner = await evaluate_inbound(
+                db,
+                from_id=sender,
+                agent_info={'hasn_id': missing_agent},
+            )
+
+        assert missing_identity.action == SUPPRESS
+        assert missing_identity.snapshot['decision_reason'] == 'gate_error'
+        assert missing_owner.action == SUPPRESS
+        assert missing_owner.snapshot['decision_reason'] == 'gate_error'
+    finally:
+        await _cleanup(sessionmaker_pg, owner, sender, missing_agent)
+
+
 async def test_update_trust_block_unblock(sessionmaker_pg):
     owner, peer = _hid('h'), _hid('h')
     gw = SqlAlchemyRelationGateway(session_factory=sessionmaker_pg)
@@ -189,8 +380,36 @@ async def test_update_trust_block_unblock(sessionmaker_pg):
 async def test_update_trust_missing_raises(sessionmaker_pg):
     owner, peer = _hid('h'), _hid('h')
     gw = SqlAlchemyRelationGateway(session_factory=sessionmaker_pg)
-    with pytest.raises(RelationGatewayError):
-        await gw.update_trust(owner_hasn_id=owner, peer_hasn_id=peer, trust_level=3)
+    try:
+        await _seed_identity(sessionmaker_pg, owner)
+        await _seed_identity(sessionmaker_pg, peer)
+        with pytest.raises(RelationGatewayError, match='关系不存在'):
+            await gw.update_trust(owner_hasn_id=owner, peer_hasn_id=peer, trust_level=3)
+    finally:
+        await _cleanup(sessionmaker_pg, owner, peer)
+
+
+async def test_inactive_identity_fails_closed(sessionmaker_pg):
+    """关系存在也不能让停用身份继续修改关系状态。"""
+    owner, peer = _hid('h'), _hid('h')
+    gw = SqlAlchemyRelationGateway(session_factory=sessionmaker_pg)
+    try:
+        await _seed_contact(sessionmaker_pg, owner_id=owner, peer_id=peer)
+        async with sessionmaker_pg() as db:
+            await db.execute(
+                sa.update(HasnHumans)
+                .where(HasnHumans.hasn_id == peer)
+                .values(status='suspended')
+            )
+            await db.commit()
+        with pytest.raises(RelationGatewayError, match='身份已停用'):
+            await gw.update_trust(
+                owner_hasn_id=owner,
+                peer_hasn_id=peer,
+                trust_level=3,
+            )
+    finally:
+        await _cleanup(sessionmaker_pg, owner, peer)
 
 
 async def test_accept_request_human_bidirectional(sessionmaker_pg):

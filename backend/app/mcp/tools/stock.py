@@ -5,7 +5,7 @@
 - `hasn.stock.download`：把选中素材下载进 owner 私有桶 + 双登记（asset + artifact），下载后即可被
   `hasn.artifact.search` 搜回。SSRF 白名单由 provider 目录 `download_domains` 并集驱动。
 
-身份恒由 `agent_context` 注入；`session_id` 取系统注入的 `_hasn_session_id`（work_session_id）。
+身份恒由 `agent_context` 注入；`work_session_id` 取分发入口两级权威落定的 ContextVar。
 不外发、不动钱 → `required_scopes=[]`（出厂 Allow）。
 """
 
@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Any
 from backend.app.hasn_stock.service.download_service import stock_download_service
 from backend.app.hasn_stock.service.provider_store import stock_provider_store
 from backend.app.hasn_stock.service.stock_service import stock_service
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.context import get_current_work_session_id
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
@@ -171,12 +172,14 @@ class StockDownloadTool(BaseTool):
         if not isinstance(raw, str) or not raw.strip():
             raise RuntimeError("stock.download: 'url' 必填")
         return await stock_download_service.download(
-            owner_hasn_id=agent_context.owner_hasn_id,
+            owner_hasn_id=require_owner_hasn_id(agent_context),
             agent_hasn_id=agent_context.agent_hasn_id,
             url=raw.strip(),
             title=(arguments.get('title') or None),
             description=(arguments.get('description') or None),
-            session_id=agent_context.session_id,
+            # 会话轴分流（设计 02 §4.3）：工作会话权威取 ContextVar（两级权威已落）+ auth 绑定
+            # 字段兜底；`agent_context.session_id` 是运行时/逻辑会话语义，不作工作会话锚。
+            work_session_id=get_current_work_session_id() or agent_context.work_session_id,
         )
 
 

@@ -45,8 +45,8 @@ async def agent_create_marketplace_sync_log(
     db: CurrentSessionTransaction,
     obj: CreateMarketplaceSyncLogParam,
 ) -> ResponseModel:
-    result = await marketplace_sync_log_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await marketplace_sync_log_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

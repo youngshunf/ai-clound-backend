@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -61,7 +62,7 @@ def _human(hasn_id: str, user_id: int) -> HasnHumans:
 
 def _catalog(app_id: str, **over) -> HasnAppCatalog:
     """造一条 published、personal 可见的 catalog 行（默认免费）。"""
-    base = {
+    base: dict[str, Any] = {
         'app_id': app_id,
         'name': 'P2 测试应用',
         'icon': 'app-window',

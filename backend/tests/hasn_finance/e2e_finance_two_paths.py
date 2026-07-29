@@ -47,6 +47,8 @@ DATA_VENV_PY = DATA_SVC / '.venv-s0' / 'bin' / 'python'
 EVIDENCE_DIR = PROJECT / 'test-results' / 'finance-e2e'
 
 RESULTS: list[dict[str, Any]] = []
+TEST_DB: Any = None
+TEST_AGENT: Any = None
 
 
 def record(name: str, ok: bool, detail: str) -> None:
@@ -117,7 +119,7 @@ async def run_paths(base: str, token: str) -> None:
     record('healthz', health.get('ok') is True, f'ok={health.get("ok")} interfaces={health.get("interfaces")}')
 
     # ── 路①Agent MCP：真 handler → provider → 真 akshare（宏观 CPI，sandbox 内可达）──
-    a = await H.handle_macro_indicator(None, None, {'indicator': 'cpi', 'limit': 3})
+    a = await H.handle_macro_indicator(TEST_DB, TEST_AGENT, {'indicator': 'cpi', 'limit': 3})
     a_ok = (
         a.get('ok') is True
         and isinstance(a.get('columns'), list)
@@ -132,7 +134,7 @@ async def run_paths(base: str, token: str) -> None:
     )
 
     # ── 路①Agent MCP：财务摘要（datacenter，sandbox 内可达）──
-    fin = await H.handle_stock_financial(None, None, {'symbol': '600519', 'limit': 2})
+    fin = await H.handle_stock_financial(TEST_DB, TEST_AGENT, {'symbol': '600519', 'limit': 2})
     record(
         'agent_path.stock_financial(600519)',
         fin.get('ok') is True and len(fin.get('rows', [])) > 0,
@@ -163,7 +165,7 @@ async def run_paths(base: str, token: str) -> None:
     )
 
     # ── push2 受限接口（实时）：真实 upstream_error 透传（沙箱出网受限；零 fake）──
-    rt = await H.handle_stock_realtime(None, None, {'symbols': '600519'})
+    rt = await H.handle_stock_realtime(TEST_DB, TEST_AGENT, {'symbols': '600519'})
     rt_honest = rt.get('ok') is False and rt.get('error') in {'upstream_error', 'upstream_timeout'}
     record(
         'agent_path.stock_realtime(push2 受限→诚实错误)',

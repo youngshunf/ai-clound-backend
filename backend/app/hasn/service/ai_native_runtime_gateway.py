@@ -60,6 +60,9 @@ _COMMUNITY_INPUT_RULES: dict[str, dict[str, Any]] = {
     },
     'community.get_trending_topics': {},
     'community.get_recommended_agents': {},
+    'community.discover_peers': {
+        'optional_enums': {'peer_type': {'all', 'human', 'agent'}},
+    },
     'community.get_notifications': {},
     'community.mark_notifications_read': {},
     'community.create_post': {'required_str': ['content'], 'maxlen': {'content': 10000}},
@@ -152,7 +155,7 @@ class AiNativeRuntimeGateway:
         self,
         *,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         manifest: dict[str, Any],
         tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -214,25 +217,32 @@ class AiNativeRuntimeGateway:
         capability = self._find_capability(manifest, tool_id)
         input_payload = dict(body.input or {})
 
-        # register-on-write 会话通道（doc31·产物自动登记铁律）：剥离系统注入的工作会话 id
-        # （`_hasn_session_id`，分身不可伪造）→ ContextVar，供 handler 登记产物时挂进工作会话资源栏。
+        # register-on-write 会话通道（doc31·产物自动登记铁律 + 设计 02 §4.3 会话轴分流）：
+        # 剥离系统注入保留参数 → ContextVar，供 handler 登记产物时挂进工作会话资源栏。
         # 须在 bind_tool_input 前剥离（保留参未在 input_schema 声明，留着会原样透传给 handler）。
-        # 两条到达面：
-        # - daemon 代理面（FastAPI 路由）：daemon `ai_native.rs` 把 session_id 重注入进 input → 本处剥离；
-        # - MCP 直连面（AppTool shim）：`server.call_tool` 已剥离并落 ContextVar，input 里没有 → 不覆盖。
+        # 分键语义：`_hasn_work_session_id` 只承载工作会话 id（现行节点双键同发，直接采信）；
+        # `_hasn_session_id` 是运行时/逻辑会话语义，P2-8d 起绝不再经「在册 task 收窄」回填
+        # ContextVar（旧回落只服务混合语义时期的旧节点，退役后 runtime id 天然不可能误绑会话）。
+        # 到达面：daemon 代理面（FastAPI 路由）daemon `ai_native.rs` 把两键重注入进 input → 本处
+        # 剥离；MCP 直连面（AppTool shim）`server.call_tool` 已剥离并落 ContextVar，input 里没有
+        # → 已落非 None 时不覆写（只进不退）。
         from backend.app.mcp import trust_gate as _tg
-        from backend.app.mcp.context import set_current_project_id, set_current_work_session_id
+        from backend.app.mcp.context import (
+            set_current_project_id,
+            set_current_work_session_id,
+        )
 
         input_payload, _relay_session_id = _tg.pop_session_id(input_payload)
-        if _relay_session_id:
-            set_current_work_session_id(_relay_session_id)
+        input_payload, relay_work_session_id = _tg.pop_work_session_id(input_payload)
+        if relay_work_session_id:
+            set_current_work_session_id(relay_work_session_id)
 
         # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
         # （`_hasn_project_id`）→ ContextVar，供 handler 登记产物时自动打标进 hasn_artifacts.project_id。
         # mcp_face 面 server.call_tool 已剥离并落 ContextVar、input 里没有 → guard 不覆盖。
-        input_payload, _relay_project_id = _tg.pop_project_id(input_payload)
-        if _relay_project_id:
-            set_current_project_id(_relay_project_id)
+        input_payload, relay_project_id = _tg.pop_project_id(input_payload)
+        if relay_project_id:
+            set_current_project_id(relay_project_id)
 
         # 入参绑定接缝（候选①）：按 capability.input_schema 校验 + 强转 + 回填默认，使 manifest
         # 成为工具入参的唯一事实源——下游授权闸门与 handler 都拿到规范化 typed 入参（也让
@@ -631,6 +641,11 @@ class AiNativeRuntimeGateway:
             'creator.report_overview': creator_handlers.handle_report_overview,
             # 获客（纯云端业务应用：CRM/获客/触达/成交，零本地操作 → 工具全走云端 gateway_internal，
             # 不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_growth service）
+            'growth.project_get': growth_handlers.handle_growth_project_get,
+            'growth.project_create': growth_handlers.handle_growth_project_create,
+            'growth.project_update': growth_handlers.handle_growth_project_update,
+            'growth.project_update_profile': growth_handlers.handle_growth_project_update_profile,
+            'growth.project_pause': growth_handlers.handle_growth_project_pause,
             'growth.lead_request': growth_handlers.handle_growth_lead_request,
             # 企业数据读穿中台（GROWTH-QCC-4）：内部调通用网关 call_system_tool(hasn.ext.qcc_*) + read-through 入池。
             'growth.lookup_company': growth_handlers.handle_growth_lookup_company,
@@ -638,6 +653,8 @@ class AiNativeRuntimeGateway:
             'growth.enrich_company': growth_handlers.handle_growth_enrich_company,
             'growth.collect_start': growth_handlers.handle_growth_collect_start,
             'growth.collect_status': growth_handlers.handle_growth_collect_status,
+            'growth.lead_ingest': growth_handlers.handle_growth_lead_ingest,
+            'growth.lead_list': growth_handlers.handle_growth_lead_list,
             'growth.lead_search': growth_handlers.handle_growth_lead_search,
             'growth.lead_get': growth_handlers.handle_growth_lead_get,
             'growth.lead_qualify': growth_handlers.handle_growth_lead_qualify,
@@ -648,9 +665,13 @@ class AiNativeRuntimeGateway:
             'growth.customer_update_profile': growth_handlers.handle_growth_customer_update_profile,
             'growth.activity_log': growth_handlers.handle_growth_activity_log,
             'growth.customer_reassign': growth_handlers.handle_growth_customer_reassign,
+            'growth.outreach_draft': growth_handlers.handle_growth_outreach_draft,
+            'growth.outreach_submit': growth_handlers.handle_growth_outreach_submit,
             'growth.outreach_send': growth_handlers.handle_growth_outreach_send,
             'growth.outreach_status': growth_handlers.handle_growth_outreach_status,
             'growth.opportunity_create': growth_handlers.handle_growth_opportunity_create,
+            'growth.opportunity_list': growth_handlers.handle_growth_opportunity_list,
+            'growth.opportunity_get': growth_handlers.handle_growth_opportunity_get,
             'growth.opportunity_update_stage': growth_handlers.handle_growth_opportunity_update_stage,
             'growth.deal_close': growth_handlers.handle_growth_deal_close,
             'growth.report_funnel': growth_handlers.handle_growth_report_funnel,
@@ -867,7 +888,7 @@ class AiNativeRuntimeGateway:
         *,
         body: AiNativeToolCallRequest,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         manifest: dict[str, Any],
         capability: dict[str, Any],
         tool: dict[str, Any],
@@ -1014,7 +1035,7 @@ class AiNativeRuntimeGateway:
         self,
         db: AsyncSession,
         *,
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         requested_workspace: dict[str, Any] | None,
     ) -> dict[str, Any]:
         workspace = dict(
@@ -1159,6 +1180,10 @@ class AiNativeRuntimeGateway:
             val = data.get(field)
             if not isinstance(val, str) or val not in allowed:
                 return False
+        for field, allowed in rule.get('optional_enums', {}).items():
+            val = data.get(field)
+            if val is not None and (not isinstance(val, str) or val not in allowed):
+                return False
         for field, maxlen in rule.get('maxlen', {}).items():
             val = data.get(field)
             if isinstance(val, str) and len(val) > maxlen:
@@ -1188,7 +1213,7 @@ class AiNativeRuntimeGateway:
         *,
         trace_id: str,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload,
+        agent: AgentTokenPayload | None,
         manifest: dict[str, Any],
         capability: dict[str, Any],
         tool: dict[str, Any],

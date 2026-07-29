@@ -224,6 +224,7 @@ def test_g3_discovery_face_visible_with_hint(monkeypatch: pytest.MonkeyPatch) ->
     ctx = _ctx(app_access={'deck': {'allowed': False, 'reason': 'need_purchase'}})
 
     tool = server.tool_registry.get_tool(DECK_TOOL)
+    assert tool is not None
     assert server.tool_directory._can_discover(ctx, tool)  # 可见（带引导）
 
     schema = server.tool_directory._tool_schema(tool, ctx)
@@ -240,7 +241,9 @@ def test_g3_discovery_face_allowed_no_hint(monkeypatch: pytest.MonkeyPatch) -> N
     server.tool_registry.register(_DeckTool())
     ctx = _ctx(app_access={'deck': {'allowed': True, 'reason': 'entitled'}})
 
-    schema = server.tool_directory._tool_schema(server.tool_registry.get_tool(DECK_TOOL), ctx)
+    tool = server.tool_registry.get_tool(DECK_TOOL)
+    assert tool is not None
+    schema = server.tool_directory._tool_schema(tool, ctx)
     assert schema['app_id'] == 'deck'
     assert 'access_hint' not in schema
 

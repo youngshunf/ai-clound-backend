@@ -49,8 +49,8 @@ async def agent_create_{{ table_name }}(
     obj: Create{{ schema_name }}Param,
 ) -> ResponseModel:
     agent: AgentTokenPayload = request.state.agent
-    result = await {{ table_name }}_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await {{ table_name }}_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

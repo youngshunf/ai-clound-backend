@@ -1,10 +1,8 @@
 """工作流模板 service（云端权威读 API，P3 模板层 doc11 §4）。
 
-职责边界（P3-cloud）：只提供**模板本体的读 API**（列表 / 详情）+ 建模板（供内置 seed /
-分身 draft / 测试）。实例化的真实物化（读模板 graph_spec → 本地建 workflow+node+run → sync
-上云）归 **P3-daemon**（daemon 侧 doc94 §9-D）——云端**不建 run**：workflow_run 由 daemon
-本地 fire 后经 sync 落库，云端只读回显（见 agent_workflow_service.run 只置 next_run_at，
-driver 本地节点 fire，中心不 tick）。
+职责边界：模板本体的读写（列表 / 详情 / 搭建器）以及**云端权威的场景定义实例化**。Owner
+实例化先在这里落 ``workflow + nodes + edges``，daemon 只用返回的稳定 UUID 做本地镜像后 fire；
+云端仍不运行或推进 workflow_run，执行态由 daemon 本地 fire 后上行，中心只读回显。
 
 可见性：内置模板（is_builtin 或 owner_id 空）对所有人可见 + 自己名下模板；跨户模板不可见。
 graph_summary 从 graph_spec 派生（节点数/应用数/阶段面包屑/人设列表），前端无须再解析蓝图。
@@ -12,11 +10,13 @@ graph_summary 从 graph_spec 派生（节点数/应用数/阶段面包屑/人设
 
 from __future__ import annotations
 
+import operator
 import re
 import uuid
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import sqlalchemy as sa
 import yaml
@@ -27,17 +27,15 @@ from pydantic import ValidationError
 from backend.app.hasn.schema.output_spec import OutputSpec
 from backend.app.hasn_task.crud.crud_workflow import hasn_workflow_template_dao
 from backend.app.hasn_task.model import HasnWorkflowTemplate
+from backend.app.hasn_task.schema.workflow import CreateWorkflowParam
 from backend.app.hasn_task.schema.workflow_template import (
     CreateWorkflowTemplateParam,
     WorkflowTemplateGraphSummary,
     WorkflowTemplatePublic,
 )
 
-# 实例化复用 agent 建图权威路径（cloud workflow，daemon 经 sync mirror tick/fire）。
-from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
-
 # 复用工作流建图的无环检测（07 §9.3 · Kahn 拓扑），避免重写；模板校验与执行建图同一语义。
-from backend.app.hasn_task.service.workflow_service import detect_cycle
+from backend.app.hasn_task.service.workflow_service import detect_cycle, workflow_service
 from backend.common.exception import errors
 from backend.common.log import log
 
@@ -144,7 +142,8 @@ def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
 def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummary:
     """从图蓝图派生卡片摘要：节点数 / 去重应用数 / 阶段面包屑（按 order）/ 去重人设类型。"""
     spec = graph_spec if isinstance(graph_spec, dict) else {}
-    nodes = spec.get('nodes') if isinstance(spec.get('nodes'), list) else []
+    raw_nodes = spec.get('nodes')
+    nodes: list[Any] = raw_nodes if isinstance(raw_nodes, list) else []
 
     app_union: set[str] = set()
     apps_ordered: list[str] = []  # 去重后应用键·首见序（供卡片按链路顺序渲染应用图标堆）
@@ -167,12 +166,13 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
             seen_agent.add(agent_type)
             agent_types.append(agent_type)
 
-        display = node.get('display') if isinstance(node.get('display'), dict) else {}
+        raw_display = node.get('display')
+        display: dict[str, Any] = raw_display if isinstance(raw_display, dict) else {}
         order = display.get('order')
         label = display.get('step_label') or node.get('name') or node.get('node_key') or ''
         steps.append({'label': label, 'order': order if isinstance(order, int) else idx})
 
-    steps.sort(key=lambda s: s['order'])
+    steps.sort(key=operator.itemgetter('order'))
     return WorkflowTemplateGraphSummary(
         node_count=len(nodes),
         app_count=len(app_union),
@@ -206,8 +206,7 @@ def validate_graph_spec(graph_spec: Any) -> None:
 
     # 应用目录权威来源：in-process app_catalog_registry（catalog DB 的 seed 源，同步权威）。
     # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
-    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-    from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+    from backend.app.hasn_core.app_platform import ai_native_app_registry, app_catalog_registry
 
     valid_app_ids = {app.id for app in app_catalog_registry.list()}
     # resource_kind 权威 = 各 app manifest 的 resources[] 声明（单源，不另立手写白名单）。
@@ -421,9 +420,7 @@ class WorkflowTemplateService:
         return f'tpl_{base}_{uuid.uuid4().hex}'
 
     @classmethod
-    async def draft_template(
-        cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def draft_template(cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """分身提交模板草案（graph_spec 全量）→ 过 §6.3 校验 → 存 draft/source=agent/owner=本人/version=1。"""
         graph_spec = params.get('graph_spec') or {}
         validate_graph_spec(graph_spec)  # 不合法即抛，message 具体便于分身自修
@@ -448,9 +445,7 @@ class WorkflowTemplateService:
         return _to_public(tpl, include_graph_spec=True)
 
     @classmethod
-    async def create_owner_template(
-        cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def create_owner_template(cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """主人手动搭建器建模板（source=owner，过 §6.3 校验；status draft/active 二选一）。
 
         「自定义场景」全页搭建器的云端落点：主人自己选应用 / 选人设 / 设提示词 → 拼出 graph_spec
@@ -493,8 +488,7 @@ class WorkflowTemplateService:
         选项一定能过服务端校验。
         """
         # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-        from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+        from backend.app.hasn_core.app_platform import ai_native_app_registry, app_catalog_registry
 
         resource_labels = ai_native_app_registry.resource_kind_labels()
         known_kinds = ai_native_app_registry.known_resource_kinds()
@@ -508,18 +502,14 @@ class WorkflowTemplateService:
                 for k in sorted(known_kinds)
                 if k.split('.', 1)[0] == app.id
             ]
-            apps.append(
-                {
-                    'app_id': app.id,
-                    'name': app.name,
-                    'icon': app.icon,
-                    'resource_kinds': app_kinds,
-                }
-            )
+            apps.append({
+                'app_id': app.id,
+                'name': app.name,
+                'icon': app.icon,
+                'resource_kinds': app_kinds,
+            })
 
-        personas = [
-            {'key': k, 'label': _BUILTIN_PERSONA_LABELS.get(k, k)} for k in _BUILTIN_PERSONA_ORDER
-        ]
+        personas = [{'key': k, 'label': _BUILTIN_PERSONA_LABELS.get(k, k)} for k in _BUILTIN_PERSONA_ORDER]
         artifact_kinds = [{'artifact_kind': k, 'label': v} for k, v in _ARTIFACT_KIND_LABELS.items()]
         domains = await cls._domain_meta(db)
         return {
@@ -574,13 +564,45 @@ class WorkflowTemplateService:
     async def instantiate_template(
         cls, db: AsyncSession, *, agent: AgentTokenPayload, template_key: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """据模板实例化 cloud 权威 workflow（daemon 经 sync mirror tick/fire）。
+        """Agent MCP 兼容入口：复用 Owner 权威建图，只把发起分身作为未指定节点的默认执行者。"""
+        return await cls._instantiate_template(
+            db,
+            owner_id=agent.owner_hasn_id,
+            template_key=template_key,
+            params=params,
+            default_agent_id=agent.agent_hasn_id,
+            source='agent',
+            created_by_kind='agent',
+        )
 
-        读 template.graph_spec → 映射为 workflow create 参数（title/goal/起点输入/节点定制覆盖）→ 复用
-        `agent_workflow_service.create_workflow`（带 template_key 溯源）→ 返 workflow 引用（workflow_id）。
-        付费模板（sku_ref 非空）先过 MK 商业化内核统一判权，免费模板（sku_ref 空）直接放行（见下 P7 挂点）。
-        """
-        owner_id = agent.owner_hasn_id
+    @classmethod
+    async def instantiate_owner_template(
+        cls, db: AsyncSession, *, owner_id: str, template_key: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Owner JWT 实例化入口：要求幂等键，云端先落定义，daemon 仅镜像后再 fire。"""
+        return await cls._instantiate_template(
+            db,
+            owner_id=owner_id,
+            template_key=template_key,
+            params=params,
+            default_agent_id=params.get('default_agent_id'),
+            source='owner',
+            created_by_kind='owner',
+        )
+
+    @classmethod
+    async def _instantiate_template(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        template_key: str,
+        params: dict[str, Any],
+        default_agent_id: str | None,
+        source: str,
+        created_by_kind: str,
+    ) -> dict[str, Any]:
+        """场景实例化共用事务：模板/项目/权益校验后创建或按幂等键返回已存在定义。"""
         tpl = await hasn_workflow_template_dao.get_by_key(db, template_key)
         if tpl is None:
             raise errors.NotFoundError(msg='模板不存在')
@@ -595,14 +617,18 @@ class WorkflowTemplateService:
         from backend.app.mcp.context import get_current_project_id
         from backend.app.mcp.errors import McpErrorCode, McpToolError
 
-        project_id = params.get('project_id') or get_current_project_id()
-        if not project_id:
+        raw_project_id = params.get('project_id') or get_current_project_id()
+        if not raw_project_id:
             raise McpToolError(
                 McpErrorCode.PROJECT_REQUIRED,
                 '开启场景前要先确定它属于哪个平台项目——请回头问主人「这个场景挂到哪个项目下」',
             )
         # 归属本 owner + 未归档校验：跨 owner → 403；归档 → 结构化拒绝（详见 helper 注释）
-        await project_service.resolve_open_for_new_workflow(db, owner=owner_id, project_id=project_id)
+        try:
+            project_id = UUID(str(raw_project_id))
+        except (TypeError, ValueError) as exc:
+            raise errors.RequestError(msg='项目 ID 必须是 UUID') from exc
+        await project_service.resolve_open_for_new_workflow(db, owner=owner_id, project_id=str(project_id))
 
         # 付费模板权益判定（doc94 §10-P7 / doc11 §8.3）：sku_ref 非空才真判，免费模板（sku_ref 空）直接放行。
         # 判权走 MK 统一入口 resolve_access(feature_key=workflow_template:<template_key>)；该 feature_key
@@ -626,25 +652,41 @@ class WorkflowTemplateService:
                     data={'decision': decision.model_dump(mode='json')},
                 )
 
-        wf_params = cls._template_to_workflow_params(tpl, params)
-        # P9-B 项目轴：把硬闸解析出的所属平台项目透传给 create_workflow，落到 workflow.project_id
-        # （_template_to_workflow_params 只映射 graph_spec，不带 project_id，故这里显式补上）。
-        wf_params['project_id'] = str(project_id)
-        result = await agent_workflow_service.create_workflow(db, agent=agent, params=wf_params)
-
-        # 记模板溯源到 workflow.template_key 列（HasnWorkflow ORM 未映射该列，走定向 UPDATE，同一事务内）
-        await db.execute(
-            sa.text('UPDATE hasn_task.workflow SET template_key = :tk WHERE workflow_uuid = :wu'),
-            {'tk': template_key, 'wu': result['workflow_id']},
+        wf_params = cls._template_to_workflow_params(tpl, params, default_agent_id=default_agent_id)
+        workflow = await workflow_service.create_workflow(
+            db,
+            owner_id=owner_id,
+            obj=CreateWorkflowParam(
+                **wf_params,
+                source=source,
+                created_by_kind=created_by_kind,
+                template_key=template_key,
+                project_id=project_id,
+                instantiation_idempotency_key=params.get('idempotency_key'),
+            ),
         )
-        result['template_key'] = template_key
-        return result
+        graph_snapshot = await workflow_service.definition_snapshot(
+            db, owner_id=owner_id, workflow_uuid=workflow.workflow_uuid
+        )
+        return {
+            'workflow_id': workflow.workflow_uuid,
+            'workflow_uuid': workflow.workflow_uuid,
+            'name': workflow.name,
+            'goal': workflow.goal,
+            'status': workflow.status,
+            'template_key': workflow.template_key,
+            'project_id': str(workflow.project_id) if workflow.project_id else None,
+            'definition_revision': workflow.workflow_revision,
+            'graph_snapshot': graph_snapshot,
+        }
 
     @staticmethod
-    def _template_to_workflow_params(tpl: HasnWorkflowTemplate, params: dict[str, Any]) -> dict[str, Any]:
-        """把 template.graph_spec 映射为 agent_workflow_service.create_workflow 的 params。
+    def _template_to_workflow_params(
+        tpl: HasnWorkflowTemplate, params: dict[str, Any], *, default_agent_id: str | None
+    ) -> dict[str, Any]:
+        """把 template.graph_spec 映射为云端权威的 ``CreateWorkflowParam`` 字段。
 
-        - 节点：template node → workflow 节点；agent_id 缺省=发起分身（create_workflow 默认），
+        - 节点：template node → workflow 节点；agent_id 缺省=调用方已解析的默认分身，
           起点节点 prompt 取「起点输入」origin_input，其余取模板 prompt；node_overrides 可逐节点覆盖
           prompt/agent_id/system_prompt。
         - 边：{parent, child} 原样透传（DAG 已在 draft 校验，create_workflow 建图会再复验无环）。
@@ -668,28 +710,24 @@ class WorkflowTemplateService:
                 prompt = ov.get('prompt') or origin_input or tn.get('description') or tn.get('name') or node_key
             else:
                 prompt = ov.get('prompt') or tn.get('prompt') or tn.get('description') or tn.get('name') or node_key
-            nodes.append(
-                {
-                    'node_key': node_key,
-                    'name': tn.get('name') or node_key,
-                    'agent_id': ov.get('agent_id'),  # None → 发起分身
-                    'prompt': prompt,
-                    'system_prompt': ov.get('system_prompt') or tn.get('system_prompt') or None,
-                    'description': tn.get('description'),
-                    # doc35 B1「修死列」：模板早就声明了这些，此前全被丢在这一步，
-                    # 于是节点行上产出闸恒 NULL、应用绑定恒空——模板配了等于没配。
-                    'output_spec': tn.get('output_spec'),
-                    'review_policy': tn.get('review_policy'),
-                    'apps': tn.get('apps') or [],
-                    'skills': tn.get('skills') or [],
-                    'is_origin': is_origin,
-                }
-            )
-        edges = [
-            {'parent': e.get('parent'), 'child': e.get('child')}
-            for e in t_edges
-            if isinstance(e, dict)
-        ]
+            nodes.append({
+                'node_key': node_key,
+                'name': tn.get('name') or node_key,
+                'agent_id': ov.get('agent_id') or tn.get('agent_id') or default_agent_id,
+                'prompt': prompt,
+                'system_prompt': ov.get('system_prompt') or tn.get('system_prompt') or None,
+                'description': tn.get('description'),
+                # doc35 B1「修死列」：模板早就声明了这些，此前全被丢在这一步，
+                # 于是节点行上产出闸恒 NULL、应用绑定恒空——模板配了等于没配。
+                'output_spec': tn.get('output_spec'),
+                'review_policy': tn.get('review_policy'),
+                'apps': tn.get('apps') or [],
+                'skills': tn.get('skills') or [],
+                'is_origin': is_origin,
+                'enable_subagents': bool(tn.get('enable_subagents')),
+                'is_sink': bool(tn.get('is_sink')),
+            })
+        edges = [{'parent': e.get('parent'), 'child': e.get('child')} for e in t_edges if isinstance(e, dict)]
         return {
             'name': params.get('title') or tpl.name,
             'goal': params.get('goal') or tpl.description,
@@ -699,9 +737,7 @@ class WorkflowTemplateService:
         }
 
     @classmethod
-    async def publish_template(
-        cls, db: AsyncSession, *, owner_id: str, template_key: str
-    ) -> dict[str, Any]:
+    async def publish_template(cls, db: AsyncSession, *, owner_id: str, template_key: str) -> dict[str, Any]:
         """上架自己名下模板：过 §6.3 校验 → status 转 active + version 快照 + market_ref 占位。
 
         本期 publish 只做「校验 + status 转换 + market_ref 占位 + version 快照」；完整 marketplace
@@ -782,9 +818,7 @@ class WorkflowTemplateService:
         return 'updated'
 
     @classmethod
-    async def sync_builtin_workflow_templates(
-        cls, db: AsyncSession, *, repo_root: str | Path
-    ) -> dict[str, int]:
+    async def sync_builtin_workflow_templates(cls, db: AsyncSession, *, repo_root: str | Path) -> dict[str, int]:
         """扫描 hub `workflow-templates/*/workflow-template.yaml` 并幂等 upsert 进 workflow_template 表。
 
         由 marketplace 的 github sync 传入已 checkout 的 hub 仓根（repo_root）+ 已开事务触发；解析/字段映射/
@@ -805,7 +839,7 @@ class WorkflowTemplateService:
                 data = build_builtin_template_data(raw)
                 outcome = await cls.upsert_builtin_template(db, data=data)
                 results[outcome] += 1
-            except Exception as exc:  # noqa: PERF203
+            except Exception as exc:
                 # 单模板可恢复失败：记 warning 跳过，绝不拖垮整体 sync
                 results['failed'] += 1
                 log.warning(f'内置工作流模板 seed 跳过 {yaml_path}：{exc}')

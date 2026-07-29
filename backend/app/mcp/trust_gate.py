@@ -23,6 +23,9 @@ L3 门（``crates/hasn-mcp/src/trust_gate.rs``）已闭环，但真正敏感的�
 
 from __future__ import annotations
 
+import json
+import re
+
 from typing import Any
 
 from backend.app.mcp.errors import McpErrorCode, McpToolError
@@ -44,12 +47,34 @@ _RESERVED_KEYS = (RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST)
 # resource_uri 归位、进产物 tab，只是不额外挂到某工作会话资源栏。
 RESERVED_SESSION_ID = '_hasn_session_id'
 
+# ── 系统注入的**工作会话** id 保留参数（设计 02 §4.3 会话轴分流）───────────────────
+# 与 `_hasn_session_id` 严格分工：`_hasn_session_id` 恒为运行时/逻辑会话语义（IM 续接、
+# message.send 的 origin 回灌定位），本键只承载**真实工作会话派发**（任务/appcollab）的工作会话
+# id——新节点（CLI per-dispatch key / 升级后 Hermes fork）双键同发、本键仅在非空时盖章；
+# IM 主会话派发缺省。云端 dispatch 前剥离 → 落 work_session ContextVar（register-on-write
+# 挂「工作会话资源栏」的唯一权威来源）。缺省时分发入口对 `_hasn_session_id` 做「在册 task
+# 收窄」兼容旧节点（详见 server.py 提取点），IM runtime id 不落 ContextVar。
+RESERVED_WORK_SESSION_ID = '_hasn_work_session_id'
+
 # ── 系统注入的平台项目 id 保留参数（doc38 §3.3·第三条轴「为了哪件事」联邦挂靠）───────────
 # 与 `_hasn_session_id` 完全同管道：分身经项目上下文派发时，daemon 在每次出站 MCP 调用后无条件
 # 戳进此保留参数（分身不可伪造、工具体不该见）。云端 dispatch 前剥离 → 落 ContextVar，供 register-on-write
 # 公共接缝把产物自动打标进 ``hasn_artifacts.project_id``（只进不退）。缺省（不在项目中工作）→ None，
 # 产物仍凭 resource_uri 归位、进产物 tab，只是不额外挂到某项目。
 RESERVED_PROJECT_ID = '_hasn_project_id'
+
+# ── 系统注入的工作会话精确工具白名单 ────────────────────────────────────────
+# Hermes 在模型输出之后把该 JSON 数组逐调用盖章；CLI runtime 则经可信 Header 进入同一
+# AgentContext。None（字段缺失）与 []（拒绝全部业务工具）必须保持可区分。
+RESERVED_ALLOWED_TOOL_NAMES = '_hasn_allowed_tool_names'
+_CANONICAL_TOOL_NAME = re.compile(r'^hasn(?:\.[A-Za-z0-9_-]+)+$')
+_SESSION_TRANSPORT_TOOLS = frozenset({
+    'hasn.local.tool.search',
+    'hasn.local.tool.call',
+    'hasn.cloud.tool.search',
+    'hasn.cloud.tool.call',
+    'hasn.tool.search',
+})
 
 # 系统注入保留字段的公共前缀：三族（`_hasn_session_id` / `_hasn_project_id` 与 `_hasn_is_external` /
 # `_hasn_peer_id` / `_hasn_peer_trust`）都在此命名空间下，wire 上按前缀整族放行。
@@ -171,6 +196,21 @@ def pop_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | Non
     return cleaned, (sid or None)
 
 
+def pop_work_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """从工具入参剥离系统注入的**工作会话** id 保留参数（``_hasn_work_session_id``，设计 02 §4.3）。
+
+    返回 ``(cleaned_args, work_session_id)``。无该参数 → 原样返回 + ``None``（never over-block：
+    缺工作会话 id 只是不把产物额外挂进某会话资源栏，绝不影响工具执行、也不影响产物按
+    resource_uri 归位）。与 ``pop_session_id`` 同形状——同一分发入口先后各剥离一次。
+    """
+    if not isinstance(arguments, dict) or RESERVED_WORK_SESSION_ID not in arguments:
+        return arguments, None
+    cleaned = {k: v for k, v in arguments.items() if k != RESERVED_WORK_SESSION_ID}
+    raw = arguments.get(RESERVED_WORK_SESSION_ID)
+    sid = str(raw).strip() if raw is not None else ''
+    return cleaned, (sid or None)
+
+
 def pop_project_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     """从工具入参剥离系统注入的平台项目 id 保留参数（``_hasn_project_id``）。
 
@@ -184,6 +224,54 @@ def pop_project_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | Non
     raw = arguments.get(RESERVED_PROJECT_ID)
     pid = str(raw).strip() if raw is not None else ''
     return cleaned, (pid or None)
+
+
+def parse_allowed_tool_names(raw: Any) -> frozenset[str]:
+    """严格解析系统注入的会话工具白名单。
+
+    只接受无重复的 canonical 字符串数组；任何形状错误都以 MCP_9206 失败关闭。
+    """
+    if not isinstance(raw, list):
+        raise McpToolError(McpErrorCode.TOOL_NOT_ALLOWED, '工作会话工具白名单必须是字符串数组')
+    names: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not _CANONICAL_TOOL_NAME.fullmatch(value):
+            raise McpToolError(McpErrorCode.TOOL_NOT_ALLOWED, '工作会话工具白名单包含非法工具名')
+        if value in names:
+            raise McpToolError(McpErrorCode.TOOL_NOT_ALLOWED, f'工作会话工具白名单包含重复名称: {value}')
+        names.append(value)
+    return frozenset(names)
+
+
+def apply_session_tool_allowlist_header(
+    agent_context: Any,
+    headers: dict[bytes, bytes],
+) -> None:
+    """把 CLI per-dispatch Header 严格解析进 AgentContext；缺失时保持 None。"""
+    allowed_tools_header = headers.get(b'x-hasn-allowed-tools')
+    if allowed_tools_header is None:
+        return
+    agent_context.allowed_tool_names = parse_allowed_tool_names(
+        json.loads(allowed_tools_header.decode('utf-8'))
+    )
+
+
+def pop_allowed_tool_names(
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], frozenset[str] | None]:
+    """剥离 Runtime 在模型之后盖章的精确工具白名单；字段缺失返回 None。"""
+    if not isinstance(arguments, dict) or RESERVED_ALLOWED_TOOL_NAMES not in arguments:
+        return arguments, None
+    cleaned = {key: value for key, value in arguments.items() if key != RESERVED_ALLOWED_TOOL_NAMES}
+    return cleaned, parse_allowed_tool_names(arguments.get(RESERVED_ALLOWED_TOOL_NAMES))
+
+
+def is_session_tool_allowed(agent_context: Any, tool_name: str) -> bool:
+    """判断工具是否可在本次工作会话调用；渐进式传输包装器始终保留。"""
+    if tool_name in _SESSION_TRANSPORT_TOOLS:
+        return True
+    allowed = getattr(agent_context, 'allowed_tool_names', None)
+    return allowed is None or tool_name in allowed
 
 
 def _coerce_bool(value: str | None) -> bool:
@@ -240,25 +328,22 @@ async def resolve_conversation_peer_trust(
     """
     from sqlalchemy import select
 
-    from backend.app.hasn.model.hasn_agents import HasnAgents
-    from backend.app.hasn.model.hasn_contacts import HasnContacts
+    from backend.app.hasn_core import HasnAgents
     from backend.app.hasn.service.effective_relation import (
         DELIVER,
         resolve_effective_relation,
     )
+    from backend.app.hasn_im.application.provider import get_relation_gateway
 
     if not owner_hasn_id:
         return None
 
     # ① 直连实体边优先（尊重主人对该 peer 的显式设档）。
-    direct = (
-        await db.execute(
-            select(HasnContacts).where(
-                HasnContacts.owner_id == owner_hasn_id,
-                HasnContacts.peer_id == peer_id,
-            )
-        )
-    ).scalar_one_or_none()
+    relation_gateway = get_relation_gateway()
+    direct = await relation_gateway.resolve_effective_relation(
+        owner_hasn_id=owner_hasn_id,
+        peer_hasn_id=peer_id,
+    )
     if direct is not None:
         trust = direct.trust_level if direct.trust_level is not None else _NORMAL_TRUST_LEVEL
         if direct.status == 'blocked' or trust == 0:
@@ -273,14 +358,10 @@ async def resolve_conversation_peer_trust(
     ).scalar_one_or_none()
     if not peer_owner:
         return None
-    owner_edge = (
-        await db.execute(
-            select(HasnContacts).where(
-                HasnContacts.owner_id == owner_hasn_id,
-                HasnContacts.peer_id == peer_owner,
-            )
-        )
-    ).scalar_one_or_none()
+    owner_edge = await relation_gateway.resolve_effective_relation(
+        owner_hasn_id=owner_hasn_id,
+        peer_hasn_id=peer_owner,
+    )
     owner_trust = owner_edge.trust_level if owner_edge and owner_edge.trust_level is not None else None
     owner_blocked = owner_edge is not None and (owner_edge.status == 'blocked' or owner_trust == 0)
 

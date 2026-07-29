@@ -71,9 +71,9 @@ async def install_zip_plugin(file: UploadFile | str) -> str:
         with zipfile.ZipFile(file_bytes) as zf:
             # 校验压缩包
             plugin_namelist = zf.namelist()
-            plugin_dir_name = plugin_namelist[0].split('/')[0]
             if not plugin_namelist:
                 raise errors.RequestError(msg='插件压缩包内容非法')
+            plugin_dir_name = plugin_namelist[0].split('/')[0]
             if (
                 len(plugin_namelist) <= 3
                 or f'{plugin_dir_name}/plugin.toml' not in plugin_namelist
@@ -82,12 +82,16 @@ async def install_zip_plugin(file: UploadFile | str) -> str:
                 raise errors.RequestError(msg='插件压缩包内缺少必要文件')
 
             # 插件是否可安装
-            plugin_name = re.match(
+            source_filename = file.split(os.sep)[-1] if isinstance(file, str) else file.filename
+            if not source_filename:
+                raise errors.RequestError(msg='插件压缩包缺少文件名')
+            plugin_match = re.match(
                 r'^([a-zA-Z0-9_]+)',
-                file.split(os.sep)[-1].split('.')[0].strip()
-                if isinstance(file, str)
-                else file.filename.split('.')[0].strip(),
-            ).group()
+                source_filename.split('.')[0].strip(),
+            )
+            if plugin_match is None:
+                raise errors.RequestError(msg='插件名称格式非法')
+            plugin_name = plugin_match.group()
             full_plugin_path = anyio.Path(PLUGIN_DIR / plugin_name)
             if await full_plugin_path.exists():
                 raise errors.ConflictError(msg='此插件已安装')
@@ -163,9 +167,10 @@ def zip_plugin(plugin_dir: os.PathLike, target: os.PathLike | io.BytesIO) -> Non
     :param target: 压缩目标
     :return:
     """
+    plugin_dir_path = os.fspath(plugin_dir)
     with zipfile.ZipFile(target, 'w') as zf:
-        plugin_dir_parent = os.path.dirname(plugin_dir)
-        for root, dirs, files in os.walk(plugin_dir):
+        plugin_dir_parent = os.path.dirname(plugin_dir_path)
+        for root, dirs, files in os.walk(plugin_dir_path):
             dirs[:] = [d for d in dirs if d != '__pycache__']
             for file in files:
                 file_path = os.path.join(root, file)

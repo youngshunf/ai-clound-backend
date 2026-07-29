@@ -92,7 +92,7 @@ def mock_message_get(monkeypatch: pytest.MonkeyPatch) -> dict[int, SimpleNamespa
 
 
 @pytest.fixture
-def fake_db() -> object:
+def fake_db() -> Any:
     """业务代码只把 db 透传给 dispatch, 这里给一个不可用的哨兵即可."""
     return SimpleNamespace(name='fake-db-sentinel')
 
@@ -118,7 +118,7 @@ def test_5_messages_same_conversation_dispatch_once(
     fake_redis: _FakeRedis,
     mock_dispatch: AsyncMock,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """Acceptance 3 (核心): 5 条同 conv 消息 → dispatch 仅被调 1 次, 余 4 条 dedup-skip."""
     for msg_id in range(1001, 1006):
@@ -148,7 +148,7 @@ def test_different_conversations_dispatch_independently(
     fake_redis: _FakeRedis,
     mock_dispatch: AsyncMock,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """Acceptance 4: 不同 conv 不共享 dedup → 各自下发一次."""
     mock_message_get[2001] = _make_message(2001, FAKE_CONV_A)
@@ -164,7 +164,7 @@ def test_message_not_found_skips_dispatch(
     fake_redis: _FakeRedis,
     mock_dispatch: AsyncMock,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """Acceptance 5: message_id 不存在 → 'not-found', 不调 dispatch, 不写 redis."""
     result = asyncio.run(
@@ -179,7 +179,7 @@ def test_dispatch_returns_no_token_is_not_failure(
     fake_redis: _FakeRedis,
     monkeypatch: pytest.MonkeyPatch,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """Acceptance 6: dispatch sent=0 → 'no-token' (不算失败, 不抛)."""
     mock_no_token = AsyncMock(return_value=DispatchResult(sent=0, skipped=0))
@@ -197,7 +197,7 @@ def test_dispatch_error_swallowed(
     fake_redis: _FakeRedis,
     monkeypatch: pytest.MonkeyPatch,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """Acceptance 7: PushDispatchError 不向 celery worker 抛 (避免自动 retry 重复下发)."""
     mock_fail = AsyncMock(side_effect=PushDispatchError('umeng 5xx after retries'))
@@ -215,7 +215,7 @@ def test_payload_does_not_carry_message_content(
     fake_redis: _FakeRedis,
     mock_dispatch: AsyncMock,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """不变式 §4: 推送 payload 不带消息正文 — 只 title/body/trace_id."""
     mock_message_get[5001] = _make_message(5001, FAKE_CONV_A)
@@ -239,7 +239,7 @@ def test_dedup_redis_set_uses_nx_and_ex(
     fake_redis: _FakeRedis,
     mock_dispatch: AsyncMock,
     mock_message_get: dict[int, SimpleNamespace],
-    fake_db: object,
+    fake_db: Any,
 ) -> None:
     """Acceptance 2 细化: set 调用必须带 nx=True + ex=1."""
     mock_message_get[6001] = _make_message(6001, FAKE_CONV_A)

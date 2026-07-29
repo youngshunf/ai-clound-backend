@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -93,15 +94,15 @@ async def ent() -> AsyncIterator[SimpleNamespace]:
     # 企业客户：一个 assignee=经理、一个 assignee=销售。个人客户：solo 个人池。
     cust_mgr = Customer(
         customer_no=f'CM{tag}', user_id=mgr_uid, source_kind='manual', company_name='企业客户·经理名下',
-        lifecycle_status='active', intent_score=90, owner_scope='enterprise', enterprise_id=ent_id, assignee=mgr,
+        lifecycle_status='active', intent_score=Decimal(90), owner_scope='enterprise', enterprise_id=ent_id, assignee=mgr,
     )
     cust_sales = Customer(
         customer_no=f'CS{tag}', user_id=sales_uid, source_kind='manual', company_name='企业客户·销售名下',
-        lifecycle_status='active', intent_score=80, owner_scope='enterprise', enterprise_id=ent_id, assignee=sales,
+        lifecycle_status='active', intent_score=Decimal(80), owner_scope='enterprise', enterprise_id=ent_id, assignee=sales,
     )
     cust_solo = Customer(
         customer_no=f'CP{tag}', user_id=solo_uid, source_kind='manual', company_name='个人客户',
-        lifecycle_status='active', intent_score=70, owner_scope='personal', enterprise_id=None, assignee=None,
+        lifecycle_status='active', intent_score=Decimal(70), owner_scope='personal', enterprise_id=None, assignee=None,
     )
     session.add_all([cust_mgr, cust_sales, cust_solo])
     await session.flush()

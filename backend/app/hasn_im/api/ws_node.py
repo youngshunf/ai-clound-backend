@@ -33,7 +33,8 @@ from backend.app.hasn_im.protocol.handler_registry import (
     resolve_handler_spec,
 )
 from backend.core.conf import settings
-from backend.database.db import async_db_session
+from backend.database.db import async_db_session, im_service_db_session
+from backend.database.schema_names import SCHEMA_NAMES
 from backend.utils.timezone import timezone
 
 log = logging.getLogger(__name__)
@@ -170,30 +171,32 @@ async def hasn_node_websocket(  # noqa: C901
             return
         node_name = websocket.headers.get('X-Node-Name')
 
-        # R2-10 掉队客户端闸（§8.3-2）：旧事件切换后，低于阈值的 daemon 必须被闸住、不能继续收发
-        # 旧事件。在 accept 之前据 X-App-Version 头判定；低于 settings.HASN_WS_MIN_CLIENT_VERSION
-        # 即以 4003(UPGRADE_REQUIRED) 拒连——错误码/reason 供 D3 识别并出「需要升级」引导、停重连风暴。
-        # 阈值空（默认）= 闸关，不影响本地测试（对齐「本地测试通过最后才生产部署」）。
         client_app_version = websocket.headers.get('X-App-Version')
-        if version_gate.is_below_minimum(client_app_version, settings.HASN_WS_MIN_CLIENT_VERSION):
-            log.info(
-                '[HASN] WS 版本闸拒连: node=%s client=%s min=%s',
-                node_id,
-                client_app_version,
-                settings.HASN_WS_MIN_CLIENT_VERSION,
-            )
-            await websocket.close(
-                code=version_gate.UPGRADE_REQUIRED_CLOSE_CODE,
-                reason=version_gate.build_upgrade_required_reason(
-                    settings.HASN_WS_MIN_CLIENT_VERSION, client_app_version
-                ),
-            )
-            return
 
         auth = await authenticate_ws_connection(scheme, credentials, node_id, node_name)
     except Exception as e:
         log.warning(f'[HASN] WS 认证失败: {e}')
         await websocket.close(code=4001, reason=str(e))
+        return
+
+    # R2-10 掉队客户端闸（§8.3-2）：先完成认证，再 accept 并发送应用级 Close(4003)。
+    # Starlette 在 accept 前 close 会退化成无响应体的 HTTP 403；现网 0.1.0 daemon 无法从
+    # 该响应识别 UPGRADE_REQUIRED，只会刷新 token 并快速重连。认证后 accept+close 既不
+    # 放行任何业务帧，也让旧客户端真正收到 4003、进入升级态并停止重连风暴。
+    if version_gate.is_below_minimum(client_app_version, settings.HASN_WS_MIN_CLIENT_VERSION):
+        log.info(
+            '[HASN] WS 版本闸拒连: node=%s client=%s min=%s',
+            node_id,
+            client_app_version,
+            settings.HASN_WS_MIN_CLIENT_VERSION,
+        )
+        await websocket.accept()
+        await websocket.close(
+            code=version_gate.UPGRADE_REQUIRED_CLOSE_CODE,
+            reason=version_gate.build_upgrade_required_reason(
+                settings.HASN_WS_MIN_CLIENT_VERSION, client_app_version
+            ),
+        )
         return
 
     node_id = auth['node_id']
@@ -439,19 +442,20 @@ async def _push_contacts_presence_invalidation(
 
         from backend.app.hasn.service import sync_invalidate_service
 
-        async with async_db_session() as db:
+        async with im_service_db_session() as db:
+            contacts_table = SCHEMA_NAMES.im_table('hasn_contacts')
             rows = (
                 await db.execute(
                     text(
-                        """
+                        f"""
                         SELECT DISTINCT owner_id
-                        FROM hasn_contacts
+                        FROM {contacts_table}
                         WHERE status = 'connected'
                           AND (
                             (peer_id = :agent_id AND peer_type = 'agent')
                             OR (peer_id = :agent_owner_id AND peer_type = 'human')
                           )
-                        """
+                        """  # noqa: S608 表名来自进程固定的 schema 配置
                     ),
                     {'agent_id': agent_id, 'agent_owner_id': agent_owner_id or ''},
                 )
@@ -635,7 +639,7 @@ async def _handle_agent_deregister(
     # DB 标记删除
     from sqlalchemy import update
 
-    from backend.app.hasn.model.hasn_agents import HasnAgents
+    from backend.app.hasn_core import HasnAgents
 
     async with async_db_session() as db:
         await db.execute(update(HasnAgents).where(HasnAgents.hasn_id == hasn_id).values(status='deleted'))
@@ -662,6 +666,7 @@ async def _handle_send(  # noqa: C901
     """处理 hasn.message.send"""
     from_id = params.get('from_id', '')
     to_target = params.get('to', '')
+    conversation_id = params.get('conversation_id', '')
     content = params.get('content', {})
     local_id = params.get('local_id')
     msg_type = params.get('type', 'message')
@@ -679,6 +684,9 @@ async def _handle_send(  # noqa: C901
 
     if not to_target:
         await _send_error(websocket, 2002, '缺少目标地址 (to)')
+        return
+    if not conversation_id:
+        await _send_error(websocket, 2002, 'R3 协议要求 conversation_id')
         return
 
     # 处理 content 格式
@@ -706,11 +714,12 @@ async def _handle_send(  # noqa: C901
             content = content['body']
 
     # 路由消息
-    async with async_db_session() as db:
+    async with im_service_db_session() as db:
         result = await ws_node_runtime.route_message(
             db=db,
             from_id=from_id,
             to_target=to_target,
+            conversation_id=conversation_id or None,
             content=content,
             content_type=content_type,
             msg_type=msg_type,
@@ -795,7 +804,7 @@ async def _handle_read(params: dict, active_entities: set[str]) -> None:
     if not reader:
         return
 
-    async with async_db_session() as db:
+    async with im_service_db_session() as db:
         await ws_node_runtime.mark_read(db, reader=reader, conversation_id=conversation_id, last_msg_id=last_msg_id)
 
 

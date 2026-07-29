@@ -14,13 +14,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from backend.app.hasn_growth.service.enterprise_info_client import (
     enterprise_record_to_structured,
     extract_records,
 )
 
 # 真 qcc get_company_registration_info 返回形态（单 flat dict，无 list 容器，键全中文）——节选真实键。
-_QCC_REGISTRATION = {
+_QCC_REGISTRATION: dict[str, Any] = {
     '企业名称': '小米科技有限责任公司',
     '法定代表人': '雷军',
     '统一社会信用代码': '91110108551385082Q',
@@ -31,7 +33,7 @@ _QCC_REGISTRATION = {
 }
 
 # 真 qcc get_company_by_query 返回形态（候选落中文容器键 企业信息；法人名是列表值）。
-_QCC_SEARCH = {
+_QCC_SEARCH: dict[str, Any] = {
     '匹配结果': '已找到 3 条',
     '检索关键字': '比亚迪',
     '企业信息': [

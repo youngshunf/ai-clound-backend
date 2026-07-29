@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
+
 import pytest
 import pytest_asyncio
 
@@ -18,10 +20,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn_growth.model.contact_channel import ContactChannel
+from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
+from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
 from backend.common.exception import errors
+from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -58,7 +65,7 @@ async def _seed_lead(sess, *, user_id: int, email: str, phone: str, company: str
         source_type='firecrawl',
         keyword='CRM',
         status='new',
-        confidence_score=78.5,
+        confidence_score=Decimal('78.5'),
     )
     sess.add(lead)
     await sess.flush()
@@ -88,10 +95,10 @@ async def test_funnel_full_flow(session) -> None:
     assert hit['phone'] == '1380****8000'
     assert hit['status'] == 'new'  # 用户级状态来自 lead_ref
 
-    # 2) 详情 reveal=True 回明文
+    # 2) 历史 reveal_pii 参数不得绕过专用单渠道 reveal
     revealed = await growth_funnel_service.get_lead(session, user_id=uid, lead_contact_id=lead.id, reveal_pii=True)
-    assert revealed['email'] == 'zhangsan@acme.com'
-    assert revealed['phone'] == '13800138000'
+    assert revealed['email'] == 'z***@acme.com'
+    assert revealed['phone'] == '1380****8000'
 
     # 3) qualify → 建客户 + ref 态 qualified + qualify 活动
     cust = await growth_funnel_service.qualify_lead(
@@ -101,6 +108,12 @@ async def test_funnel_full_flow(session) -> None:
     assert cust['email'] == 'z***@acme.com'  # 出参脱敏
     assert cust['lifecycle_status'] == 'active'
     customer_id = cust['id']
+    public_customer = (
+        await session.execute(select(Customer).where(Customer.id == customer_id))
+    ).scalar_one()
+    assert public_customer.contact_name is None
+    assert public_customer.email is None
+    assert public_customer.phone is None
     ref = await _ref_of(session, user_id=uid, lead_contact_id=lead.id)
     assert ref.status == 'qualified'  # 用户级状态落引用层，不污染池行
 
@@ -150,22 +163,47 @@ async def test_funnel_full_flow(session) -> None:
 
 
 async def test_create_manual_lead_pool_and_ref(session) -> None:
-    """手动建线索：落私有池行（不进公共匹配）+ 建用户引用（source=manual，note 落引用层）。"""
+    """手动建线索：池行只留公开事实，姓名和联系方式进入 Owner 私有密文。"""
     uid = 980000 + int(uuid.uuid4().int % 9000)
-    created = await growth_funnel_service.create_manual_lead(
-        session,
-        user_id=uid,
-        company_name='手动公司',
-        contact_name='李四',
-        email='lisi@manual.com',
-        phone='13700137000',
-        note='展会换的名片',
-    )
+    previous = settings.GROWTH_PII_NEW_WRITE_ENABLED
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    try:
+        created = await growth_funnel_service.create_manual_lead(
+            session,
+            user_id=uid,
+            company_name='手动公司',
+            contact_name='李四',
+            email='lisi@manual.com',
+            phone='13700137000',
+            note='展会换的名片',
+        )
+    finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous
     cid = created['lead_contact_id']
     # 池行私有
     contact = (await session.execute(select(LeadContact).where(LeadContact.id == cid))).scalar_one()
     assert contact.pool_visibility == 'private'
     assert contact.source_type == 'manual'
+    assert contact.contact_name is None
+    assert contact.email is None and contact.email_normalized is None
+    assert contact.phone is None and contact.phone_normalized is None
+    assert contact.dedupe_key_email is None and contact.dedupe_key_phone is None
+    profile = (
+        await session.execute(
+            select(ContactPrivateProfile).where(
+                ContactPrivateProfile.user_id == uid,
+                ContactPrivateProfile.lead_contact_id == cid,
+            )
+        )
+    ).scalar_one()
+    channels = (
+        await session.execute(
+            select(ContactChannel).where(ContactChannel.private_profile_id == profile.id)
+        )
+    ).scalars().all()
+    assert {channel.channel for channel in channels} == {'email', 'phone'}
+    assert all(channel.value_ciphertext not in {'lisi@manual.com', '13700137000'} for channel in channels)
+    assert all(channel.hash_key_version == require_growth_pii_keyring().active_hmac_version for channel in channels)
     # 引用层：source=manual + note
     ref = await _ref_of(session, user_id=uid, lead_contact_id=cid)
     assert ref.source == 'manual'
@@ -173,9 +211,87 @@ async def test_create_manual_lead_pool_and_ref(session) -> None:
     assert ref.status == 'new'
     # 出现在该用户检索
     found = await growth_funnel_service.search_leads(session, user_id=uid, query='手动公司', limit=10)
-    assert any(r['lead_contact_id'] == cid for r in found)
+    listed_lead = next(r for r in found if r['lead_contact_id'] == cid)
+    assert listed_lead['contact_name'] == '李*'
+    assert listed_lead['email'] == 'l***@manual.com'
+    assert listed_lead['phone'] == '+861****7000'
+    detailed_lead = await growth_funnel_service.get_lead(
+        session,
+        user_id=uid,
+        lead_contact_id=cid,
+        reveal_pii=True,
+    )
+    assert detailed_lead['contact_name'] == '李*'
+    assert detailed_lead['email'] == 'l***@manual.com'
+    assert detailed_lead['phone'] == '+861****7000'
     assert created['note'] == '展会换的名片'
 
+    customer = await growth_funnel_service.qualify_lead(
+        session,
+        user_id=uid,
+        lead_contact_id=cid,
+    )
+    assert customer['contact_name'] == '李*'
+    assert customer['email'] == 'l***@manual.com'
+    assert customer['phone'] == '+861****7000'
+    stored_customer = (
+        await session.execute(select(Customer).where(Customer.id == customer['id']))
+    ).scalar_one()
+    assert stored_customer.contact_name is None
+    assert stored_customer.email is None
+    assert stored_customer.phone is None
+    listed_customer = next(
+        item
+        for item in await growth_funnel_service.list_customers(session, user_id=uid, limit=10)
+        if item['id'] == customer['id']
+    )
+    assert listed_customer['contact_name'] == '李*'
+    assert listed_customer['email'] == 'l***@manual.com'
+    assert listed_customer['phone'] == '+861****7000'
+    detailed_customer = await growth_funnel_service.get_customer(
+        session,
+        user_id=uid,
+        customer_id=customer['id'],
+        reveal_pii=True,
+    )
+    assert detailed_customer['contact_name'] == '李*'
+    assert detailed_customer['email'] == 'l***@manual.com'
+    assert detailed_customer['phone'] == '+861****7000'
+
+    updated_customer = await growth_funnel_service.update_customer_profile(
+        session,
+        user_id=uid,
+        customer_id=customer['id'],
+        profile={'note': '联系 lisi@manual.com 或 13700137000'},
+        tags=['lisi@manual.com', '重点客户'],
+    )
+    assert 'lisi@manual.com' not in str(updated_customer['profile_json'])
+    assert '13700137000' not in str(updated_customer['profile_json'])
+    assert 'lisi@manual.com' not in str(updated_customer['tags'])
+    await growth_funnel_service.log_activity(
+        session,
+        user_id=uid,
+        customer_id=customer['id'],
+        kind='note',
+        content='回拨 13700137000，抄送 lisi@manual.com',
+    )
+    timeline = await growth_funnel_service.customer_timeline(
+        session,
+        user_id=uid,
+        customer_id=customer['id'],
+    )
+    assert '13700137000' not in str(timeline)
+    assert 'lisi@manual.com' not in str(timeline)
+
     # 缺公司名+联系人名 → 拒绝（问题1：空壳不入池）
-    with pytest.raises(errors.RequestError):
-        await growth_funnel_service.create_manual_lead(session, user_id=uid, company_name='', contact_name='')
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    try:
+        with pytest.raises(errors.RequestError):
+            await growth_funnel_service.create_manual_lead(
+                session,
+                user_id=uid,
+                company_name='',
+                contact_name='',
+            )
+    finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous

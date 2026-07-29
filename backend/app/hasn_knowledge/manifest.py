@@ -12,6 +12,27 @@ RAGFlow 是云端服务身后的内部处理后端（纯实现细节），manife
 
 from __future__ import annotations
 
+from typing import Any
+
+# 项目轴入参（doc38 §5.5/§5.6）：**读侧不收窄、写侧继承**——两条描述有意写得不一样，
+# 别合并成一个常量。读工具缺省列全部（知识库是长期资产、跨项目复用是常态，默认按当前项目
+# 过滤会让分身「检索不到」）；写工具缺省继承当前项目会话（系统注入，分身无须填）。
+_PROJECT_SCOPE_PROP = {
+    'type': ['string', 'null'],
+    'description': (
+        '只看挂在某个平台项目下的库（可选）。**缺省列全部/检索全部**——多数库不挂项目，'
+        '别默认收窄；确实要按项目筛时传云端权威 project_id（用 hasn.project.list 查）'
+    ),
+}
+_PROJECT_ATTACH_PROP = {
+    'type': ['string', 'null'],
+    'description': (
+        '把新库直接挂进某个平台项目（可选）。在项目工作会话里干活时**不用填**（系统自动继承当前项目）；'
+        '只有主人明确说「给 X 项目建个库」时才填——先用 hasn.project.list 按名字查出云端权威 '
+        'project_id 再传，**不要自己编 UUID**。非主人名下的项目会被拒（404）'
+    ),
+}
+
 
 def _cap(
     *,
@@ -79,14 +100,20 @@ def _tool(
     return tool
 
 
-KNOWLEDGE_AI_NATIVE_MANIFEST = {
+KNOWLEDGE_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'knowledge',
+    # doc38 §3.3 project-aware：① kb 表有 platform_project_id 列且派发链路透传；② resources[] 可被项目
+    # 总览聚合；③ dispatch 与 create_kb 接受可选 platform_project_id。挂靠是纯归属标签，不改权限。
+    'project_aware': True,
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'knowledge': '知识库（库/文档/检索/问答）'},
     # 2.3.0：原生文档 5000 字上限 + 文档深链 hasn://knowledge/documents/{id} 保存时强校验 + 新增 check_links 预检工具。
     'version': '2.3.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': True,
+    'project_required': False,
+    'project_integration': 'project_aware',
     # 资源描述符（doc31 §2，RC-P6/doc31-A）：知识库 → hasn://knowledge/kbs/{kb_id}，应用内路由打开。
     # KBDISP 派发的整理会话 origin_ref=resource:knowledge:{kb_id}（kb_id 即云端权威 id），完成即出
     # 「知识库整理好了」卡 + 登记应用资源产物到会话资源栏。单类资源（不声明 ref_type）。
@@ -137,6 +164,7 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
                 'kb_ids': {'type': ['array', 'null'], 'items': {'type': 'integer'}},
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50},
                 'similarity_threshold': {'type': ['number', 'null'], 'minimum': 0, 'maximum': 1},
+                'platform_project_id': _PROJECT_SCOPE_PROP,
             },
             required=['query'],
             risk_level='low',
@@ -146,9 +174,12 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='list_datasets',
             title='列出知识库',
-            description='列出分身可访问的知识库（含文档数/分块数）',
+            description=(
+                '列出分身可访问的知识库（含文档数/分块数）。每条回带 platform_project_id：'
+                '库挂在哪个平台项目下一目了然，据此自己挑库，不必先查项目'
+            ),
             scopes=['knowledge:read'],
-            properties={},
+            properties={'platform_project_id': _PROJECT_SCOPE_PROP},
             required=[],
             risk_level='low',
             page_rank=11,
@@ -170,6 +201,16 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
                     'type': 'string',
                     'pattern': '^hasn://asset/',
                     'description': '封面资产 hasn://asset/（必填；优先素材搜索配图→生图→自画SVG）',
+                },
+                'platform_project_id': _PROJECT_ATTACH_PROP,
+                'client_request_id': {
+                    'type': ['string', 'null'],
+                    'minLength': 1,
+                    'maxLength': 200,
+                    'description': (
+                        '建库业务幂等键（可选）。跨应用编排必须传稳定值；'
+                        '相同 Owner、键和参数重试返回同一知识库'
+                    ),
                 },
             },
             required=['name', 'cover_asset_uri'],

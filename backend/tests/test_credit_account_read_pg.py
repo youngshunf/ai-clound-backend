@@ -44,6 +44,7 @@ _ACCOUNT = {
     'total_available_credits': '9',
     'measured_at': '2026-07-25T10:00:00Z',
 }
+TEST_DB: Any = None
 
 
 class _Mapping:
@@ -78,7 +79,7 @@ async def test_available_credits_comes_straight_from_authority(monkeypatch) -> N
     """可用积分直接取权威快照的 total_available_credits，云端不做任何算术。"""
     _patch(monkeypatch, mapping=_Mapping(4242), account=_ACCOUNT)
 
-    result = await credit_account_service.get_account(None, 1)
+    result = await credit_account_service.get_account(TEST_DB, 1)
 
     assert result['credit_status'] == CREDIT_STATUS_OK
     assert result['available_credits'] == '9'
@@ -96,7 +97,7 @@ async def test_unavailable_returns_null_not_zero(monkeypatch) -> None:
         error=NewApiCreditError('模拟不可达', code='newapi_credit_unreachable', retryable=True),
     )
 
-    result = await credit_account_service.get_account(None, 1)
+    result = await credit_account_service.get_account(TEST_DB, 1)
 
     assert result['credit_status'] == CREDIT_STATUS_UNAVAILABLE
     assert result['available_credits'] is None
@@ -110,7 +111,7 @@ async def test_unmapped_user_is_distinguished_from_zero_balance(monkeypatch) -> 
     """尚未开通 NewAPI 账户是「未开通」，不是「余额为 0」，两者必须能区分开。"""
     _patch(monkeypatch, mapping=None)
 
-    result = await credit_account_service.get_account(None, 1)
+    result = await credit_account_service.get_account(TEST_DB, 1)
 
     assert result['credit_status'] == CREDIT_STATUS_UNMAPPED
     assert result['available_credits'] is None

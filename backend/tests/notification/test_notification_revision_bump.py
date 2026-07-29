@@ -20,11 +20,12 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn.model import HasnConversationMemberships, HasnConversations
 from backend.app.hasn.service import sync_invalidate_service
 from backend.app.hasn.service.sync_invalidate_service import (
     EMPTY_NOTIFICATION_REVISION,
@@ -33,7 +34,7 @@ from backend.app.hasn.service.sync_invalidate_service import (
     compute_owner_notification_revision,
 )
 from backend.app.notification.service.notification_service import NotificationService
-from backend.database.db import SQLALCHEMY_DATABASE_URL
+from backend.database.db import SQLALCHEMY_DATABASE_URL, async_db_session
 
 pytestmark = pytest.mark.asyncio
 
@@ -151,18 +152,62 @@ async def test_notice_plane_emit_bumps_notification_kind(session, bump_spy):
 async def test_owner_loopback_emit_does_not_bump_notification(session, bump_spy):
     """自分身→主人（汇报面）：走汇报卡、不落通知中心 → 绝不 bump 通知 revision。"""
     owner, agent = _ids()
-    session.add(HasnAgents(hasn_id=agent, owner_id=owner, display_name='小星', agent_name='xiaoxing'))
-    await session.flush()
+    owner_user_id = 8_900_000_000 + int(uuid.uuid4().hex[:8], 16)
+    # 汇报卡建立会话时，严格 IM 网关使用独立事务读取身份，因此主人和分身必须先真实提交。
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(
+            HasnHumans(
+                hasn_id=owner,
+                star_id=f's_{owner_user_id}',
+                user_id=owner_user_id,
+                nickname='通知测试主人',
+                status='active',
+            )
+        )
+        identity_db.add(
+            HasnAgents(
+                hasn_id=agent,
+                star_id=f's_{owner_user_id}#agent',
+                owner_id=owner,
+                display_name='小星',
+                agent_name='xiaoxing',
+                status='active',
+            )
+        )
+    try:
+        await NotificationService.emit(
+            session,
+            recipient_id=owner,
+            source={'kind': 'agent', 'id': agent, 'on_behalf_of': owner, 'display_name': '小星'},
+            category='agent',
+            type='task.done',
+            title='任务已完成',
+            payload={'link': f'/tasks/sessions/{uuid.uuid4().hex[:8]}'},
+        )
+        await session.flush()
 
-    await NotificationService.emit(
-        session,
-        recipient_id=owner,
-        source={'kind': 'agent', 'id': agent, 'on_behalf_of': owner, 'display_name': '小星'},
-        category='agent',
-        type='task.done',
-        title='任务已完成',
-        payload={'link': f'/tasks/sessions/{uuid.uuid4().hex[:8]}'},
-    )
-    await session.flush()
-
-    assert [kind for kind, _ in bump_spy if kind == KIND_NOTIFICATION] == []
+        assert [kind for kind, _ in bump_spy if kind == KIND_NOTIFICATION] == []
+    finally:
+        async with async_db_session.begin() as cleanup_db:
+            conversation_ids = (
+                await cleanup_db.execute(
+                    select(HasnConversations.id).where(
+                        HasnConversations.type == 'direct',
+                        or_(
+                            HasnConversations.participant_a_id.in_([owner, agent]),
+                            HasnConversations.participant_b_id.in_([owner, agent]),
+                        ),
+                    )
+                )
+            ).scalars().all()
+            if conversation_ids:
+                await cleanup_db.execute(
+                    delete(HasnConversationMemberships).where(
+                        HasnConversationMemberships.conversation_id.in_(conversation_ids)
+                    )
+                )
+                await cleanup_db.execute(
+                    delete(HasnConversations).where(HasnConversations.id.in_(conversation_ids))
+                )
+            await cleanup_db.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent))
+            await cleanup_db.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))

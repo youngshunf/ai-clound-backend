@@ -22,6 +22,7 @@ from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMemb
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.common.exception import errors
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -148,7 +149,7 @@ async def release_seat(db: AsyncSession, *, enterprise_id: int, app_id: str, mem
         )
         .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
     )
-    return (result.rowcount or 0) > 0
+    return affected_rows(result) > 0
 
 
 async def release_all_seats_for_member(db: AsyncSession, *, enterprise_id: int, member_hasn_id: str) -> int:
@@ -163,7 +164,7 @@ async def release_all_seats_for_member(db: AsyncSession, *, enterprise_id: int, 
         )
         .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
     )
-    return int(result.rowcount or 0)
+    return affected_rows(result)
 
 
 async def release_all_seats_for_enterprise(db: AsyncSession, *, enterprise_id: int) -> int:
@@ -180,7 +181,7 @@ async def release_all_seats_for_enterprise(db: AsyncSession, *, enterprise_id: i
         )
         .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
     )
-    return int(result.rowcount or 0)
+    return affected_rows(result)
 
 
 async def revoke_enterprise_entitlements(db: AsyncSession, *, enterprise_id: int) -> int:
@@ -195,7 +196,7 @@ async def revoke_enterprise_entitlements(db: AsyncSession, *, enterprise_id: int
         )
         .values(status='revoked', updated_time=timezone.now())
     )
-    return int(result.rowcount or 0)
+    return affected_rows(result)
 
 
 async def settle_seat_purchase(

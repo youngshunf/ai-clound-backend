@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from backend.app.hasn_growth.service.maps_place_client import (
@@ -154,5 +156,6 @@ async def test_maps_provider_skips_when_unconfigured(monkeypatch) -> None:
     provider = get_provider('maps')
     req = CrawlRequest(job_id=1, keyword='科技公司', source_type='maps', config={'city': '杭州'})
 
-    items = [item async for item in provider.crawl_stream(req, firecrawl_client=None)]
+    firecrawl_client: Any = None
+    items = [item async for item in provider.crawl_stream(req, firecrawl_client=firecrawl_client)]
     assert items == []

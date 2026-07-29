@@ -25,12 +25,20 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
+from backend.app.hasn.model import HasnAssetBindings
 from backend.app.hasn.service.authz.resource_registry import ResourceMeta, resource_kind_registry
 from backend.app.hasn_knowledge.model import Document, Folder, Kb
-from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
+from backend.app.hasn_knowledge.model.document_version import DocumentVersion
+from backend.app.hasn_knowledge.service.inline_assets import asset_ids_from_content
+from backend.app.hasn_knowledge.service.knowledge_service import _resource_uri, knowledge_service
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _asset_ids_from_content(content: str | None) -> set[str]:
+    """兼容既有测试/调用点的应用内别名。"""
+    return asset_ids_from_content(content)
 
 
 def _to_int(resource_id: str) -> int | None:
@@ -44,8 +52,8 @@ def _to_int(resource_id: str) -> int | None:
 class KbResourceAdapter:
     """知识库（库级）资源适配器：resource_type='knowledge'，leaf id = kb_id。"""
 
-    resource_type = 'knowledge'
-    id_param_aliases = ('kb_id',)
+    resource_type: str = 'knowledge'
+    id_param_aliases: tuple[str, ...] = ('kb_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         kb_id = _to_int(resource_id)
@@ -107,9 +115,55 @@ class KbDocResourceAdapter:
     文档可独立分享（`has_own_shares=True`），门取 `max(文档级 share, 库级 share)`。
     """
 
-    resource_type = 'knowledge_doc'
-    id_param_aliases = ('doc_id',)
+    resource_type: str = 'knowledge_doc'
+    id_param_aliases: tuple[str, ...] = ('doc_id',)
     has_own_shares = True
+
+    async def collect_asset_ids(self, db: AsyncSession, resource_id: str) -> set[str]:
+        """收集当前及历史版本中真实渲染、且合法归属/绑定到本文档的资产。"""
+        doc_id = _to_int(resource_id)
+        if doc_id is None:
+            return set()
+        doc = (
+            await db.execute(
+                sa.select(Document.id, Document.owner_id, Document.content).where(
+                    Document.id == doc_id,
+                    Document.kind == 'native',
+                    Document.deleted_time.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if doc is None:
+            return set()
+        version_contents = (
+            await db.execute(
+                sa.select(DocumentVersion.content).where(DocumentVersion.document_id == doc_id)
+            )
+        ).scalars().all()
+        referenced: set[str] = set()
+        for content in [doc.content, *version_contents]:
+            referenced.update(asset_ids_from_content(content))
+        if not referenced:
+            return set()
+
+        resource_uri = _resource_uri('knowledge.document', doc_id)
+        bound_assets: set[str] = set()
+        if resource_uri:
+            bound_assets = set(
+                (
+                    await db.execute(
+                        sa.select(HasnAssetBindings.asset_id).where(
+                            HasnAssetBindings.asset_id.in_(referenced),
+                            HasnAssetBindings.resource_uri == resource_uri,
+                            HasnAssetBindings.role == 'inline_image',
+                            HasnAssetBindings.status == 'active',
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return referenced & bound_assets
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         doc_id = _to_int(resource_id)
@@ -152,8 +206,8 @@ class KbFolderResourceAdapter:
     目录无独立 share（`authorize_folder` 即委托 `authorize_kb`），纯继承库档位（无 `has_own_shares`）。
     """
 
-    resource_type = 'knowledge_folder'
-    id_param_aliases = ('folder_id',)
+    resource_type: str = 'knowledge_folder'
+    id_param_aliases: tuple[str, ...] = ('folder_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         folder_id = _to_int(resource_id)

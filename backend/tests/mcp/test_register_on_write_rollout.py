@@ -47,6 +47,7 @@ ROLLOUT = [
     ('knowledge', 'knowledge.document', 'hasn://knowledge/documents/', 'resource'),
     ('community', 'community.post', 'hasn://community/posts/', 'resource'),
     ('community', 'community.article', 'hasn://community/articles/', 'resource'),
+    ('community', 'community.doc_space', 'hasn://community/doc-spaces/', 'resource'),
     ('creator', 'creator.project', 'hasn://creator/projects/', 'resource'),
     ('growth', 'growth.customer', 'hasn://growth/customers/', 'resource'),
     ('quant', 'quant.strategy', 'hasn://quant/strategies/', 'resource'),

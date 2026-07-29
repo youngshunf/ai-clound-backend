@@ -63,7 +63,7 @@ async def _seed(session) -> tuple[str, int, str, str]:
     tag = _uid()
     owner = f'h_crx_{tag}'
     other = f'h_crx_other_{tag}'
-    uid = 960000 + int(uuid.uuid4().int % 9000)
+    uid = 9_600_000_000 + int(uuid.uuid4().int % 1_000_000_000)
     own_agent = f'a_crx_own_{tag}'
     foreign_agent = f'a_crx_foreign_{tag}'
     session.add_all([

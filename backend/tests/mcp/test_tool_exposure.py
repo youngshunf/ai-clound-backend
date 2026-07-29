@@ -213,6 +213,7 @@ async def test_owner_denied_hidden_in_search_but_permission_error_on_call(monkey
     ctx = _ctx(capability_modes={'stub:act': 'deny'})
 
     tool = server.tool_registry.get_tool('hasn.stub.act')
+    assert tool is not None
     assert not server.tool_directory._can_discover(ctx, tool)
     with pytest.raises(PermissionError, match='Capability denied by owner'):
         await server.call_tool(ctx, 'hasn.stub.act', {})
@@ -226,6 +227,7 @@ async def test_external_unbound_hidden_in_search_and_direct_call_denied(monkeypa
 
     ctx = _ctx()
     tool = server.tool_registry.get_tool('hasn.ext.srv.echo')
+    assert tool is not None
     assert not server.tool_directory._can_discover(ctx, tool)
     with pytest.raises(McpToolError) as exc_info:
         await server.call_tool(ctx, 'hasn.ext.srv.echo', {})
@@ -244,5 +246,6 @@ def test_ask_mode_visible_in_discovery() -> None:
     server.tool_registry.register(_StubTool())
     ctx = _ctx(capability_modes={'stub:act': 'ask'})
     tool = server.tool_registry.get_tool('hasn.stub.act')
+    assert tool is not None
     assert tool_exposure_policy.evaluate(ctx, tool).action == ACTION_ASK
     assert server.tool_directory._can_discover(ctx, tool)

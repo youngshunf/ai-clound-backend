@@ -151,10 +151,14 @@ class Snowflake:
                 )
 
             # 严格校验范围
-            if not (0 <= self.datacenter_id <= SnowflakeConfig.MAX_DATACENTER_ID):
+            datacenter_id = self.datacenter_id
+            worker_id = self.worker_id
+            if datacenter_id is None or worker_id is None:
+                raise errors.ServerError(msg='雪花算法节点分配结果为空')
+            if not (0 <= datacenter_id <= SnowflakeConfig.MAX_DATACENTER_ID):
                 log.error(f'雪花算法 datacenter_id 配置失败，必须在 0~{SnowflakeConfig.MAX_DATACENTER_ID} 之间')
                 raise errors.ServerError(msg='雪花算法数据中心配置失败，请联系系统管理员')
-            if not (0 <= self.worker_id <= SnowflakeConfig.MAX_WORKER_ID):
+            if not (0 <= worker_id <= SnowflakeConfig.MAX_WORKER_ID):
                 log.error(f'雪花算法 worker_id 配置失败，必须在 0~{SnowflakeConfig.MAX_WORKER_ID} 之间')
                 raise errors.ServerError(msg='雪花算法工作机器配置失败，请联系系统管理员')
 
@@ -181,6 +185,10 @@ class Snowflake:
         """生成雪花 ID"""
         if not self._initialized:
             raise errors.ServerError(msg='雪花 ID 生成失败，雪花算法未初始化')
+        datacenter_id = self.datacenter_id
+        worker_id = self.worker_id
+        if datacenter_id is None or worker_id is None:
+            raise errors.ServerError(msg='雪花 ID 生成失败，节点信息为空')
 
         with self._lock:
             timestamp = self._current_ms()
@@ -207,8 +215,8 @@ class Snowflake:
             # 组合 64 位 ID
             return (
                 ((timestamp - SnowflakeConfig.EPOCH) << SnowflakeConfig.TIMESTAMP_LEFT_SHIFT)
-                | (self.datacenter_id << SnowflakeConfig.DATACENTER_ID_SHIFT)
-                | (self.worker_id << SnowflakeConfig.WORKER_ID_SHIFT)
+                | (datacenter_id << SnowflakeConfig.DATACENTER_ID_SHIFT)
+                | (worker_id << SnowflakeConfig.WORKER_ID_SHIFT)
                 | self.sequence
             )
 

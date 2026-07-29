@@ -21,7 +21,7 @@ import asyncio
 import hashlib
 import json
 
-from types import SimpleNamespace
+from types import SimpleNamespace as _SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -38,6 +38,7 @@ FAKE_HASN_ID = 'h_100001'
 FAKE_SECRET = 'test_app_master_secret_42'
 FAKE_APP_KEY = 'test_app_key'
 FAKE_URL = 'https://msg.umeng.com/api/send'
+SimpleNamespace: Any = _SimpleNamespace
 
 
 def _make_response(status_code: int, body: dict[str, Any]) -> httpx.Response:
@@ -210,6 +211,7 @@ def test_dispatch_success_calls_http_post_once_with_correct_signature(
     assert mock_post.await_count == 1
 
     call_args = mock_post.await_args
+    assert call_args is not None
     called_url: str = call_args.args[0]
     called_body: bytes = call_args.args[1]
     called_headers: dict[str, str] = call_args.args[2]
@@ -434,5 +436,6 @@ def test_refresh_active_token_gauge_swallows_errors(
         async def execute(self, *_args: Any, **_kw: Any) -> None:
             raise RuntimeError('db offline')
 
-    got = asyncio.run(push_dispatcher.refresh_active_token_gauge(_BoomDb()))
+    boom_db: Any = _BoomDb()
+    got = asyncio.run(push_dispatcher.refresh_active_token_gauge(boom_db))
     assert got == 0

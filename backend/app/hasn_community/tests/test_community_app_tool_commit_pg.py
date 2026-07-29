@@ -25,8 +25,22 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn_community.model import HasnPosts
+from backend.app.hasn.model import (
+    HasnArtifactContributions,
+    HasnArtifactRegistrationOutbox,
+    HasnArtifacts,
+)
+from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_community.model import HasnDocNodes, HasnDocSpaces, HasnPosts
+from backend.app.hasn_community.service.community_tool_handlers import (
+    handle_community_create_doc_node,
+    handle_community_create_doc_space,
+)
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import (
+    clear_current_work_session_id,
+    set_current_work_session_id,
+)
 from backend.app.mcp.tools.app_tool_loader import load_published_app_tools
 from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -34,14 +48,14 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL
 pytestmark = pytest.mark.asyncio
 
 
-def _agent() -> AgentTokenPayload:
-    # 合成身份：MCP 直连面恒取 request.state.agent，不查 Redis/DB；owner_user_id 用高位测试值避免撞真实数据。
+def _agent(tag: str) -> AgentTokenPayload:
+    """构造与本用例真实身份行一一对应的 Agent 凭据。"""
     return AgentTokenPayload(
-        agent_hasn_id='hasn:agent:commctx-x',
+        agent_hasn_id=f'a_commctx_{tag}',
         agent_name='社区提交边界回归分身',
-        owner_hasn_id='hasn:owner:commctx-a',
-        owner_user_id=920078,
-        session_uuid='sess-commctx-test',
+        owner_hasn_id=f'h_commctx_{tag}',
+        owner_user_id=920_000_000 + int(tag, 16),
+        session_uuid=f'sess-commctx-{tag}',
         expire_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
     )
 
@@ -68,25 +82,129 @@ async def test_app_tool_execute_commits_community_create_post() -> None:
     tool = next((t for t in tools if t.name == 'hasn.community.create_post'), None)
     assert tool is not None, 'community create_post AppTool 未在已发布工具中（builtin manifest 应含）'
 
-    marker = uuid.uuid4().hex[:8]
+    marker = uuid.uuid4().hex[:6]
     content = f'[工具测试-commctx 可忽略] community 提交边界回归 {marker}'
-    agent_ctx = AgentContext.from_token_payload(_agent(), agent_status='active')
+    token = _agent(marker)
+    agent_ctx = AgentContext.from_token_payload(token, agent_status='active')
 
-    # handler 内部自 db.commit()；AppTool.execute 现用裸 session + 末尾 commit，不再撞 closed-transaction。
-    result = await tool.execute(agent_ctx, {'content': content, 'visibility': 'private'})
-
-    assert result.get('decision') == 'allow', f'网关未放行：{result}'
-    post_id = result['result']['post_id']
-
-    # 独立 session：必须看得到这一行（证明已提交；修前因 closed-transaction 根本到不了这）。
+    # 先提交真实 Human/Agent 身份。IM 发卡必须走身份视图 fail-closed 校验，禁止测试合成不存在的身份。
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     sess = async_sessionmaker(engine, expire_on_commit=False)()
+    post_id: str | None = None
     try:
+        sess.add_all(
+            [
+                HasnHumans(
+                    hasn_id=token.owner_hasn_id,
+                    star_id=f'commctx-owner-{marker}',
+                    user_id=token.owner_user_id,
+                    nickname='社区提交边界主人',
+                    status='active',
+                ),
+                HasnAgents(
+                    hasn_id=token.agent_hasn_id,
+                    star_id=f'commctx-agent-{marker}',
+                    owner_id=token.owner_hasn_id,
+                    display_name=token.agent_name,
+                    agent_name='community_commit',
+                    status='active',
+                ),
+            ]
+        )
+        await sess.commit()
+
+        # handler 内部自 db.commit()；AppTool.execute 现用裸 session + 末尾 commit，不再撞 closed-transaction。
+        result = await tool.execute(agent_ctx, {'content': content, 'visibility': 'private'})
+        assert result.get('decision') == 'allow', f'网关未放行：{result}'
+        post_id = result['result']['post_id']
+
+        # 独立 session：必须看得到这一行（证明已提交；修前因 closed-transaction 根本到不了这）。
         row = (await sess.execute(select(HasnPosts).where(HasnPosts.post_id == post_id))).scalar_one_or_none()
         assert row is not None, '帖子未落库——网关到达面事务未提交'
         assert row.content == content
     finally:
-        await sess.execute(delete(HasnPosts).where(HasnPosts.post_id == post_id))
+        if post_id is not None:
+            await sess.execute(delete(HasnPosts).where(HasnPosts.post_id == post_id))
+        await sess.execute(delete(HasnAgents).where(HasnAgents.hasn_id == token.agent_hasn_id))
+        await sess.execute(delete(HasnHumans).where(HasnHumans.hasn_id == token.owner_hasn_id))
+        await sess.commit()
+        await sess.close()
+        await engine.dispose()
+
+
+async def test_doc_tool_writes_register_one_stable_space_artifact() -> None:
+    """建文集与新增目录都登记同一权威文集 URI，并把 URI 返回给分身。"""
+    if not await _pg_reachable():
+        pytest.skip('本地 PostgreSQL :15432 不可达，跳过')
+
+    marker = uuid.uuid4().hex[:6]
+    token = _agent(marker)
+    work_session_id = f'ws-doc-{marker}'
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    sess = async_sessionmaker(engine, expire_on_commit=False)()
+    space_id: str | None = None
+    artifact_id: str | None = None
+    set_current_work_session_id(work_session_id)
+    try:
+        created = await handle_community_create_doc_space(
+            sess,
+            token,
+            {'title': f'社区文集产物 {marker}', 'description': '真实数据库登记回归'},
+        )
+        space_id = created['space_id']
+        expected_uri = f'hasn://community/doc-spaces/{space_id}'
+        assert created['uri'] == expected_uri
+
+        node = await handle_community_create_doc_node(
+            sess,
+            token,
+            {
+                'space_id': space_id,
+                'title': '第一章',
+                'parent_node_id': None,
+            },
+        )
+        assert node['uri'] == expected_uri
+
+        rows = (
+            await sess.execute(
+                select(HasnArtifacts).where(
+                    HasnArtifacts.resource_uri == expected_uri,
+                    HasnArtifacts.status == 'active',
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1, '同一文集的后续目录写入不得产生重复产物'
+        artifact_id = str(rows[0].artifact_id)
+        contributions = (
+            await sess.execute(
+                select(HasnArtifactContributions).where(
+                    HasnArtifactContributions.artifact_id == rows[0].artifact_id,
+                    HasnArtifactContributions.agent_hasn_id == token.agent_hasn_id,
+                )
+            )
+        ).scalars().all()
+        assert contributions
+        assert all(row.work_session_id == work_session_id for row in contributions)
+    finally:
+        clear_current_work_session_id()
+        if space_id is not None:
+            await sess.execute(delete(HasnDocNodes).where(HasnDocNodes.space_id == space_id))
+            await sess.execute(delete(HasnDocSpaces).where(HasnDocSpaces.space_id == space_id))
+        if artifact_id is not None:
+            await sess.execute(
+                delete(HasnArtifactRegistrationOutbox).where(
+                    HasnArtifactRegistrationOutbox.artifact_id == artifact_id
+                )
+            )
+            await sess.execute(
+                delete(HasnArtifactContributions).where(
+                    HasnArtifactContributions.artifact_id == artifact_id
+                )
+            )
+            await sess.execute(
+                delete(HasnArtifacts).where(HasnArtifacts.artifact_id == artifact_id)
+            )
         await sess.commit()
         await sess.close()
         await engine.dispose()

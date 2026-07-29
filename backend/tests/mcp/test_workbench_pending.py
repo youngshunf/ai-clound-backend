@@ -96,7 +96,7 @@ def test_pending_scope_in_catalog() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
     """真实 PG：plan 只聚逾期待办、task 聚 pending_approval，owner 隔离，deep_link canonical。"""
     if not await _db_reachable():

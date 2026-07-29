@@ -2,7 +2,7 @@
 
 import re
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -33,12 +33,8 @@ class TableInfo:
 
     name: str
     comment: str | None = None
-    columns: list[ColumnInfo] = None
+    columns: list[ColumnInfo] = field(default_factory=list)
     dialect: DatabaseDialect = DatabaseDialect.POSTGRESQL
-
-    def __post_init__(self):
-        if self.columns is None:
-            self.columns = []
 
 
 class SQLParser:

@@ -25,7 +25,7 @@ Gateway，故不进 `tools[]`（自造 transport 会静默过 validate_manifest 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -154,7 +154,7 @@ _OUTLINE_ITEM_SCHEMA = {
 }
 
 
-DECK_AI_NATIVE_MANIFEST = {
+DECK_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'deck',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'deck': '演示文稿（创建/编辑/大纲/导出）'},
@@ -163,6 +163,7 @@ DECK_AI_NATIVE_MANIFEST = {
     'collaboration_mode': 'none',
     'project_aware': True,
     'project_required': False,
+    'project_integration': 'project_aware',
     # catalog 枚举 local_tool（[07] §6.4 设计标签 native_huanxing 映射至此）。
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Local），不经云端 Runtime Gateway。
@@ -215,8 +216,13 @@ DECK_AI_NATIVE_MANIFEST = {
         ),
         _read_cap(
             name='list',
-            description='列出当前 owner 的全部 deck（不含已删）。',
-            properties={},
+            description='列出当前 owner 的 Deck；默认不收窄，可显式按平台项目筛选。',
+            properties={
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'description': '显式筛选的平台项目 UUID；省略时返回全部',
+                }
+            },
             required=[],
             page_rank=12,
             tags=['deck', 'list', 'read'],

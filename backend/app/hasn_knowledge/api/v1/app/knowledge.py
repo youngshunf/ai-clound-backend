@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, File, Query, Request, UploadFile
+from fastapi import APIRouter, File, Header, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,15 @@ class CreateKbRequest(BaseModel):
     description: str | None = Field(default=None, max_length=512, description='描述')
     cover_asset_uri: str | None = Field(
         default=None, max_length=512, description='封面资产 hasn://asset/（主人上传得到，可选）'
+    )
+    # doc38 §5.5 容器创建时的项目归属：daemon 代主人建库（派分身建库）时带上本次派发定稿的项目，
+    # 新库直接进项目「挂靠资源区」；缺省不挂。非本主人的项目 → service 侧 404。
+    platform_project_id: str | None = Field(default=None, description='挂进的平台项目 id（云端权威 UUID，可选）')
+    client_request_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description='Owner 范围业务幂等键；相同键和参数重试返回同一知识库',
     )
 
 
@@ -113,9 +122,16 @@ class AddDocShareRequest(BaseModel):
 
 
 @router.get('/kbs', summary='列知识库（我的 ∪ 共享给我的 ∪ 企业可见）', dependencies=[DependsJwtAuth])
-async def list_kbs(request: Request, db: CurrentSession) -> ResponseModel:
+async def list_kbs(
+    request: Request,
+    db: CurrentSession,
+    platform_project_id: Annotated[str | None, Query(description='按挂靠的平台项目收窄（可选；缺省列全部）')] = None,
+) -> ResponseModel:
+    # 缺省不按项目过滤（doc38 §5.6 读侧不收窄）；项目总览「挂靠资源区」显式传参逐应用查。
     owner_id = await _resolve_owner(db, request)
-    data = await knowledge_service.list_accessible_kbs(db, subject=Subject.human(owner_id))
+    data = await knowledge_service.list_accessible_kbs(
+        db, subject=Subject.human(owner_id), platform_project_id=platform_project_id
+    )
     return response_base.success(data=data)
 
 
@@ -124,13 +140,27 @@ async def create_kb(request: Request, db: CurrentSessionTransaction, body: Creat
     owner_id = await _resolve_owner(db, request)
     try:
         data = await knowledge_service.create_kb(
-            db, owner_id, name=body.name, description=body.description, cover_asset_uri=body.cover_asset_uri
+            db,
+            owner_id,
+            name=body.name,
+            description=body.description,
+            cover_asset_uri=body.cover_asset_uri,
+            platform_project_id=body.platform_project_id,
+            client_request_id=body.client_request_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
     await knowledge_service.write_ui_audit(
         db, owner_id=owner_id, user_id=request.user.id, method='ui.create_kb', context={'kb_id': data['id']}
     )
+    return response_base.success(data=data)
+
+
+@router.get('/kbs/{kb_id}', summary='知识库详情（含挂靠的平台项目）', dependencies=[DependsJwtAuth])
+async def get_kb(request: Request, db: CurrentSession, kb_id: int) -> ResponseModel:
+    # 单库详情：daemon 派发时据此继承容器挂靠的项目（doc38 §5.2），webui 详情页也免于从整张 list 里筛。
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.get_kb_detail(db, subject=Subject.human(owner_id), kb_id=kb_id)
     return response_base.success(data=data)
 
 
@@ -348,6 +378,10 @@ async def upload_document(
     kb_id: int,
     file: Annotated[UploadFile, File(description='文档文件')],
     folder_id: Annotated[int | None, Query(description='目录 ID（空=库根）')] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias='Idempotency-Key', min_length=1, max_length=96, description='上传幂等键'),
+    ] = None,
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_kb(db, subject=Subject.human(owner_id), kb_id=kb_id, need='editor')
@@ -362,6 +396,7 @@ async def upload_document(
             mime=file.content_type or 'application/octet-stream',
             folder_id=folder_id,
             source='ui',
+            idempotency_key=idempotency_key,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
@@ -380,6 +415,17 @@ async def get_document(request: Request, db: CurrentSession, doc_id: int) -> Res
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_doc(db, subject=Subject.human(owner_id), doc_id=doc_id, need='viewer')
     return response_base.success(data=await knowledge_service.get_document(db, kb.owner_id, doc_id))
+
+
+@router.get(
+    '/documents/{doc_id}/edit-access',
+    summary='确认当前主人可编辑文档（只判权，不修改）',
+    dependencies=[DependsJwtAuth],
+)
+async def check_document_edit_access(request: Request, db: CurrentSession, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    await knowledge_service.authorize_doc(db, subject=Subject.human(owner_id), doc_id=doc_id, need='editor')
+    return response_base.success(data={'doc_id': doc_id})
 
 
 @router.delete('/documents/{doc_id}', summary='删文档（引擎副本删净）', dependencies=[DependsJwtAuth])
@@ -438,7 +484,14 @@ async def create_native_document(
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_kb(db, subject=Subject.human(owner_id), kb_id=kb_id, need='editor')
     data = await knowledge_service.create_native_document(
-        db, kb.owner_id, kb_id, title=body.title, content=body.content, folder_id=body.folder_id, source='ui'
+        db,
+        kb.owner_id,
+        kb_id,
+        title=body.title,
+        content=body.content,
+        folder_id=body.folder_id,
+        source='ui',
+        asset_actor_id=owner_id,
     )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.create_native_doc',
@@ -462,6 +515,7 @@ async def update_document(
         folder_id=body.folder_id,
         move_to_root=body.move_to_root,
         source='ui',
+        asset_actor_id=owner_id,
     )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.update_document',
@@ -501,7 +555,14 @@ async def restore_version(
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_doc(db, subject=Subject.human(owner_id), doc_id=doc_id, need='editor')
-    data = await knowledge_service.restore_version(db, kb.owner_id, doc_id, version_no, source='ui')
+    data = await knowledge_service.restore_version(
+        db,
+        kb.owner_id,
+        doc_id,
+        version_no,
+        source='ui',
+        asset_actor_id=owner_id,
+    )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.restore_version',
         context={'doc_id': doc_id, 'version_no': version_no, 'actor': owner_id},

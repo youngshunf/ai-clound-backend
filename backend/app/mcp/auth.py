@@ -65,10 +65,19 @@ class AgentContext:
         # `work_session_id` 更名为中性 `session_id`——它不再只是工作会话。
         # 无会话上下文（非派发路径直调）→ None（产物仍凭 resource_uri 进产物 tab；溯源留 NULL 自然跳过回灌）。
         self.session_id: str | None = None
+        # 会话轴分流（设计 02 §4.3）：本次派发所属的**工作会话 id**——与 `session_id`（运行时/
+        # 逻辑会话语义）严格分工，只在**真实工作会话派发**时非空。CLI 直连面由 streamable 从
+        # daemon 组装的 `X-Hasn-Work-Session-Id` header 落此字段（auth 绑定级、分身不可伪造）；
+        # Hermes 面经保留参数 `_hasn_work_session_id` 由 server.call_tool 剥离采信。register-on-write
+        # 的工作会话 ContextVar 优先取本字段，缺省才对 `session_id` 做「在册 task」收窄（兼容旧节点）。
+        self.work_session_id: str | None = None
         # P7 第三方 MCP 网关：本请求该 Agent 可发现/可调的 external 工具 canonical 名集合
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
         # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。
         self.external_allowed_tools: set[str] = set()
+        # 本次工作会话允许调用的精确业务工具名。None 保持既有不限制语义；
+        # frozenset() 表示拒绝全部业务工具。传输包装器由统一判定函数始终保留。
+        self.allowed_tool_names: frozenset[str] | None = None
         # G1 平台特权门（doc18 §4.1）：Admin 授予表 ∪ ENV bootstrap 的授予值集合
         # （精确 scope 或段尾通配）。默认空 = 特权工具全不可见；两凭证入口鉴权后
         # 用 get_privileged_grants_cached 现查灌入。与已废弃的凭证 scopes 无关。

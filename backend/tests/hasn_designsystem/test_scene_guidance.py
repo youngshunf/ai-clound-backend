@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_designsystem.core.scenes import SCENE_STANDARDS
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.scene_guidance import (
@@ -252,12 +253,38 @@ def _content(components_html: str) -> dict:
     }
 
 
+async def _seed_identity(session: AsyncSession, tag: str) -> tuple[str, str]:
+    """落库真实主人与分身身份，使完整设计系统的完成卡经过身份校验。"""
+    owner = f'h_{tag}'
+    agent = f'a_{tag}'
+    session.add_all(
+        [
+            HasnHumans(
+                hasn_id=owner,
+                star_id=f'hsg{tag}',
+                user_id=int(uuid.uuid4().hex[:15], 16),
+                nickname=f'场景自查主人{tag}',
+                status='active',
+            ),
+            HasnAgents(
+                hasn_id=agent,
+                star_id=f'asg{tag}',
+                owner_id=owner,
+                display_name=f'场景自查分身{tag}',
+                agent_name=f'guidance_{tag}',
+                status='active',
+            ),
+        ]
+    )
+    await session.commit()
+    return owner, agent
+
+
 @pytest.mark.asyncio
 async def test_service_scene_coverage_report_by_id_reads_current_html(session: AsyncSession) -> None:
     """by-id：owner 分身自查 → 现读当前版本 components.html 实检覆盖（品牌网站 3/5）+ 报告带 id/name。"""
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
-    agent = f'a_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     html = _scene(_comp('nav', 'hero', 'features'), 'brand_website')
     saved = await design_system_service.save(
         session,
@@ -285,10 +312,10 @@ async def test_service_scene_coverage_report_by_id_reads_current_html(session: A
 async def test_service_scene_coverage_report_override_html_dry_run(session: AsyncSession) -> None:
     """by-id + components_html_override → 用草稿 HTML 覆盖库里的（存前 dry-run 自己的改动）。"""
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     saved = await design_system_service.save(
         session,
-        subject=Subject.agent(f'a_{tag}', owner),
+        subject=Subject.agent(agent, owner),
         design_system_id=None,
         slug=f'sc-{tag}',
         name='草稿覆盖',
@@ -311,10 +338,10 @@ async def test_service_scene_coverage_report_override_html_dry_run(session: Asyn
 async def test_service_scene_coverage_report_acl(session: AsyncSession) -> None:
     """ACL：非 owner 且未被共享 → ForbiddenError（与 get 同 _assert_can_read 判权）；不存在 id → NotFoundError。"""
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     saved = await design_system_service.save(
         session,
-        subject=Subject.agent(f'a_{tag}', owner),
+        subject=Subject.agent(agent, owner),
         design_system_id=None,
         slug=f'sc-{tag}',
         name='私有',

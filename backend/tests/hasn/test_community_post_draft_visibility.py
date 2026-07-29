@@ -28,7 +28,7 @@ from backend.app.hasn_community.service.community_service import community_servi
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
-_OWNER_UID = 970000 + int(uuid.uuid4().int % 20000)
+_OWNER_UID = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
 
 
 def _uid() -> str:

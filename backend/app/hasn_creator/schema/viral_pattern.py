@@ -20,7 +20,7 @@ class ViralPatternSchemaBase(SchemaBase):
     usage_count: int = Field(description='None')
     success_rate: Decimal = Field(description='None')
     source: str = Field(description='来源 (ai_extracted:AI提炼:violet/manual:手动:blue/builtin:内置:gray)')
-    tags: dict = Field(description='None')
+    tags: list[str] = Field(description='None')
     is_builtin: bool = Field(description='None')
 
 

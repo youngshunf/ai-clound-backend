@@ -16,4 +16,4 @@ class AgentKbGrant(KnowledgeBase):
     owner_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='归属 owner HASN ID')
     agent_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='分身 HASN ID')
     mode: Mapped[str] = mapped_column(sa.String(16), default='', comment='授权模式 (inherit:继承全部:green/restricted:限定范围:orange/denied:禁止访问:red)')
-    kb_ids: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='restricted 白名单 kb_id 数组')
+    kb_ids: Mapped[list[int]] = mapped_column(postgresql.JSONB(), default_factory=list, comment='restricted 白名单 kb_id 数组')

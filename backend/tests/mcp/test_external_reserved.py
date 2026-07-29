@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import typing
 
+from typing import Any
+
 import pytest
 
 from backend.app.mcp.auth import AgentContext
@@ -65,7 +67,7 @@ def test_catalog_external_group_empty_when_unbound() -> None:
 def test_can_discover_gated_by_allowed_set() -> None:
     """external 工具只有在 external_allowed_tools 集合内才可发现。"""
     directory = mcp_server.tool_directory
-    tool = _ExternalTool()
+    tool: Any = _ExternalTool()
     assert directory._can_discover(_ctx(allowed=set()), tool) is False
     assert directory._can_discover(_ctx(allowed={'hasn.ext.acme.do'}), tool) is True
 
@@ -73,7 +75,7 @@ def test_can_discover_gated_by_allowed_set() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_external_denied_when_not_allowed() -> None:
     """不在授权集合 → DIRECT_CALL_DENIED，不静默成功。"""
-    tool = _ExternalTool()
+    tool: Any = _ExternalTool()
     with pytest.raises(McpToolError) as exc:
         await mcp_server._dispatch_by_source(_ctx(allowed=set()), tool, 'external', {})
     assert exc.value.code == McpErrorCode.DIRECT_CALL_DENIED
@@ -82,6 +84,6 @@ async def test_dispatch_external_denied_when_not_allowed() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_external_allowed_executes() -> None:
     """在授权集合内 → 放行到 execute（桩返回 executed=True）。"""
-    tool = _ExternalTool()
+    tool: Any = _ExternalTool()
     result = await mcp_server._dispatch_by_source(_ctx(allowed={'hasn.ext.acme.do'}), tool, 'external', {})
     assert result == {'executed': True}

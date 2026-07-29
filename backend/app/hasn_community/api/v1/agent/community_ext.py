@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
@@ -41,13 +41,41 @@ async def agent_topic_feed(agent: Annotated[AgentTokenPayload, DependsAgentJwtAu
 
 # ---------- 圈子（读 + 参与） ----------
 @router.get('/circles/mine', summary='我加入的圈', response_model=ResponseModel)
-async def agent_circles_mine(agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession) -> ResponseModel:
-    return response_base.success(data={'items': await circle_service.list_mine(db, member_hasn_id=agent.agent_hasn_id)})
+async def agent_circles_mine(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    return response_base.success(
+        data=await circle_service.list_mine(
+            db,
+            member_hasn_id=agent.agent_hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.get('/circles/discover', summary='发现公开圈', response_model=ResponseModel)
-async def agent_circles_discover(agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession, cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    return response_base.success(data=await circle_service.discover(db, cursor=cursor, limit=limit))
+async def agent_circles_discover(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    sort: Literal['active', 'newest', 'members'] = 'active',
+    join_policy: Literal['open', 'approval', 'invite'] | None = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    return response_base.success(
+        data=await circle_service.discover(
+            db,
+            viewer_hasn_id=agent.agent_hasn_id,
+            sort=sort,
+            join_policy=join_policy,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.get('/circles/{ident}', summary='圈详情', response_model=ResponseModel)

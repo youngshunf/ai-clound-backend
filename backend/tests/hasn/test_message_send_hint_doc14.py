@@ -15,6 +15,7 @@ SendMessageResult 三态 / 抛 ImSendRejected），驱动工具映射逻辑 `_ma
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -74,7 +75,8 @@ async def _drive(
     monkeypatch.setattr(message_mod, 'get_im_gateway', lambda: gw)
     monkeypatch.setattr(message_mod, '_ensure_first_contact_request', _fake_ensure_req)
     monkeypatch.setattr(message_mod, 'async_db_session', _fake_session)
-    return await MessageSendTool().execute(_AgentCtx(), {'to': to, 'content': 'hi'})
+    agent_context: Any = _AgentCtx()
+    return await MessageSendTool().execute(agent_context, {'to': to, 'content': 'hi'})
 
 
 @pytest.mark.asyncio
@@ -123,14 +125,14 @@ async def test_suppressed_hint_mentions_release_and_handle(monkeypatch) -> None:
             conversation_id=_CONV,
             message_id=1002,
             relation={'level': 'stranger'},
-            pending_request_id='req_1',
+            pending_request_id=1,
         ),
     )
 
     assert set(out.keys()) == _BASE_KEYS_SUPPRESSED
     assert out['delivered'] is False
     assert out['reachable'] is False, '修 B12 的既有语义不能被 A 刀带偏'
-    assert out['pending_request_id'] == 'req_1'
+    assert out['pending_request_id'] == 1
     hint = out['hint']
     assert '已自动代发好友请求' in hint, '既有关系反馈文案保留'
     assert '放行后你会收到提示' in hint
@@ -153,7 +155,7 @@ async def test_hint_degrades_without_conversation_id(monkeypatch) -> None:
     out = await _drive(
         monkeypatch,
         send_result=SendMessageResult(
-            delivery_state=DeliveryState.ACCEPTED, conversation_id=None, message_id=1003
+            delivery_state=DeliveryState.ACCEPTED, conversation_id='', message_id=1003
         ),
     )
 

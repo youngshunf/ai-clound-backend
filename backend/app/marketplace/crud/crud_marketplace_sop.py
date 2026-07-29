@@ -45,7 +45,7 @@ class CRUDMarketplaceSop(CRUDPlus[MarketplaceSop]):
         pricing_type: str | None = None,
         is_official: bool | None = None,
     ) -> Select:
-        stmt = select(MarketplaceSop).where(not MarketplaceSop.is_private)
+        stmt = select(MarketplaceSop).where(MarketplaceSop.is_private.is_(False))
 
         if category:
             stmt = stmt.where(MarketplaceSop.category == category)
@@ -72,7 +72,7 @@ class CRUDMarketplaceSop(CRUDPlus[MarketplaceSop]):
         limit: int = 20,
     ) -> list[MarketplaceSop]:
         stmt = select(MarketplaceSop).where(
-            not MarketplaceSop.is_private,
+            MarketplaceSop.is_private.is_(False),
             or_(
                 MarketplaceSop.name.ilike(f'%{keyword}%'),
                 MarketplaceSop.description.ilike(f'%{keyword}%'),

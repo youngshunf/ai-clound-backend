@@ -45,8 +45,8 @@ async def agent_create_studio_render_job(
     db: CurrentSessionTransaction,
     obj: CreateStudioRenderJobParam,
 ) -> ResponseModel:
-    result = await studio_render_job_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await studio_render_job_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

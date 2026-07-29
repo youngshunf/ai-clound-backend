@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
@@ -68,6 +68,27 @@ class HumansStub(_Base):
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(sa.Integer, default=0)
     hasn_id: Mapped[str] = mapped_column(sa.String(40), default='')
+
+
+class AppSeatStub(_Base):
+    __tablename__ = 'hasn_app_seat'
+
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    enterprise_id: Mapped[int] = mapped_column(sa.Integer, default=0)
+    member_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='')
+    status: Mapped[str] = mapped_column(sa.String(16), default='assigned')
+    released_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), default=None)
+    updated_time: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), default=None)
+
+
+class AppEntitlementStub(_Base):
+    __tablename__ = 'hasn_app_entitlement'
+
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    subject_type: Mapped[str] = mapped_column(sa.String(16), default='')
+    subject_id: Mapped[str] = mapped_column(sa.String(40), default='')
+    status: Mapped[str] = mapped_column(sa.String(16), default='active')
+    updated_time: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), default=None)
 
 
 class InviteCodeStub(_Base):
@@ -227,6 +248,11 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
 
     monkeypatch.setattr(catalog_mod, 'list_published_catalog', _stub_list_published_catalog, raising=True)
 
+    import backend.app.hasn.service.app_seat_service as seat_mod
+
+    monkeypatch.setattr(seat_mod, 'HasnAppSeat', AppSeatStub, raising=True)
+    monkeypatch.setattr(seat_mod, 'HasnAppEntitlement', AppEntitlementStub, raising=True)
+
     engine = create_async_engine('sqlite+aiosqlite:///:memory:', future=True)
     async with engine.begin() as conn:
         await conn.run_sync(_Base.metadata.create_all)
@@ -240,12 +266,12 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     await engine.dispose()
 
 
-def _service(enterprise_bus: CapturingBus | None = None, app_bus: CapturingBus | None = None):
+def _service(enterprise_bus: Any = None, app_bus: Any = None):
     from backend.app.hasn.service.workbench_domain_service import WorkbenchDomainService
 
     return WorkbenchDomainService(
-        enterprise_bus=enterprise_bus or CapturingBus(),
-        app_bus=app_bus or CapturingBus(),
+        enterprise_bus=cast(Any, enterprise_bus or CapturingBus()),
+        app_bus=cast(Any, app_bus or CapturingBus()),
     )
 
 

@@ -41,7 +41,7 @@ async def test_create_article_stores_reference_cards_and_derives_uri(db):
     assert cards[0]['type'] == 'task_result'
     assert cards[0]['title'] == '季度复盘'
     # 作者视角：有可跳转 action，URI 服务端派生
-    assert cards[0]['action'] == {'kind': 'open_uri', 'uri': 'hasn://webui/tasks/sessions/sess_42'}
+    assert cards[0]['action'] == {'kind': 'open_uri', 'uri': 'hasn://tasks/sessions/sess_42'}
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,7 @@ async def test_reference_card_action_is_author_only(db):
     detail_author = await community_service.get_article(
         db, user_id=author['user_id'], hasn_id=author['hasn_id'], article_id=article_id
     )
-    assert detail_author['reference_cards'][0]['action']['uri'] == 'hasn://webui/messages/c/conv_7'
+    assert detail_author['reference_cards'][0]['action']['uri'] == 'hasn://messages/c/conv_7'
 
 
 @pytest.mark.asyncio
@@ -102,7 +102,7 @@ async def test_reference_card_agent_skill_requires_agent_hasn_id(db):
     detail = await community_service.get_article(
         db, user_id=author['user_id'], hasn_id=author['hasn_id'], article_id=created['article_id']
     )
-    assert detail['reference_cards'][0]['action']['uri'] == 'hasn://webui/agents/a_bob/skills?skill=skill_x'
+    assert detail['reference_cards'][0]['action']['uri'] == 'hasn://agents/a_bob/skills?skill=skill_x'
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_post_reference_cards_author_can_jump(db):
     detail = await community_service.get_post(
         db, post_id=created['post_id'], user_id=author['user_id']
     )
-    assert detail['reference_cards'][0]['action']['uri'] == 'hasn://webui/tasks/sessions/sess_post'
+    assert detail['reference_cards'][0]['action']['uri'] == 'hasn://tasks/sessions/sess_post'
 
 
 @pytest.mark.asyncio
@@ -195,4 +195,4 @@ async def test_update_article_replaces_reference_cards(db):
     cards = detail['reference_cards']
     assert len(cards) == 1
     assert cards[0]['type'] == 'chat_summary'
-    assert cards[0]['action']['uri'] == 'hasn://webui/messages/c/new'
+    assert cards[0]['action']['uri'] == 'hasn://messages/c/new'

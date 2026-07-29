@@ -6,7 +6,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -17,10 +21,15 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_core import HasnHumans
-from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
+from backend.app.hasn_growth.model.optout_record import OptoutRecord
+from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.model.playbook import Playbook
+from backend.app.hasn_growth.service.contact_privacy_service import (
+    ContactChannelWrite,
+    contact_privacy_service,
+)
 from backend.app.hasn_growth.service.dispatch_service import (
     get_channel_setting,
     growth_dispatch_service,
@@ -28,8 +37,13 @@ from backend.app.hasn_growth.service.dispatch_service import (
 )
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.pii_keyring import (
+    GrowthPiiKeyring,
+    get_growth_pii_keyring,
+)
 from backend.app.hasn_growth.service.playbook_service import playbook_service
 from backend.common.exception import errors
+from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -63,7 +77,7 @@ async def _qualified_customer(sess, *, user_id: int, email: str, company: str) -
         phone='13800138000',
         source_type='firecrawl',
         status='new',
-        confidence_score=70,
+        confidence_score=Decimal(70),
     )
     sess.add(lead)
     await sess.flush()
@@ -73,15 +87,51 @@ async def _qualified_customer(sess, *, user_id: int, email: str, company: str) -
     return cust['id']
 
 
+def _pii_keyring() -> GrowthPiiKeyring:
+    return GrowthPiiKeyring(
+        encryption_keys={2: b'\x61' * 32},
+        hmac_keys={2: b'\x62' * 32},
+        active_encryption_version=2,
+        active_hmac_version=2,
+    )
+
+
 async def test_outreach_state_machine(session) -> None:
     uid = 980000 + int(uuid.uuid4().int % 9000)
     other_uid = uid + 1
     cid = await _qualified_customer(session, user_id=uid, email='lisi@beta.com', company='Beta')
 
+    with pytest.raises(errors.RequestError) as pii_error:
+        await growth_outreach_service.send_outreach(
+            session,
+            user_id=uid,
+            customer_id=cid,
+            channel='email',
+            content='请联系 lisi@beta.com',
+    )
+    assert pii_error.value.data == {'error_code': 'GROWTH_OUTREACH_PII_FORBIDDEN'}
+
+    with pytest.raises(errors.RequestError) as channel_error:
+        await growth_outreach_service.send_outreach(
+            session,
+            user_id=uid,
+            customer_id=cid,
+            channel='sales@example.com',
+            content='普通业务话术',
+        )
+    assert channel_error.value.data == {
+        'error_code': 'GROWTH_OUTREACH_CHANNEL_INVALID',
+    }
+
     # T1 首触达 → 必 pending_approval（不可豁免），即便传 whitelist 也必审
     m1 = await growth_outreach_service.send_outreach(
-        session, user_id=uid, customer_id=cid, channel='manual_assist',
-        content='您好，想介绍我们的获客方案', agent_id='a_y1', intent_note='首次破冰',
+        session,
+        user_id=uid,
+        customer_id=cid,
+        channel='manual_assist',
+        content='您好，想介绍我们的获客方案',
+        agent_id='a_y1',
+        intent_note='首次破冰',
         whitelist_auto_send=True,
     )
     assert m1['status'] == 'pending_approval' and m1['auto_approved'] is False
@@ -119,16 +169,51 @@ async def test_outreach_state_machine(session) -> None:
     assert any(t['kind'] == 'note' and '太频繁' in (t['content'] or '') for t in timeline)
 
     # T4 客户回复（inbound）→ 客户态 engaged + 清零静默
-    await growth_outreach_service.record_inbound_reply(
-        session, user_id=uid, customer_id=cid, channel='wechat', content='可以，周三下午方便'
+    inbound = await growth_outreach_service.record_inbound_reply(
+        session,
+        user_id=uid,
+        customer_id=cid,
+        channel='wechat',
+        content='可以，周三下午方便，回电 13800138000',
     )
+    assert '13800138000' not in inbound['content']
+    stored_inbound = await session.get(OutreachMessage, inbound['id'])
+    assert stored_inbound is not None
+    assert '13800138000' not in stored_inbound.content
+    outreach_history = await growth_outreach_service.list_customer_outreach(
+        session,
+        user_id=uid,
+        customer_id=cid,
+    )
+    assert '13800138000' not in str(outreach_history)
+    assert 'approval_status' in outreach_history[0]
+    assert 'delivery_status' in outreach_history[0]
+    assert 'replied_at' in outreach_history[0]
+    timeline = await growth_funnel_service.customer_timeline(session, user_id=uid, customer_id=cid)
+    assert '13800138000' not in str(timeline)
     cust = await growth_funnel_service.get_customer(session, user_id=uid, customer_id=cid)
     assert cust['lifecycle_status'] == 'engaged' and cust['silent_round_count'] == 0
 
+    with pytest.raises(errors.RequestError) as invalid_channel:
+        await growth_outreach_service.mark_sent(
+            session,
+            user_id=uid,
+            message_id=m2['id'],
+            channel_actual='联系 lisi@beta.com',
+        )
+    assert invalid_channel.value.data == {
+        'error_code': 'GROWTH_OUTREACH_CHANNEL_INVALID',
+    }
+
     # T5 非首触达（manual_assist 渠道 T1 已有出站）+ 白名单 + 客户已回复 → 自动放行 approved(auto_approved=true)
     m3 = await growth_outreach_service.send_outreach(
-        session, user_id=uid, customer_id=cid, channel='manual_assist', content='周三 15:00 给您电话',
-        agent_id='a_y1', whitelist_auto_send=True,
+        session,
+        user_id=uid,
+        customer_id=cid,
+        channel='manual_assist',
+        content='周三 15:00 给您电话',
+        agent_id='a_y1',
+        whitelist_auto_send=True,
     )
     assert m3['status'] == 'approved' and m3['auto_approved'] is True
 
@@ -156,25 +241,190 @@ async def test_outreach_compliance_gates(session) -> None:
 
     # 频控：同客户同渠道一周内 ≤2，第三条被拦
     cf = await _qualified_customer(session, user_id=uid, email='freq@delta.com', company='Delta')
-    f1 = await growth_outreach_service.send_outreach(session, user_id=uid, customer_id=cf, channel='email', content='第一封跟进')
-    f2 = await growth_outreach_service.send_outreach(session, user_id=uid, customer_id=cf, channel='email', content='第二封跟进')
-    f3 = await growth_outreach_service.send_outreach(session, user_id=uid, customer_id=cf, channel='email', content='第三封跟进')
+    f1 = await growth_outreach_service.send_outreach(
+        session, user_id=uid, customer_id=cf, channel='email', content='第一封跟进'
+    )
+    f2 = await growth_outreach_service.send_outreach(
+        session, user_id=uid, customer_id=cf, channel='email', content='第二封跟进'
+    )
+    f3 = await growth_outreach_service.send_outreach(
+        session, user_id=uid, customer_id=cf, channel='email', content='第三封跟进'
+    )
     assert f1['status'] == 'pending_approval' and f2['status'] == 'pending_approval'
     assert f3['status'] == 'blocked_compliance' and f3['compliance_check']['freq_exceeded'] is True
 
     # optout 硬闸：登记客户邮箱退订（all）后，任意渠道触达被拦
     co = await _qualified_customer(session, user_id=uid, email='stop@epsilon.com', company='Epsilon')
     res = await growth_outreach_service.register_optout(
-        session, user_id=uid, channel='all', address='stop@epsilon.com', customer_id=co, reason='客户明示拒绝'
+        session,
+        keyring=_pii_keyring(),
+        user_id=uid,
+        channel='all',
+        address='stop@epsilon.com',
+        customer_id=co,
+        reason='客户明示拒绝',
+        source='test',
     )
     assert res['created'] is True
     # 幂等：再登记不重复
-    res2 = await growth_outreach_service.register_optout(session, user_id=uid, channel='all', address='stop@epsilon.com')
+    res2 = await growth_outreach_service.register_optout(
+        session,
+        keyring=_pii_keyring(),
+        user_id=uid,
+        channel='all',
+        address='stop@epsilon.com',
+        source='test',
+    )
     assert res2['created'] is False
     blocked_opt = await growth_outreach_service.send_outreach(
-        session, user_id=uid, customer_id=co, channel='wechat', content='在吗'
+        session,
+        keyring=_pii_keyring(),
+        user_id=uid,
+        customer_id=co,
+        channel='wechat',
+        content='在吗',
     )
     assert blocked_opt['status'] == 'blocked_optout'
+
+
+async def test_default_flags_preserve_legacy_outreach_without_pii_keys(session) -> None:
+    """PII 开关关闭时旧触达可读旧退订，但禁止继续新写弱 SHA256。"""
+    previous = (
+        settings.GROWTH_PII_NEW_WRITE_ENABLED,
+        settings.GROWTH_PII_SHADOW_READ_ENABLED,
+        settings.GROWTH_PII_ENCRYPTION_KEYS_JSON,
+        settings.GROWTH_PII_HMAC_KEYS_JSON,
+        settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION,
+        settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION,
+    )
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = False
+    settings.GROWTH_PII_SHADOW_READ_ENABLED = False
+    settings.GROWTH_PII_ENCRYPTION_KEYS_JSON = ''
+    settings.GROWTH_PII_HMAC_KEYS_JSON = ''
+    settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION = 0
+    settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION = 0
+    get_growth_pii_keyring.cache_clear()
+    uid = 986000 + int(uuid.uuid4().int % 9000)
+    try:
+        customer_id = await _qualified_customer(
+            session,
+            user_id=uid,
+            email='legacy-default@example.com',
+            company='默认配置兼容客户',
+        )
+        outreach = await growth_outreach_service.send_outreach(
+            session,
+            user_id=uid,
+            customer_id=customer_id,
+            channel='email',
+            content='默认配置触达',
+        )
+        assert outreach['status'] == 'pending_approval'
+
+        with pytest.raises(errors.ConflictError) as exc_info:
+            await growth_outreach_service.register_optout(
+                session,
+                user_id=uid,
+                channel='all',
+                address='legacy-default@example.com',
+                source='default-config-test',
+            )
+        assert exc_info.value.data == {
+            'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED',
+        }
+        session.add(
+            OptoutRecord(
+                user_id=uid,
+                owner_scope='personal',
+                channel='all',
+                address_hash=hashlib.sha256(b'legacy-default@example.com').hexdigest(),
+                source='legacy-read-fixture',
+            )
+        )
+        await session.flush()
+        blocked = await growth_outreach_service.send_outreach(
+            session,
+            user_id=uid,
+            customer_id=customer_id,
+            channel='email',
+            content='默认配置退订后触达',
+        )
+        assert blocked['status'] == 'blocked_optout'
+    finally:
+        (
+            settings.GROWTH_PII_NEW_WRITE_ENABLED,
+            settings.GROWTH_PII_SHADOW_READ_ENABLED,
+            settings.GROWTH_PII_ENCRYPTION_KEYS_JSON,
+            settings.GROWTH_PII_HMAC_KEYS_JSON,
+            settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION,
+            settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION,
+        ) = previous
+        get_growth_pii_keyring.cache_clear()
+
+
+async def test_private_contact_optout_still_blocks_after_legacy_customer_pii_is_cleared(session) -> None:
+    uid = 987000 + int(uuid.uuid4().int % 9000)
+    address = 'private-only@example.com'
+    customer_id = await _qualified_customer(
+        session,
+        user_id=uid,
+        email=address,
+        company='私有联系人退订客户',
+    )
+    customer_row = (
+        await session.execute(
+            text('SELECT lead_contact_id FROM hasn_growth.customer WHERE id = :customer_id AND user_id = :user_id'),
+            {'customer_id': customer_id, 'user_id': uid},
+        )
+    ).one()
+    lead_contact_id = int(customer_row.lead_contact_id)
+    keyring = _pii_keyring()
+    await contact_privacy_service.store_private_contact(
+        session,
+        keyring=keyring,
+        lead_contact_id=lead_contact_id,
+        owner_scope='personal',
+        user_id=uid,
+        enterprise_id=None,
+        contact_name='私有联系人',
+        title='负责人',
+        lawful_basis='public_business_contact',
+        source_ref='hasn://asset/private-optout-test',
+        retention_until=datetime.now(UTC) + timedelta(days=90),
+        channels=[
+            ContactChannelWrite(
+                channel='email',
+                value=address,
+                lawful_basis='public_business_contact',
+                source_ref='hasn://asset/private-optout-test',
+            )
+        ],
+    )
+    await growth_outreach_service.register_optout(
+        session,
+        keyring=keyring,
+        user_id=uid,
+        channel='all',
+        address=address,
+        source='private-optout-test',
+    )
+    await session.execute(
+        text(
+            'UPDATE hasn_growth.customer '
+            "SET contact_name = NULL, email = NULL, phone = NULL, wechat = NULL, im_refs = '{}'::jsonb "
+            'WHERE id = :customer_id'
+        ),
+        {'customer_id': customer_id},
+    )
+    blocked = await growth_outreach_service.send_outreach(
+        session,
+        keyring=keyring,
+        user_id=uid,
+        customer_id=customer_id,
+        channel='email',
+        content='私有资料切流后的触达',
+    )
+    assert blocked['status'] == 'blocked_optout'
 
 
 async def test_inbound_reply_emits_owner_notification(session) -> None:
@@ -186,29 +436,48 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
     uid = 990000 + int(uuid.uuid4().int % 9000)
     owner_hasn = f'h_grw_{tag}'
     session.add(
-        HasnHumans(hasn_id=owner_hasn, star_id=f's_{uid}', user_id=uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=owner_hasn,
+            star_id=f's_{uid}',
+            user_id=uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
     )
     await session.flush()
-    cid = await _qualified_customer(session, user_id=uid, email=f'reply{tag}@zeta.com', company='Zeta')
+    injected_pii = f'reply{tag}@zeta.com'
+    cid = await _qualified_customer(
+        session,
+        user_id=uid,
+        email=injected_pii,
+        company=f'Zeta {injected_pii}',
+    )
 
     await growth_outreach_service.record_inbound_reply(
         session, user_id=uid, customer_id=cid, channel='wechat', content='可以聊聊，周三下午方便'
     )
 
     notif = (
-        await session.execute(
-            select(HasnNotifications).where(
-                HasnNotifications.type == 'growth.reply.received',
-                HasnNotifications.target_id == owner_hasn,
+        (
+            await session.execute(
+                select(HasnNotifications).where(
+                    HasnNotifications.type == 'growth.reply.received',
+                    HasnNotifications.target_id == owner_hasn,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert notif, '客户回复应给主人落一条 growth.reply.received 通知'
     assert any('回复' in (n.title or '') for n in notif)
+    assert all(injected_pii not in (n.title or '') for n in notif)
+    assert all(injected_pii not in (n.body or '') for n in notif)
+    assert all(injected_pii not in str(n.data) for n in notif)
 
 
-async def test_send_material_returns_plaintext_and_audits(session) -> None:
-    """M6 manual_assist：approved 触达 → 复制发送素材包回明文联系方式 + 落 pii_read 审计。"""
+async def test_send_material_excludes_pii_and_requires_separate_reveal(session) -> None:
+    """M6 manual_assist：approved 触达只返回非 PII 素材，联系方式必须另走单渠道 reveal。"""
     uid = 992000 + int(uuid.uuid4().int % 9000)
     other_uid = uid + 1
     cid = await _qualified_customer(session, user_id=uid, email='buy@eta.com', company='Eta')
@@ -218,36 +487,20 @@ async def test_send_material_returns_plaintext_and_audits(session) -> None:
     )
     # 仅 approved 可取素材包；pending 取 → Forbidden
     with pytest.raises(errors.ForbiddenError):
-        await growth_outreach_service.build_send_material(
-            session, user_id=uid, message_id=m['id'], actor_user_id=uid
-        )
+        await growth_outreach_service.build_send_material(session, user_id=uid, message_id=m['id'])
     await growth_outreach_service.approve_outreach(session, user_id=uid, message_id=m['id'], approver_user_id=uid)
 
-    packet = await growth_outreach_service.build_send_material(
-        session, user_id=uid, message_id=m['id'], actor_user_id=uid
-    )
-    # 明文联系方式仅此处渲染
-    assert packet['contact']['phone'] == '13800138000'
-    assert packet['contact']['email'] == 'buy@eta.com'
+    packet = await growth_outreach_service.build_send_material(session, user_id=uid, message_id=m['id'])
+    assert 'contact' not in packet
+    assert 'customer_name' not in packet
+    assert '13800138000' not in str(packet)
+    assert 'buy@eta.com' not in str(packet)
     assert packet['content'] == '您好，约个时间聊聊'
     assert packet['channel'] == 'manual_assist'
 
-    # 落了一条 pii_read 审计，且 payload 不含明文 PII（assert_audit_payload_safe 已在 service 内守卫）
-    audits = (
-        await session.execute(
-            select(LeadAuditLog).where(
-                LeadAuditLog.event_type == 'pii_read', LeadAuditLog.target_ref == str(m['id'])
-            )
-        )
-    ).scalars().all()
-    assert audits and audits[0].actor_user_id == uid
-    assert '13800138000' not in str(audits[0].payload) and 'buy@eta.com' not in str(audits[0].payload)
-
     # 跨户：他人取本户素材包 → NotFound
     with pytest.raises(errors.NotFoundError):
-        await growth_outreach_service.build_send_material(
-            session, user_id=other_uid, message_id=m['id'], actor_user_id=other_uid
-        )
+        await growth_outreach_service.build_send_material(session, user_id=other_uid, message_id=m['id'])
 
 
 async def _owner_with_task(sess, *, uid: int, state: str) -> tuple[str, str]:
@@ -255,7 +508,15 @@ async def _owner_with_task(sess, *, uid: int, state: str) -> tuple[str, str]:
     tag = uuid.uuid4().hex[:8]
     owner_hasn = f'h_j3_{tag}'
     task_uuid = f'tk_j3_{tag}'
-    sess.add(HasnHumans(hasn_id=owner_hasn, star_id=f's_{uid}', user_id=uid, nickname='主人', status='active'))
+    sess.add(
+        HasnHumans(
+            hasn_id=owner_hasn,
+            star_id=f's_{uid}',
+            user_id=uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
+    )
     await sess.flush()
     await sess.execute(
         text(
@@ -302,8 +563,15 @@ async def test_j3_inbound_triggers_run_now_and_debounces(session) -> None:
 async def test_j3_no_followup_task_is_noop(session) -> None:
     """M6 J3：客户未绑定跟进任务 → 不触发（兜底：任务 interval 节奏照常，不丢跟进），且不报错。"""
     uid = 995000 + int(uuid.uuid4().int % 5000)
+    tag = uuid.uuid4().hex[:8]
     session.add(
-        HasnHumans(hasn_id=f'h_j3n_{uuid.uuid4().hex[:8]}', star_id=f's_{uid}', user_id=uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=f'h_j3n_{tag}',
+            star_id=f's_{uid}',
+            user_id=uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
     )
     await session.flush()
     cid = await _qualified_customer(session, user_id=uid, email=f'j3n{uuid.uuid4().hex[:6]}@eta.com', company='EtaJ3N')
@@ -336,7 +604,9 @@ async def test_j3_unrunnable_task_degrades(session) -> None:
     assert trig_at is None
 
 
-async def _approved_outreach(sess, *, uid: int, cid: int, channel: str, content: str = '您好，跟进一下我们的方案') -> int:
+async def _approved_outreach(
+    sess, *, uid: int, cid: int, channel: str, content: str = '您好，跟进一下我们的方案'
+) -> int:
     """建一条 approved 出站触达（首触达必审 → 主人批准），返回 message_id。"""
     m = await growth_outreach_service.send_outreach(
         sess, user_id=uid, customer_id=cid, channel=channel, content=content, agent_id='a_disp'

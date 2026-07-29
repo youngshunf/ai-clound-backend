@@ -25,7 +25,7 @@ async def test_like_notifies_author(db):
     assert len(notes['items']) == 1
     n = notes['items'][0]
     assert n['type'] == 'community_like'
-    assert n['actor']['display_name'] == '点赞者'
+    assert n['actor']['display_name'] == liker['nickname']
     assert n['target'] == {'type': 'post', 'id': pid}
     assert n['read'] is False
 
@@ -64,6 +64,109 @@ async def test_like_agent_content_relays_to_owner(db):
     owner_notes = await notification_service.list_notifications(db, recipient_hasn_id=owner['hasn_id'])
     assert len(owner_notes['items']) == 1
     assert owner_notes['items'][0]['relay_from'] == agent['hasn_id']
+
+
+@pytest.mark.asyncio
+async def test_comment_like_notifies_comment_author_and_self_like_is_suppressed(db):
+    post_author = await seed_human(db, nickname='帖子作者')
+    commenter = await seed_human(db, nickname='评论作者')
+    liker = await seed_human(db, nickname='评论点赞者')
+    pid = await seed_post(db, author_hasn_id=post_author['hasn_id'])
+    comment = await community_service.create_comment(
+        db,
+        target_type='post',
+        target_id=pid,
+        user_id=commenter['user_id'],
+        hasn_id=commenter['hasn_id'],
+        content='被赞的评论',
+    )
+
+    await community_service.create_like(
+        db,
+        user_id=liker['user_id'],
+        hasn_id=liker['hasn_id'],
+        target_type='comment',
+        target_id=comment['comment_id'],
+    )
+
+    notes = await notification_service.list_notifications(
+        db,
+        recipient_hasn_id=commenter['hasn_id'],
+    )
+    assert len(notes['items']) == 1
+    assert notes['items'][0]['target'] == {
+        'type': 'comment',
+        'id': comment['comment_id'],
+    }
+    assert notes['items'][0]['link'] == f'/community/posts/{pid}#comment-{comment["comment_id"]}'
+
+    own_comment = await community_service.create_comment(
+        db,
+        target_type='post',
+        target_id=pid,
+        user_id=commenter['user_id'],
+        hasn_id=commenter['hasn_id'],
+        content='自赞评论',
+    )
+    await community_service.create_like(
+        db,
+        user_id=commenter['user_id'],
+        hasn_id=commenter['hasn_id'],
+        target_type='comment',
+        target_id=own_comment['comment_id'],
+    )
+    after_self_like = await notification_service.list_notifications(
+        db,
+        recipient_hasn_id=commenter['hasn_id'],
+    )
+    assert len(after_self_like['items']) == 1
+
+
+@pytest.mark.asyncio
+async def test_comment_like_on_agent_comment_relays_to_owner(db):
+    owner = await seed_human(db, nickname='分身主人')
+    agent = await seed_agent(db, owner_hasn_id=owner['hasn_id'], display_name='评论分身')
+    post_author = await seed_human(db, nickname='帖子作者')
+    liker = await seed_human(db, nickname='评论点赞者')
+    pid = await seed_post(db, author_hasn_id=post_author['hasn_id'])
+    comment = await community_service.create_comment(
+        db,
+        target_type='post',
+        target_id=pid,
+        hasn_id=agent['hasn_id'],
+        author_type='agent',
+        owner_hasn_id=owner['hasn_id'],
+        user_id=None,
+        content='分身评论',
+        status='visible',
+    )
+
+    await community_service.create_like(
+        db,
+        user_id=liker['user_id'],
+        hasn_id=liker['hasn_id'],
+        target_type='comment',
+        target_id=comment['comment_id'],
+    )
+
+    agent_notes = await notification_service.list_notifications(
+        db,
+        recipient_hasn_id=agent['hasn_id'],
+    )
+    owner_notes = await notification_service.list_notifications(
+        db,
+        recipient_hasn_id=owner['hasn_id'],
+    )
+    assert len(agent_notes['items']) == 1
+    assert len(owner_notes['items']) == 1
+    assert owner_notes['items'][0]['relay_from'] == agent['hasn_id']
+    assert owner_notes['items'][0]['target'] == {
+        'type': 'comment',
+        'id': comment['comment_id'],
+    }
+    assert owner_notes['items'][0]['link'] == (
+        f'/community/posts/{pid}#comment-{comment["comment_id"]}'
+    )
 
 
 @pytest.mark.asyncio

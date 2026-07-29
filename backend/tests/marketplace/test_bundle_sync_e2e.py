@@ -150,6 +150,7 @@ async def test_sync_bundles_content_change_bumps_hash_and_common_toggle(e2e) -> 
     synced, failed, _ = await e2e.service._sync_bundles(e2e.session)
     assert (synced, failed) == (1, 0)
     first = await _fetch_pack(e2e.session, tid)
+    assert first is not None
     assert first['is_common'] is True
     hash1 = first['content_hash']
 
@@ -161,6 +162,7 @@ async def test_sync_bundles_content_change_bumps_hash_and_common_toggle(e2e) -> 
     synced2, failed2, _ = await e2e.service._sync_bundles(e2e.session)
     assert (synced2, failed2) == (1, 0)
     second = await _fetch_pack(e2e.session, tid)
+    assert second is not None
     assert second['content_hash'] != hash1          # 内容变 → hash 变
     assert second['is_common'] is False             # 移出公共集合 → 重扫落 false
 

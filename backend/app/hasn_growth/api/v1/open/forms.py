@@ -1,14 +1,14 @@
 """获客落地页表单回流 + 退订 公开 API（设计 07 §8.4，open scope，无鉴权）。
 
 POST /forms/{publish_ref}/submit：落地页表单提交 → 反滥用 → 建 inbound_form 客户。
-反滥用：蜜罐字段 + IP（source_meta）记录，可疑判 spam 不进漏斗。
+反滥用：蜜罐字段 + IP HMAC，可疑判 spam 不进漏斗；PII 只写主体私有密文表。
 """
 
 from __future__ import annotations
 
-import hashlib
+from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, Request
 
 from backend.app.hasn_growth.schema.funnel import FormSubmitParam
 from backend.app.hasn_growth.service.form_service import growth_form_service
@@ -18,24 +18,28 @@ from backend.database.db import CurrentSessionTransaction
 router = APIRouter()
 
 
-def _client_ip_hash(request: Request) -> str | None:
-    # 归因/反滥用：只存 IP 哈希，不存明文 IP。
-    fwd = request.headers.get('x-forwarded-for')
-    ip = (fwd.split(',')[0].strip() if fwd else None) or (request.client.host if request.client else None)
-    if not ip:
-        return None
-    return hashlib.sha256(ip.encode('utf-8')).hexdigest()
+def _client_ip(request: Request) -> str | None:
+    """只接受反向代理覆盖的真实 IP，业务层立即转为带密钥 HMAC。"""
+    real_ip = request.headers.get('x-real-ip')
+    return (real_ip.strip() if real_ip else None) or (request.client.host if request.client else None)
 
 
 @router.post('/forms/{publish_ref}/submit', summary='[Open] 落地页表单回流')
-async def submit_form(request: Request, db: CurrentSessionTransaction, publish_ref: str, obj: FormSubmitParam) -> ResponseModel:
-    source_meta = {
-        'ip_hash': _client_ip_hash(request),
-        'referer': request.headers.get('referer'),
-        'user_agent': request.headers.get('user-agent'),
-        **obj.extra,
-    }
+async def submit_form(
+    request: Request,
+    db: CurrentSessionTransaction,
+    publish_ref: str,
+    obj: FormSubmitParam,
+    idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=200)],
+    form_access_token: Annotated[str, Header(alias='X-Publish-Form-Token', min_length=1, max_length=4096)],
+) -> ResponseModel:
     data = await growth_form_service.submit_form(
-        db, publish_ref=publish_ref, data=obj.model_dump(), source_meta=source_meta
+        db,
+        publish_ref=publish_ref,
+        form_access_token=form_access_token,
+        idempotency_key=idempotency_key,
+        data=obj.model_dump(),
+        client_ip=_client_ip(request),
+        referrer=request.headers.get('referer'),
     )
     return response_base.success(data=data)

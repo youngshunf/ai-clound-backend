@@ -18,9 +18,9 @@ class CompetitorSchemaBase(SchemaBase):
     follower_count: int = Field(description='None')
     avg_likes: int = Field(description='None')
     content_style: str | None = Field(None, description='None')
-    strengths: dict = Field(description='None')
+    strengths: list[str] = Field(description='None')
     notes: str | None = Field(None, description='None')
-    tags: dict = Field(description='None')
+    tags: list[str] = Field(description='None')
     last_analyzed: datetime | None = Field(None, description='None')
 
 

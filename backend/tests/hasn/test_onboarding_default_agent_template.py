@@ -124,7 +124,7 @@ async def test_ensure_default_agent_materializes_assistant_template(monkeypatch)
     captured = _capture_register(monkeypatch)
 
     # 新建分支：存在性查询→None，昵称查询→'福仔'
-    db = _FakeDB([_Result(None), _Result('福仔')])
+    db: Any = _FakeDB([_Result(None), _Result('福仔')])
     gateway = SqlAlchemyOnboardingGateway()
     agent, created = await gateway.ensure_default_agent(db=db, owner_id='h_owner_1', node_id='n_1')
 
@@ -167,7 +167,7 @@ async def test_ensure_default_agent_avatar_falls_back_to_template_icon(monkeypat
     _patch_avatar(monkeypatch, url=None)  # 生成失败
     captured = _capture_register(monkeypatch)
 
-    db = _FakeDB([_Result(None), _Result('福仔')])
+    db: Any = _FakeDB([_Result(None), _Result('福仔')])
     gateway = SqlAlchemyOnboardingGateway()
     await gateway.ensure_default_agent(db=db, owner_id='h_owner_5', node_id='n_5')
 
@@ -192,7 +192,7 @@ async def test_ensure_default_agent_derives_name_on_global_collision(monkeypatch
     _patch_avatar(monkeypatch, url=None)  # 头像与本用例无关，仅防误碰 _FakeDB
     captured = _capture_register(monkeypatch)
 
-    db = _FakeDB([_Result(None), _Result('福仔')])
+    db: Any = _FakeDB([_Result(None), _Result('福仔')])
     gateway = SqlAlchemyOnboardingGateway()
     await gateway.ensure_default_agent(db=db, owner_id='h_owner_2', node_id=None)
 
@@ -224,7 +224,7 @@ async def test_ensure_default_agent_existing_only_backfills_empty(monkeypatch) -
         avatar=None,
         template_id=DEFAULT_AGENT_TEMPLATE_ID,
     )
-    db = _FakeDB([_Result(existing)])  # 只有存在性查询；昵称查询不会发生
+    db: Any = _FakeDB([_Result(existing)])  # 只有存在性查询；昵称查询不会发生
     gateway = SqlAlchemyOnboardingGateway()
     await gateway.ensure_default_agent(db=db, owner_id='h_owner_3', node_id='n_3')
 
@@ -256,7 +256,7 @@ async def test_ensure_default_agent_falls_back_when_template_missing(monkeypatch
     _patch_avatar(monkeypatch, url=None)  # 无 S3/生成失败 → 无模板 icon 兜底 → avatar 仍 None
     captured = _capture_register(monkeypatch)
 
-    db = _FakeDB([_Result(None), _Result(None)])  # 存在性→None，昵称→None
+    db: Any = _FakeDB([_Result(None), _Result(None)])  # 存在性→None，昵称→None
     gateway = SqlAlchemyOnboardingGateway()
     agent, created = await gateway.ensure_default_agent(db=db, owner_id='h_owner_4', node_id=None)
 

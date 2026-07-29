@@ -82,7 +82,9 @@ async def load_app_tools_for_owner(owner_id: str) -> list[BaseTool]:
     """
     from backend.app.mcp.tools.app_tool_loader import load_published_app_tools
 
-    return await load_published_app_tools()
+    tools: list[BaseTool] = []
+    tools.extend(await load_published_app_tools())
+    return tools
 
 
 class HasnCloudMcpServer:
@@ -306,40 +308,56 @@ class HasnCloudMcpServer:
         try:
             logger.info(f'Agent {agent_context.hasn_id} calling tool: {tool_name}')
 
+            # 工作会话精确工具白名单：Hermes 在模型之后把策略盖进最外层保留参数；
+            # tool.call 重入时不再带该字段，沿用同一 AgentContext。CLI Header 已预先落上下文。
+            from backend.app.mcp import trust_gate as _tg
+
+            arguments, stamped_allowed_tools = _tg.pop_allowed_tool_names(arguments)
+            if stamped_allowed_tools is not None:
+                agent_context.allowed_tool_names = stamped_allowed_tools
+            if not _tg.is_session_tool_allowed(agent_context, tool_name):
+                raise McpToolError(
+                    McpErrorCode.TOOL_NOT_ALLOWED,
+                    f'工作会话未授权调用工具: {tool_name}',
+                )
+
             await self._load_app_tools(agent_context)
             await self._load_external_mcp_tools(agent_context)
 
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
-            # register-on-write（doc31/32 RC-P8）+ 发起溯源（doc14 §6.2）：剥离系统注入的发起方会话 id
-            # （`_hasn_session_id`，分身不可伪造）→ agent_context.session_id。两处消费：deck/app 写点
-            # 把产物登记进「工作会话资源栏」；message.send 落 origin_session_id 供结果回灌定位发起方会话。
+            # register-on-write（doc31/32 RC-P8）+ 发起溯源（doc14 §6.2）+ 会话轴分流（设计 02 §4.3）：
+            # 剥离系统注入的发起方会话 id（`_hasn_session_id`，分身不可伪造）→ agent_context.session_id
+            # （**运行时/逻辑会话语义**，供 message.send 落 origin_session_id 回灌定位发起方会话）。
             # 须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站打在入参）与
             # daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=非派发路径直调。
-            from backend.app.mcp import trust_gate as _tg
-
             arguments, origin_session_id = _tg.pop_session_id(arguments)
             if origin_session_id:
                 agent_context.session_id = origin_session_id
-            # 同时落 ContextVar：AI-Native 应用 handler（knowledge 等，经 ai_native gateway 分发、
-            # 只收 AgentTokenPayload 拿不到 AgentContext）只能经本通道取会话 id 做 register-on-write。
-            # 必须落 agent_context.session_id（已沉淀值）而非 origin_session_id：渐进暴露下 app 工具
-            # 经 hasn.cloud.tool.call 重入本方法，内层入参没有系统注入的 stamp（只打在最外层调用上），
-            # origin_session_id=None 会把外层已落的会话 id 覆写掉 → knowledge 等 handler 面登记的产物
-            # 全部丢会话归属（挂不进工作会话资源栏）。字段与 ContextVar 同源，重入自然继承。
+            # 工作会话 id 的两级权威（设计 02 §4.3，只进不退；P2-8d 起旧节点 session_id
+            # 收窄回落退役——混合语义 `session_id` 只落 AgentContext.session_id 运行时轴，
+            # 绝不再经「在册 task」查询回填工作会话轴；现行节点全部由 ①② 显式供给）：
+            # ① auth 绑定（CLI 直连面 streamable 已从 `X-Hasn-Work-Session-Id` header 落
+            #    `agent_context.work_session_id`，per-dispatch、分身不可伪造）——最优先；
+            # ② 保留参数 `_hasn_work_session_id`（Hermes fork 逐调用盖章）——次优。
+            # 重入只进不退：内层 tool.call 入参无 stamp（只打在最外层），ContextVar 已落非
+            # None 时绝不覆写（防丢外层会话归属）。
             from backend.app.mcp.context import set_current_work_session_id
 
-            set_current_work_session_id(agent_context.session_id)
+            arguments, origin_work_session_id = _tg.pop_work_session_id(arguments)
+            bound_work_session_id = agent_context.work_session_id or origin_work_session_id
+            if bound_work_session_id:
+                set_current_work_session_id(bound_work_session_id)
 
             # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
             # （`_hasn_project_id`，分身不可伪造）→ ContextVar，供 register-on-write 公共接缝把产物
             # 自动打标进 hasn_artifacts.project_id（只进不退）。缺省=不在项目中工作，产物不挂项目。
             from backend.app.mcp.context import set_current_project_id
 
-            arguments, _origin_project_id = _tg.pop_project_id(arguments)
-            if _origin_project_id:
-                set_current_project_id(_origin_project_id)
+            arguments, origin_project_id = _tg.pop_project_id(arguments)
+            if origin_project_id:
+                set_current_project_id(origin_project_id)
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
@@ -445,7 +463,10 @@ class HasnCloudMcpServer:
         from backend.common.exception import errors
         from backend.database.db import async_db_session
 
-        subject = Subject.agent(agent_context.agent_hasn_id, agent_context.owner_hasn_id)
+        owner_hasn_id = agent_context.owner_hasn_id
+        if not owner_hasn_id:
+            raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, 'AgentContext 缺少主人身份')
+        subject = Subject.agent(agent_context.agent_hasn_id, owner_hasn_id)
         try:
             async with async_db_session() as db:
                 authorized = await resource_gate.enforce_declaration(db, subject, declarations, arguments)
@@ -588,7 +609,7 @@ class HasnCloudMcpServer:
         """
         if source == 'external':
             tool_name = getattr(tool, 'name', '')
-            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
+            allowed: set[str] = getattr(agent_context, 'external_allowed_tools', set()) or set()
             if tool_name not in allowed:
                 # 防御性兜底：external 工具不在本 Agent 授权集合 → 拒绝（发现层已挡，此为执行层兜底）。
                 raise McpToolError(
@@ -599,15 +620,18 @@ class HasnCloudMcpServer:
 
     async def _load_app_tools(self, agent_context: AgentContext) -> None:
         try:
+            owner_hasn_id = agent_context.owner_hasn_id
+            if not owner_hasn_id:
+                raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, 'AgentContext 缺少主人身份')
             agent_tools = await load_app_tools_for_agent(
                 agent_id=agent_context.hasn_id,
-                owner_id=agent_context.owner_id,
+                owner_id=owner_hasn_id,
             )
-            owner_tools = await load_app_tools_for_owner(owner_id=agent_context.owner_id)
-            for tool in [*agent_tools, *owner_tools]:
-                if self.tool_registry.get_tool(tool.name):
-                    continue
-                self.tool_registry.register(tool)
+            owner_tools = await load_app_tools_for_owner(owner_id=owner_hasn_id)
+            self.tool_registry.replace_source_tools(
+                'app',
+                [*agent_tools, *owner_tools],
+            )
         except Exception as e:
             logger.error(f'Failed to load app tools: {e}', exc_info=True)
 

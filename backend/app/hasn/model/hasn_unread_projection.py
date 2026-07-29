@@ -5,6 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, id_key
+from backend.database.schema_names import IM_SCHEMA
 
 
 class HasnUnreadProjection(Base):
@@ -17,6 +18,7 @@ class HasnUnreadProjection(Base):
     """
 
     __tablename__ = 'hasn_unread_projection'
+    __table_args__ = {'schema': IM_SCHEMA}
 
     id: Mapped[id_key] = mapped_column(init=False)
     conversation_id: Mapped[str | UUID] = mapped_column(sa.UUID(), default=None, comment='所属会话 ID')

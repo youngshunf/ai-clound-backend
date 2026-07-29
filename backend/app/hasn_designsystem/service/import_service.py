@@ -40,6 +40,7 @@ _DRAFT_NOTE = '草稿仅供打底：导入产物为初始 token 草稿，请经 
 
 # github 仓常见全局样式入口（命中即扫，借鉴前端仓约定俗成布局）
 _GITHUB_CSS_CANDIDATES = (
+    'apps/v4/app/globals.css',
     'app/globals.css',
     'src/app/globals.css',
     'src/index.css',
@@ -47,7 +48,6 @@ _GITHUB_CSS_CANDIDATES = (
     'styles/globals.css',
     'app/styles/globals.css',
     'src/styles/index.css',
-    'apps/v4/app/globals.css',
     'apps/web/app/globals.css',
     'src/app.css',
 )
@@ -276,16 +276,23 @@ async def _scan_github_repo(
     owner: str, repo: str, branch: str, warnings: list[str]
 ) -> tuple[list[tuple[str, object]], str]:
     """按候选清单逐个探测 raw CSS，命中即扫；记录已尝试。"""
-    for path in _GITHUB_CSS_CANDIDATES[:_MAX_GITHUB_FILES + 4]:
+    first_fetch_error: errors.RequestError | None = None
+    for path in _GITHUB_CSS_CANDIDATES[:_MAX_GITHUB_FILES]:
         raw_url = f'https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}'
         try:
             text = await _fetch_text(raw_url, max_bytes=_MAX_FILE_BYTES)
-        except errors.RequestError:
+        except errors.RequestError as exc:
+            # 404 仅表示当前候选路径不存在，可继续探测；超时、限流和服务端错误则保留。
+            # 若所有候选都未命中，必须如实暴露出站故障，不能误报为“仓库没有 CSS”。
+            if 'HTTP 404:' not in str(exc) and first_fetch_error is None:
+                first_fetch_error = exc
             continue
         pairs = _scan_css_custom_props(text)
         if pairs:
             return pairs, path
         warnings.append(f'{path} 命中但无自定义属性')
+    if first_fetch_error is not None:
+        raise first_fetch_error
     return [], ''
 
 

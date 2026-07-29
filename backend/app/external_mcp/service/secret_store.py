@@ -22,6 +22,7 @@ from sqlalchemy import delete, select
 from backend.app.external_mcp.model import ExternalMcpSecret
 from backend.common.security.encryption import key_encryption
 from backend.database.db import async_db_session
+from backend.database.result import affected_rows
 
 # secret:// 引用语法：scheme + 至少两段路径（origin/.../key）。
 _SECRET_URI_RE = re.compile(r'^secret://[A-Za-z0-9._\-]+(?:/[A-Za-z0-9._\-]+)+$')
@@ -104,7 +105,7 @@ class SecretStore:
         """撤销：删除密文。返回是否删除了记录。"""
         async with async_db_session.begin() as db:
             result = await db.execute(delete(ExternalMcpSecret).where(ExternalMcpSecret.secret_uri == secret_uri))
-        return (result.rowcount or 0) > 0
+        return affected_rows(result) > 0
 
     async def exists(self, secret_uri: str) -> bool:
         """凭据是否已写入（管理面展示是否已配，不回显明文）。"""

@@ -134,6 +134,7 @@ async def test_assign_full_raises_seats_exhausted(db: AsyncSession) -> None:
         await app_seat_service.assign_seat(
             db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m2, assigned_by='admin'
         )
+    assert exc.value.msg is not None
     assert app_seat_service.SEATS_EXHAUSTED in exc.value.msg
 
 
@@ -160,6 +161,7 @@ async def test_assign_non_member_raises(db: AsyncSession) -> None:
         await app_seat_service.assign_seat(
             db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=outsider, assigned_by='admin'
         )
+    assert exc.value.msg is not None
     assert '名册' in exc.value.msg
 
 
@@ -271,6 +273,7 @@ async def test_shrink_below_used_raises(db: AsyncSession) -> None:
     # 已指派 2，缩到 1 应拒
     with pytest.raises(errors.RequestError) as exc:
         await app_seat_service.shrink_seats(db, enterprise_id=ent_id, app_id=app_id, new_seats_total=1)
+    assert exc.value.msg is not None
     assert app_seat_service.MUST_RELEASE_FIRST in exc.value.msg
 
     # 缩到 2（== used）应成功

@@ -43,8 +43,8 @@ def _to_int(resource_id: str) -> int | None:
 class DeckResourceAdapter:
     """deck（演示文稿）资源适配器：resource_type='deck'，leaf id = deck_id。"""
 
-    resource_type = 'deck'
-    id_param_aliases = ('deck_id',)
+    resource_type: str = 'deck'
+    id_param_aliases: tuple[str, ...] = ('deck_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         deck_id = _to_int(resource_id)
@@ -102,8 +102,8 @@ class DeckPageResourceAdapter:
     页无独立 share（权限继承 deck），门跳过自身查询、只判父链（`has_own_shares` 缺省 False）。
     """
 
-    resource_type = 'deck_page'
-    id_param_aliases = ('page_id',)
+    resource_type: str = 'deck_page'
+    id_param_aliases: tuple[str, ...] = ('page_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         page_id = _to_int(resource_id)

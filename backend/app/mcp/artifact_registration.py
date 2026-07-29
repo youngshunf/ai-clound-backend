@@ -44,6 +44,8 @@ async def register_app_resource_artifact(
     project_id: Any = _UNSET,
     action: Literal['create', 'update'] = 'create',
     dispatch_id: str | None = None,
+    metadata: dict[str, object] | None = None,
+    accumulate_metadata_keys: list[str] | None = None,
 ) -> ArtifactRegistration | None:
     """把分身刚写过的应用资源登记为产物（每个写点都调，不要只在 finalize 调）。
 
@@ -72,7 +74,7 @@ async def register_app_resource_artifact(
       会让分身既拿不到地址、又查不到产物（没登记），凭空双输。
     """
     try:
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+        from backend.app.hasn_core.app_platform import ai_native_app_registry
 
         descriptor = ai_native_app_registry.resource_descriptor(app_id, resource_kind)
         if descriptor is None:
@@ -115,6 +117,8 @@ async def register_app_resource_artifact(
                 project_id=resolved_project_id,
                 action=action,
                 dispatch_id=dispatch_id,
+                metadata=metadata,
+                accumulate_metadata_keys=accumulate_metadata_keys,
             )
     except Exception as e:
         logger.warning('[%s] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', app_id, e)
@@ -136,6 +140,8 @@ async def register_app_resource_artifact(
                 project_id=resolved_project_id,
                 action=action,
                 dispatch_id=dispatch_id,
+                metadata=metadata,
+                accumulate_metadata_keys=accumulate_metadata_keys,
             )
         except Exception as enqueue_error:
             logger.warning('[%s] register-on-write 修复意图入队失败（非致命）: %s', app_id, enqueue_error)

@@ -21,7 +21,7 @@ import os
 import re
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from backend.app.marketplace.service.translation_service import translation_service
 
@@ -36,7 +36,10 @@ _FRONTMATTER_RE = re.compile(r'\A---\s*\n.*?\n---\s*(?:\n|\Z)', re.DOTALL)
 _CJK_SOURCE_RATIO = 0.10
 
 
-def detect_body_source_lang(body: str, source_language: str | None = None) -> str:
+def detect_body_source_lang(
+    body: str,
+    source_language: str | None = None,
+) -> Literal['en', 'zh']:
     """Decide the body's source language ('zh' or 'en') for bilingual storage.
 
     CJK ratio is the **primary, deterministic** signal — for a zh/en marketplace the
@@ -46,15 +49,21 @@ def detect_body_source_lang(body: str, source_language: str | None = None) -> st
     and a non-ASCII heuristic are last-resort fallbacks.
     """
     if not body:
-        return source_language if source_language in ('en', 'zh') else 'en'
+        if source_language == 'zh':
+            return 'zh'
+        return 'en'
     cjk = sum(1 for ch in body if '一' <= ch <= '鿿')
     if cjk / len(body) >= _CJK_SOURCE_RATIO:
         return 'zh'
     detected = translation_service.detect_language(body)
-    if detected in ('en', 'zh'):
-        return detected
-    if source_language in ('en', 'zh'):
-        return source_language
+    if detected == 'zh':
+        return 'zh'
+    if detected == 'en':
+        return 'en'
+    if source_language == 'zh':
+        return 'zh'
+    if source_language == 'en':
+        return 'en'
     return 'zh' if any(ord(ch) > 127 for ch in body) else 'en'
 
 
@@ -156,7 +165,7 @@ async def resolve_bilingual_body(
     # 正文语言**按正文本身判定**（CJK 占比为主信号），不沿用 name 推出的
     # source_language——技能常见英文名/中文正文（或反之），按名字判会把正文落到错误侧。
     src = detect_body_source_lang(body, source_language)
-    tgt = 'zh' if src == 'en' else 'en'
+    tgt: Literal['en', 'zh'] = 'zh' if src == 'en' else 'en'
 
     existing_src = getattr(existing_skill, f'body_{src}', None) if existing_skill else None
     existing_tgt = getattr(existing_skill, f'body_{tgt}', None) if existing_skill else None

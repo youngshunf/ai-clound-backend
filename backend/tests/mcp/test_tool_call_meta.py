@@ -284,12 +284,28 @@ def _session_server(monkeypatch: pytest.MonkeyPatch) -> HasnCloudMcpServer:
 
 @pytest.mark.asyncio
 async def test_call_tool_direct_stamp_binds_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    """直调面：系统注入的 _hasn_session_id 剥离后同时落 AgentContext 字段与 ContextVar。"""
+    """直调面（设计 02 §4.3 会话轴分流）：`_hasn_work_session_id` 剥离后落 ContextVar（工作会话轴），
+    `_hasn_session_id` 只落 AgentContext.session_id（运行时轴）——两键分落、互不串扰。"""
     server = _session_server(monkeypatch)
     result = await server.call_tool(
-        _ctx(), 'hasn.stub.session_echo', {'_hasn_session_id': 'sess_guard_direct'}
+        _ctx(),
+        'hasn.stub.session_echo',
+        {'_hasn_work_session_id': 'sess_guard_ws', '_hasn_session_id': 'sess_guard_rt'},
     )
-    assert result == {'ctxvar_session': 'sess_guard_direct', 'field_session': 'sess_guard_direct'}
+    assert result == {'ctxvar_session': 'sess_guard_ws', 'field_session': 'sess_guard_rt'}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_legacy_runtime_session_id_never_lands_on_work_session_axis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """混合语义 `_hasn_session_id` 绝不落工作会话 ContextVar（P2-8d 起旧「在册 task 收窄」
+    回落退役，runtime id 天然无从误绑）；运行时轴照常沉淀。"""
+    server = _session_server(monkeypatch)
+    result = await server.call_tool(
+        _ctx(), 'hasn.stub.session_echo', {'_hasn_session_id': 'sess_guard_runtime_only'}
+    )
+    assert result == {'ctxvar_session': None, 'field_session': 'sess_guard_runtime_only'}
 
 
 @pytest.mark.asyncio
@@ -297,17 +313,17 @@ async def test_call_tool_via_meta_forward_keeps_session(monkeypatch: pytest.Monk
     """经 hasn.cloud.tool.call 转发仍绑会话（知识库产物丢会话归属的回归钉子）。
 
     渐进暴露下 app 工具只能经元工具触达：stamp 只打在最外层调用入参上，元工具重入
-    call_tool 时内层 params 没有 stamp。ContextVar 若按 origin_session_id（=None）无条件
+    call_tool 时内层 params 没有 stamp。ContextVar 若按 origin stamp（=None）无条件
     覆写，就会把外层已落的会话 id 抹掉——handler 面（knowledge 等）登记的产物全部丢
-    工作会话归属。修法：ContextVar 落已沉淀的 agent_context.session_id。
+    工作会话归属。修法：只进不退——已落非 None 绝不覆写（设计 02 §4.3 分流后语义不变）。
     """
     server = _session_server(monkeypatch)
     result = await server.call_tool(
         _ctx(),
         'hasn.cloud.tool.call',
-        {'name': 'hasn.stub.session_echo', 'params': {}, '_hasn_session_id': 'sess_guard_meta'},
+        {'name': 'hasn.stub.session_echo', 'params': {}, '_hasn_work_session_id': 'sess_guard_meta'},
     )
-    assert result == {'ctxvar_session': 'sess_guard_meta', 'field_session': 'sess_guard_meta'}
+    assert result == {'ctxvar_session': 'sess_guard_meta', 'field_session': None}
 
 
 @pytest.mark.asyncio

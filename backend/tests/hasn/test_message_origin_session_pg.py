@@ -18,7 +18,7 @@ import pytest
 from backend.app.hasn_im.application.message_service import get_or_create_conversation, persist_message
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _SESSION = 'sess_work_doc14'
 

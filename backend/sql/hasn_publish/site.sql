@@ -20,6 +20,7 @@ CREATE TABLE "hasn_publish"."site" (
   "slug"                varchar(32)    NOT NULL,
   "source_app"          varchar(32),
   "source_ref"          varchar(80),
+  "platform_project_id" uuid          REFERENCES "hasn_project"."hasn_project"("id") ON DELETE SET NULL,
   "current_revision_id" bigint,
   "status"              varchar(16)    NOT NULL DEFAULT 'active',
   "visibility"          varchar(16)    NOT NULL DEFAULT 'private',
@@ -38,6 +39,7 @@ CREATE TABLE "hasn_publish"."site" (
 CREATE UNIQUE INDEX "uq_site_slug" ON "hasn_publish"."site" ("slug");
 CREATE INDEX "idx_site_owner_status" ON "hasn_publish"."site" ("owner_id", "status") WHERE "deleted_time" IS NULL;
 CREATE INDEX "idx_site_source" ON "hasn_publish"."site" ("owner_id", "source_app", "source_ref") WHERE "deleted_time" IS NULL;
+CREATE INDEX "idx_site_owner_project" ON "hasn_publish"."site" ("owner_id", "platform_project_id") WHERE "platform_project_id" IS NOT NULL;
 
 COMMENT ON TABLE  "hasn_publish"."site" IS '已发布制品（云端权威：稳定身份 + slug + 可见性 + 当前版本指针）';
 COMMENT ON COLUMN "hasn_publish"."site"."id" IS '主键 ID（自增 BigInt；端云经本地 server_id 映射）';
@@ -48,6 +50,7 @@ COMMENT ON COLUMN "hasn_publish"."site"."title" IS '展示标题';
 COMMENT ON COLUMN "hasn_publish"."site"."slug" IS '不可枚举短码（base62 ≥10 位），分享路径 /s/{slug}';
 COMMENT ON COLUMN "hasn_publish"."site"."source_app" IS '来源应用（deck 等，便于回到来源编辑，可空）';
 COMMENT ON COLUMN "hasn_publish"."site"."source_ref" IS '来源实体 id（如 deck_id，便于更新/反查，可空）';
+COMMENT ON COLUMN "hasn_publish"."site"."platform_project_id" IS '挂靠的平台项目云端权威 UUID（可空；项目只提供联邦归集视角）';
 COMMENT ON COLUMN "hasn_publish"."site"."current_revision_id" IS '当前对外版本指针（引用 hasn_publish.revision.id，可空）';
 COMMENT ON COLUMN "hasn_publish"."site"."status" IS '状态 (active:生效:green/revoked:已撤销:gray)';
 COMMENT ON COLUMN "hasn_publish"."site"."visibility" IS '可见性 (private:私有:gray/password:口令:orange/unlisted:不公开:blue/public:公开:green)';

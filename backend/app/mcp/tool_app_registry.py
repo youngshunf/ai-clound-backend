@@ -42,6 +42,7 @@ NAMESPACE_TO_APP_ID: dict[str, str | None] = {
     'hasn.deck': 'deck',
     'hasn.designsystem': 'designsystem',
     'hasn.plan': 'plan',
+    'hasn.project': 'project',
     'hasn.task': 'hasn_task',
     'hasn.workflow': 'hasn_task',  # 工作流工具同属 task 应用
 }

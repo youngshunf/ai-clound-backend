@@ -46,6 +46,9 @@ _CONTRACT_MIGRATION = _BACKEND / 'sql' / 'billing' / 'migrations' / '2026-07-25-
 # doc94 D1：档位事实源迁到商品目录，plan 需要 display_json 列
 _DISPLAY_MIGRATION = _BACKEND / 'sql' / 'billing' / 'migrations' / '2026-07-25-credit-authority-plan-display-migrate.sql'
 _APP_CODE = 'doc94f2'
+_GIB = 1024**3
+_PRO_STORAGE_BYTES = 100 * _GIB
+_FLAGSHIP_STORAGE_BYTES = 500 * _GIB
 
 
 class _Order:
@@ -102,8 +105,17 @@ async def user_id(monkeypatch) -> AsyncIterator[int]:
     # doc94 D1 起档位事实源是商品目录 billing_plan，不再是 subscription_tier。
     seed = CatalogSeed()
     async with async_db_session.begin() as db:
-        for tier, credits, order in (('pro', 1000, 10), ('flagship', 10000, 30)):
-            await seed.seed_tier(db, tier_name=tier, credits_per_cycle=credits, sort_order=order)
+        for tier, credits, order, storage_bytes in (
+            ('pro', 1000, 10, _PRO_STORAGE_BYTES),
+            ('flagship', 10000, 30, _FLAGSHIP_STORAGE_BYTES),
+        ):
+            await seed.seed_tier(
+                db,
+                tier_name=tier,
+                credits_per_cycle=credits,
+                sort_order=order,
+                storage_bytes=storage_bytes,
+            )
     try:
         yield uid
     finally:
@@ -139,7 +151,11 @@ async def test_monthly_contract_is_exactly_one_thirty_day_cycle(user_id) -> None
     contract = await _activate(user_id, 'pro', 'monthly')
     assert contract.cycle_seconds == CYCLE_SECONDS
     assert contract.cycle_count == 1
+    assert contract.contract_start_at is not None
+    assert contract.contract_end_at is not None
     assert contract.contract_end_at - contract.contract_start_at == timedelta(seconds=CYCLE_SECONDS)
+    assert contract.plan_snapshot is not None
+    assert contract.plan_snapshot['storage_bytes'] == _PRO_STORAGE_BYTES
 
     events = await _events(user_id)
     assert len(events) == 1
@@ -153,6 +169,8 @@ async def test_yearly_contract_is_twelve_thirty_day_cycles(user_id) -> None:
     """年付合同 = 12 个连续 30 天周期 = 360 天（不是 365 天自然年）。"""
     contract = await _activate(user_id, 'pro', 'yearly')
     assert contract.cycle_count == 12
+    assert contract.contract_start_at is not None
+    assert contract.contract_end_at is not None
     assert contract.contract_end_at - contract.contract_start_at == timedelta(seconds=CYCLE_SECONDS * 12)
     assert (contract.contract_end_at - contract.contract_start_at).days == 360
 

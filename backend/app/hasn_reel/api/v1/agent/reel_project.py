@@ -45,8 +45,8 @@ async def agent_create_reel_project(
     db: CurrentSessionTransaction,
     obj: CreateReelProjectParam,
 ) -> ResponseModel:
-    result = await reel_project_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await reel_project_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

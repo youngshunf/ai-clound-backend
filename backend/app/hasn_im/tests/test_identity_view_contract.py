@@ -25,7 +25,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model import HasnAgents, HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_im.adapters.sqlalchemy_identity_view import SqlAlchemyIdentityView
 from backend.app.hasn_im.ports.identity_view import (
     IdentityRejected,

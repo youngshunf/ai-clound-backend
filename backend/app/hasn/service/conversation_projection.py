@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+
 from typing import Any
 
 from sqlalchemy import select
@@ -20,7 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model import HasnConversations
 from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+from backend.app.hasn.model.hasn_conversation_memberships import (
+    HasnConversationMemberships as HasnGroupMembers,
+)
+from backend.app.hasn_sync.ports.dto import SyncEnvelope
+from backend.app.hasn_sync.ports.sync_appender import SyncAppender
 
 # ─── 事件类型常量（doc02 §3.2）───
 # 投递/同步事件瘦身为唯一形态 message.new（方向是渲染概念，由 sender 派生，不落事件）。
@@ -95,7 +101,11 @@ def _direct_participant_hasn_ids(conv: HasnConversations) -> list[str]:
 
 async def _load_group_members(db: AsyncSession, conversation_id: str) -> list[HasnGroupMembers]:
     rows = await db.execute(
-        select(HasnGroupMembers).where(HasnGroupMembers.conversation_id == conversation_id)
+        select(HasnGroupMembers).where(
+            HasnGroupMembers.conversation_id == conversation_id,
+            HasnGroupMembers.left_seq.is_(None),
+            HasnGroupMembers.state == 'active',
+        )
     )
     return list(rows.scalars().all())
 
@@ -173,14 +183,16 @@ def build_conversation_projection(
             )
         group_meta = None
 
+    created_time = getattr(conv, 'created_time', None)
+    updated_time = getattr(conv, 'updated_time', None)
     projection: dict[str, Any] = {
         'conversation_id': str(conv.id),
         'type': conv.type or 'direct',
         'participants': participants,
         'group': group_meta,
         'revision': int(conv.revision or 1),
-        'created_time': conv.created_time.isoformat() if getattr(conv, 'created_time', None) else None,
-        'updated_time': conv.updated_time.isoformat() if getattr(conv, 'updated_time', None) else None,
+        'created_time': created_time.isoformat() if created_time is not None else None,
+        'updated_time': updated_time.isoformat() if updated_time is not None else None,
     }
 
     # doc14 §6.5：差事背景仅对其归属 owner（= 发起方）序列化，对端 owner / 无 viewer 语境一律裁剪。
@@ -229,7 +241,7 @@ async def bump_conversation_revision(db: AsyncSession, conversation_id: str) -> 
 
 
 async def emit_conversation_updated(
-    sync_gw: Any,
+    sync_appender: SyncAppender,
     db: AsyncSession,
     *,
     conversation_id: str,
@@ -237,20 +249,81 @@ async def emit_conversation_updated(
     owner_ids: list[str],
 ) -> None:
     """给相关 owner 的 feed 各写一条 conversation.updated（daemon 按 revision 判是否重拉，doc02 §3.2）。"""
-    for owner_id in sorted(set(o for o in owner_ids if o)):
-        await sync_gw._append_sync_event(
-            db,
+    for envelope in build_conversation_updated_envelopes(
+        conversation_id=conversation_id,
+        revision=revision,
+        owner_ids=owner_ids,
+    ):
+        await sync_appender.append(db, envelope)
+
+
+def build_conversation_updated_envelopes(
+    *,
+    conversation_id: str,
+    revision: int,
+    owner_ids: list[str],
+) -> tuple[SyncEnvelope, ...]:
+    """纯构造去重、排序后的 conversation.updated 信封。"""
+    source = f'conversation:{conversation_id}:revision:{int(revision)}'
+    source_event_id = hashlib.sha256(source.encode('utf-8')).hexdigest()
+    return tuple(
+        SyncEnvelope(
             owner_id=owner_id,
             hasn_id=owner_id,
             event_type=CONVERSATION_UPDATED_EVENT_TYPE,
             aggregate_type='conversation',
             aggregate_id=str(conversation_id),
-            payload={'conversation_id': str(conversation_id), 'revision': int(revision)},
+            payload={
+                'conversation_id': str(conversation_id),
+                'revision': int(revision),
+            },
+            producer='hasn_im',
+            source_event_id=source_event_id,
         )
+        for owner_id in sorted(set(owner for owner in owner_ids if owner))
+    )
+
+
+def build_message_new_envelope(
+    *,
+    owner_id: str,
+    conversation_id: str,
+    message_id: str,
+    sender_hasn_id: str,
+    origin_node_id: str | None,
+    content_type: int,
+    content_body: dict,
+    local_id: str | None,
+    created_at: int,
+    origin_session_id: str | None = None,
+) -> SyncEnvelope:
+    """纯构造 message.new 完整载荷信封。"""
+    payload: dict[str, Any] = {
+        'conversation_id': str(conversation_id),
+        'message_id': str(message_id),
+        'sender_hasn_id': sender_hasn_id,
+        'origin_node_id': origin_node_id,
+        'content_type': content_type_to_mime(content_type),
+        'content_body': content_body,
+        'local_id': local_id,
+        'created_at': int(created_at),
+    }
+    if origin_session_id:
+        payload['origin_session_id'] = origin_session_id
+    return SyncEnvelope(
+        owner_id=owner_id,
+        hasn_id=owner_id,
+        event_type=MESSAGE_NEW_EVENT_TYPE,
+        aggregate_type='message',
+        aggregate_id=str(message_id),
+        payload=payload,
+        producer='hasn_im',
+        source_event_id=f'message:{message_id}',
+    )
 
 
 async def append_message_new_event(
-    sync_gw: Any,
+    sync_appender: SyncAppender,
     db: AsyncSession,
     *,
     owner_id: str,
@@ -275,25 +348,19 @@ async def append_message_new_event(
     （受众分叉由调用方 ``_fanout_message_new`` 判定，本函数只负责「给了就带、没给就不带」）。
     传 None 时 payload 里**不出现该键**——对端 owner 的事件形态与 doc02 原样一致。
     """
-    payload: dict[str, Any] = {
-        'conversation_id': str(conversation_id),
-        'message_id': str(message_id),
-        'sender_hasn_id': sender_hasn_id,
-        'origin_node_id': origin_node_id,
-        'content_type': content_type_to_mime(content_type),
-        'content_body': content_body,
-        'local_id': local_id,
-        'created_at': int(created_at),
-    }
-    if origin_session_id:
-        payload['origin_session_id'] = origin_session_id
-
-    return await sync_gw._append_sync_event(
+    ref = await sync_appender.append(
         db,
-        owner_id=owner_id,
-        hasn_id=owner_id,
-        event_type=MESSAGE_NEW_EVENT_TYPE,
-        aggregate_type='message',
-        aggregate_id=str(message_id),
-        payload=payload,
+        build_message_new_envelope(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            sender_hasn_id=sender_hasn_id,
+            origin_node_id=origin_node_id,
+            content_type=content_type,
+            content_body=content_body,
+            local_id=local_id,
+            created_at=created_at,
+            origin_session_id=origin_session_id,
+        ),
     )
+    return ref.revision

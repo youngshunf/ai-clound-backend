@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 
-class FakeWS:
+class _FakeWS:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.sent: list[str] = []
@@ -30,6 +30,9 @@ class FakeWS:
         if self.fail:
             raise RuntimeError('ws closed')
         self.sent.append(json.dumps(value, ensure_ascii=False))
+
+
+FakeWS: Any = _FakeWS
 
 
 class FakeRedis:
@@ -53,7 +56,17 @@ class FakeRedis:
         values = self.lists.get(key, [])
         return list(values[start:] if end == -1 else values[start : end + 1])
 
-    async def eval(self, _script: str, numkeys: int, *args: Any) -> int:
+    async def eval(self, _script: str, numkeys: int, *args: Any) -> Any:
+        if numkeys == 2:
+            source = str(args[0])
+            destination = str(args[1])
+            source_values = self.lists.setdefault(source, [])
+            if not source_values:
+                return None
+            value = source_values.pop(0)
+            self.lists.setdefault(destination, []).append(value)
+            return value
+
         assert numkeys == 1
         key = str(args[0])
         claimed = list(args[1:])

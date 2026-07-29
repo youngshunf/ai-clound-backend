@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func, literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from backend.app.hasn.model import (
     HasnArtifactContributions,
@@ -48,8 +52,24 @@ class ArtifactRegistrationService:
             return f'asset:{mutation.asset_id}'
         if mutation.local_locator_key:
             return f'local:{mutation.node_id}:{mutation.local_locator_key}'
-        stable_id = mutation.source_event_id or mutation.dispatch_id or uuid4().hex
-        return f'body:{mutation.source_app_id or "agent"}:{stable_id}'
+        if mutation.source_event_id or mutation.dispatch_id:
+            stable_id = mutation.source_event_id or mutation.dispatch_id
+            return f'body:{mutation.source_app_id or "agent"}:{stable_id}'
+        # 最后的确定性兜底（设计 A12，**绝不随机**）：正文类产物连 dispatch/source_event 都没
+        # 有时，对象键只能由稳定内容派生——同一内容重放得到同一产物（折叠，不造重复），不同
+        # 内容自然落在不同产物上。历史上这里用 `uuid4().hex` 兜底，outbox 每重试一次就新生成
+        # 一个对象键，同一文件在云端堆出一排产物。
+        digest = sha256(
+            '|'.join([
+                mutation.owner_hasn_id,
+                mutation.agent_hasn_id,
+                mutation.artifact_kind or '',
+                mutation.origin_ref or '',
+                mutation.title or '',
+                mutation.body or '',
+            ]).encode()
+        ).hexdigest()
+        return f'body:{mutation.source_app_id or "agent"}:content:{digest}'
 
     @staticmethod
     def _contribution_idempotency_key(mutation: ArtifactMutation, artifact_key: str) -> str:
@@ -109,21 +129,26 @@ class ArtifactRegistrationService:
         legacy_key = f'local:{mutation.node_id}:{mutation.supersedes_locator_key}'
         if legacy_key == artifact_key:
             return
-        target_exists = (
-            await db.execute(
-                select(HasnArtifacts.artifact_id).where(
-                    HasnArtifacts.owner_hasn_id == mutation.owner_hasn_id,
-                    HasnArtifacts.artifact_key == artifact_key,
-                )
+        # 目标键存在性判定必须折进 UPDATE 同一条语句（别名子查询防 ORM 把条件自动关联成外层行）：
+        # 独立的先 SELECT 再 UPDATE 是 TOCTOU——并发登记同一路径（如 outbox 重放的旧 mutation
+        # 不带 supersedes，直走 upsert 插入目标键）会在两条语句之间提交目标键，改键撞上
+        # (owner, artifact_key) 唯一约束，把整笔登记炸成 5xx。折进一条语句后，已提交的目标键
+        # 在语句快照内可见，UPDATE 自动退化为 0 行（旧行原样保留）。
+        target = aliased(HasnArtifacts)
+        target_key_taken = (
+            select(target.artifact_id)
+            .where(
+                target.owner_hasn_id == mutation.owner_hasn_id,
+                target.artifact_key == artifact_key,
             )
-        ).scalar_one_or_none()
-        if target_exists is not None:
-            return
-        await db.execute(
+            .exists()
+        )
+        merge_statement = (
             update(HasnArtifacts)
             .where(
                 HasnArtifacts.owner_hasn_id == mutation.owner_hasn_id,
                 HasnArtifacts.artifact_key == legacy_key,
+                ~target_key_taken,
             )
             .values(
                 artifact_key=artifact_key,
@@ -131,6 +156,19 @@ class ArtifactRegistrationService:
                 updated_time=func.now(),
             )
         )
+        try:
+            # SAVEPOINT 兜底：目标键在语句快照里不可见、但正被并发事务**未提交**插入时，改键仍会
+            # 在唯一索引上阻塞、对方提交后报 UniqueViolation——只回滚归并这一步（旧行保持原键），
+            # 本事务后续 upsert 经 ON CONFLICT 与胜方合并，整笔登记不因竞态 5xx。
+            async with db.begin_nested():
+                await db.execute(merge_statement)
+        except IntegrityError:
+            log.warning(
+                '产物定位键归并与并发登记撞键，放弃改键改走 upsert 合并：owner=%s legacy_key=%s artifact_key=%s',
+                mutation.owner_hasn_id,
+                legacy_key,
+                artifact_key,
+            )
 
     async def register(self, db: AsyncSession, mutation: ArtifactMutation) -> ArtifactRegistrationResult:
         """在同一事务写入当前态、参与记录和已确认的登记意图。"""
@@ -138,11 +176,31 @@ class ArtifactRegistrationService:
         await self._merge_superseded_locator(db, mutation, artifact_key)
         contribution_key = self._contribution_idempotency_key(mutation, artifact_key)
         artifact_id = self._public_id('art')
+        counter_keys = tuple(mutation.accumulate_metadata_keys)
+        counter_values = {
+            key: cast('int', mutation.metadata[key])
+            for key in counter_keys
+        }
+        current_metadata = {
+            key: value
+            for key, value in mutation.metadata.items()
+            if key not in counter_values
+        }
+        metadata_on_conflict: Any
+        if counter_keys:
+            metadata_on_conflict = func.coalesce(
+                HasnArtifacts.meta_data,
+                literal({}, type_=JSONB),
+            ).op('||')(literal(current_metadata, type_=JSONB))
+        else:
+            current_metadata = dict(mutation.metadata)
+            metadata_on_conflict = current_metadata
         artifact_statement = (
             insert(HasnArtifacts)
             .values(
                 artifact_id=artifact_id,
                 owner_hasn_id=mutation.owner_hasn_id,
+                agent_hasn_id=mutation.agent_hasn_id,
                 artifact_key=artifact_key,
                 artifact_kind=mutation.artifact_kind,
                 # 兼容旧读路径期间同步该字段；参与上下文不再写入旧列。
@@ -155,16 +213,26 @@ class ArtifactRegistrationService:
                 body=mutation.body,
                 asset_id=mutation.asset_id,
                 resource_uri=mutation.resource_uri,
+                source_asset_uri=mutation.source_asset_uri,
+                source_hash=mutation.source_hash,
+                source_synced_at=mutation.source_synced_at,
                 local_locator_key=mutation.local_locator_key,
                 local_entry_kind=mutation.local_entry_kind,
                 node_id=mutation.node_id,
+                session_id=mutation.work_session_id,
                 project_id=self._uuid_or_none(mutation.project_id),
-                meta_data=mutation.metadata,
+                source_tool=mutation.source_tool,
+                source_app_id=mutation.source_app_id,
+                source_kind=mutation.source_kind,
+                action=mutation.action,
+                dispatch_id=mutation.dispatch_id,
+                meta_data=current_metadata,
                 status='active',
             )
             .on_conflict_do_update(
                 index_elements=['owner_hasn_id', 'artifact_key'],
                 set_={
+                    'agent_hasn_id': mutation.agent_hasn_id,
                     'artifact_kind': mutation.artifact_kind,
                     'kind': mutation.artifact_kind,
                     'resource_kind': mutation.resource_kind,
@@ -175,12 +243,38 @@ class ArtifactRegistrationService:
                     'body': mutation.body,
                     'asset_id': mutation.asset_id,
                     'resource_uri': mutation.resource_uri,
+                    # 快照只进不退：未上传状态的后续登记不得抹去已经完成的私有快照。
+                    'source_asset_uri': func.coalesce(
+                        mutation.source_asset_uri,
+                        HasnArtifacts.source_asset_uri,
+                    ),
+                    'source_hash': func.coalesce(
+                        mutation.source_hash,
+                        HasnArtifacts.source_hash,
+                    ),
+                    'source_synced_at': func.coalesce(
+                        mutation.source_synced_at,
+                        HasnArtifacts.source_synced_at,
+                    ),
                     'local_locator_key': mutation.local_locator_key,
                     'local_entry_kind': mutation.local_entry_kind,
                     'node_id': mutation.node_id,
+                    # 工作会话归属只进不退：无会话上下文的后续写不得抹去已有绑定。
+                    'session_id': func.coalesce(
+                        mutation.work_session_id,
+                        HasnArtifacts.session_id,
+                    ),
                     # 项目关联只进不退：无项目上下文的后续更新不得抹去已显式挂靠的当前态。
                     'project_id': func.coalesce(self._uuid_or_none(mutation.project_id), HasnArtifacts.project_id),
-                    'metadata': mutation.metadata,
+                    'source_tool': mutation.source_tool,
+                    'source_app_id': mutation.source_app_id,
+                    'source_kind': mutation.source_kind,
+                    'action': mutation.action,
+                    'dispatch_id': mutation.dispatch_id,
+                    # 同一对象被分身再次写入即视为复活：软删后若只累积参与记录而当前态保持
+                    # deleted，列表（过滤 status='active'）会永远查不到这条仍在生长的产物。
+                    'status': 'active',
+                    'metadata': metadata_on_conflict,
                     'updated_time': func.now(),
                 },
             )
@@ -215,6 +309,7 @@ class ArtifactRegistrationService:
             .returning(HasnArtifactContributions.contribution_id)
         )
         contribution_id = (await db.execute(contribution_statement)).scalar_one_or_none()
+        contribution_inserted = contribution_id is not None
         if contribution_id is None:
             contribution_id = (
                 await db.execute(
@@ -225,6 +320,32 @@ class ArtifactRegistrationService:
                     )
                 )
             ).scalar_one()
+
+        if contribution_inserted and counter_values:
+            # artifact UPSERT 已锁定当前态行；在同一事务读取最新 metadata 后写回，
+            # 并发批次会依次获取行锁，重放 contribution 因未插入而不会重复累计。
+            stored_metadata = (
+                await db.execute(
+                    select(HasnArtifacts.meta_data)
+                    .where(HasnArtifacts.artifact_id == canonical_artifact_id)
+                    .with_for_update()
+                )
+            ).scalar_one()
+            accumulated = dict(stored_metadata or {})
+            for key, delta in counter_values.items():
+                current = accumulated.get(key, 0)
+                if (
+                    not isinstance(current, int)
+                    or isinstance(current, bool)
+                    or current < 0
+                ):
+                    raise ValueError(f'产物 metadata 计数器 {key} 的存量值无效')
+                accumulated[key] = current + delta
+            await db.execute(
+                update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == canonical_artifact_id)
+                .values(meta_data=accumulated, updated_time=func.now())
+            )
 
         outbox_key = f'{mutation.agent_hasn_id}:{contribution_key}'
         outbox_statement = insert(HasnArtifactRegistrationOutbox).values(

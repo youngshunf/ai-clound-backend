@@ -31,7 +31,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -143,6 +143,7 @@ _CAPABILITIES = [
         risk_level='low',
         properties={
             'status': {'type': ['string', 'null'], 'description': '按状态过滤 active/paused/archived'},
+            'platform_project_id': {'type': ['string', 'null'], 'description': '按平台项目 UUID 过滤'},
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
         },
         required=[],
@@ -174,6 +175,10 @@ _CAPABILITIES = [
             'primary_platform': {'type': ['string', 'null'], 'description': '主平台 xiaohongshu/douyin/...'},
             'pipeline_mode': {'type': ['string', 'null'], 'description': '流水线模式 semi-auto/manual/full-auto'},
             'playbook_id': {'type': ['integer', 'null']},
+            'platform_project_id': {
+                'type': ['string', 'null'],
+                'description': '可选：本人进行中的平台项目 UUID；项目会话中省略时自动继承',
+            },
         },
         required=['name'],
         page_rank=12,
@@ -788,13 +793,16 @@ _CAPABILITIES = [
 ]
 
 
-CREATOR_AI_NATIVE_MANIFEST = {
+CREATOR_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'creator',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'creator': '创作运营（选题/创作/审核/发布/复盘）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': True,
+    'project_required': False,
+    'project_integration': 'project_aware',
     'execution_mode': 'cloud',
     # 云端工具模型（对齐 community/knowledge/growth）：工具数据面经 gateway_internal 进程内直调云端 handler，
     # 不经本地 hasn-mcp / daemon Agent 代理（创作运营无本地文件/电脑操作的本地理由）。
@@ -849,4 +857,6 @@ def build_creator_app() -> App:
         entry_route='/apps/creator',
         install_policy='manual',
         execution_mode='cloud',
+        project_aware=True,
+        project_required=False,
     )

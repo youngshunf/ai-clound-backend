@@ -34,12 +34,13 @@ from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_studio.model import StudioArtifact, StudioAsset, StudioProject, StudioRenderJob
 from backend.app.hasn_studio.provider import StudioEngineError, montage_engine_provider
 from backend.app.hasn_studio.service.media_credentials import resolve_media_credentials
 from backend.common.exception import errors
-from backend.plugin.s3.service.storage_service import StorageService
+from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +53,7 @@ _ASSET_URI_PREFIX = 'hasn://asset/'
 _TERMINAL = ('succeeded', 'failed', 'canceled')
 # 成品物化用的私有桶上传类别（不触发 extract 抽取流水线；语义=已发布制品/产物字节）。
 _ARTIFACT_UPLOAD_CATEGORY = 'published_artifact'
+_owner_storage = OwnerStorageService(async_db_session)
 
 # 产物级协作（应用平台 v3 §6 / doc22 §3.6 全复用）：resource_share 的 resource_type。
 # studio 有两类可分享产物：项目（容器：流水线/素材/分镜，editor 可改、可派渲染）+ 成品（最终视频）。
@@ -257,7 +259,7 @@ class StudioService:
         extra_ids = {int(i) for i in shared_ids if i.isdigit()} - owned_ids
         extra: list[StudioArtifact] = []
         if extra_ids:
-            extra_conds = [StudioArtifact.id.in_(extra_ids)]
+            extra_conds: list[Any] = [StudioArtifact.id.in_(extra_ids)]
             if project_id is not None:
                 extra_conds.append(StudioArtifact.project_id == project_id)
             extra = list((await db.execute(select(StudioArtifact).where(*extra_conds))).scalars().all())
@@ -609,10 +611,13 @@ class StudioService:
             conds.append(StudioArtifact.project_id == project_id)
         stmt = select(StudioArtifact).where(*conds).order_by(StudioArtifact.id.desc())
         rows = (await db.execute(stmt)).scalars().all()
+        uris: list[str | None] = []
+        for row in rows:
+            uris.extend((row.video_asset_uri, row.thumbnail_asset_uri))
         url_map = await StudioService._resolve_asset_urls(
             db,
             owner_hasn_id=owner_hasn_id,
-            uris=[r.video_asset_uri for r in rows] + [r.thumbnail_asset_uri for r in rows],
+            uris=uris,
         )
         return [_serialize_artifact(r, url_map) for r in rows]
 
@@ -790,8 +795,11 @@ class StudioService:
     @staticmethod
     async def _poll_and_apply(db: AsyncSession, job: StudioRenderJob) -> None:
         """轮询引擎一次，把状态/进度/阶段/成本落库。传输层失败保持原态（下次重试），不造假。"""
+        engine_job_id = job.engine_job_id
+        if not engine_job_id:
+            return
         try:
-            snapshot = await montage_engine_provider.get_render(job.engine_job_id)
+            snapshot = await montage_engine_provider.get_render(engine_job_id)
         except StudioEngineError as exc:
             # 404=引擎重启丢内存态 → 标失败透传；其余瞬时错误保持原态等下次。
             if 'HTTP 404' in str(exc):
@@ -828,30 +836,31 @@ class StudioService:
         ).scalar_one_or_none()
         if existing is not None:
             return
+        engine_job_id = job.engine_job_id
+        if not engine_job_id:
+            job.error = '引擎 job ID 缺失，无法物化成品'
+            await db.flush()
+            return
 
         # 取最新 snapshot 拿成片元数据（时长/分辨率/体积）；失败则用 job 已落的字段兜底。
         snapshot: dict[str, Any] = {}
         try:
-            snapshot = await montage_engine_provider.get_render(job.engine_job_id)
+            snapshot = await montage_engine_provider.get_render(engine_job_id)
         except StudioEngineError:
             snapshot = {}
 
         try:
-            data, content_type = await montage_engine_provider.fetch_artifact(job.engine_job_id)
-            ref = await StorageService.upload(
-                db,
-                data,
-                category=_ARTIFACT_UPLOAD_CATEGORY,
-                filename=f'{job.engine_job_id}.mp4',
-                content_type=content_type or 'video/mp4',
-            )
-            asset = await hasn_asset_service.register_asset(
-                db,
+            data, content_type = await montage_engine_provider.fetch_artifact(engine_job_id)
+            stored = await _owner_storage.upload_bytes(
                 owner_hasn_id=job.owner_hasn_id,
-                ref=ref,
-                kind='video',
+                data=data,
+                filename=f'{engine_job_id}.mp4',
+                mime=content_type or 'video/mp4',
+                category=_ARTIFACT_UPLOAD_CATEGORY,
+                source_app='studio',
+                idempotency_key=f'studio-render:{job.id}',
                 duration_ms=_duration_ms(snapshot),
-                extract_status='done',  # 成片不进抽取流水线
+                extract_status='done',
             )
         except StudioEngineError as exc:
             # 取片传输失败：job 维持 succeeded（渲染本身已成功），只记录物化错误，绝不 fake artifact。
@@ -864,7 +873,7 @@ class StudioService:
             await db.flush()
             return
 
-        asset_uri = _asset_uri(asset.asset_id)
+        asset_uri = stored.uri
         artifact = StudioArtifact(
             project_id=job.project_id,
             render_job_id=job.id,
@@ -879,7 +888,7 @@ class StudioService:
             origin_type='app',
             active_work_session_id=job.work_session_id,
             meta={
-                'size_bytes': snapshot.get('size_bytes') or ref.size,
+                'size_bytes': snapshot.get('size_bytes') or stored.size_bytes,
                 'cost': job.cost,
                 'engine_job_id': job.engine_job_id,
             },
@@ -890,7 +899,7 @@ class StudioService:
         # 回流通用产物索引（AF-*）：video 类型，引同一 hasn://asset/。
         if job.agent_hasn_id:
             try:
-                await hasn_artifacts_service.record(
+                artifact_index_id = await hasn_artifacts_service.record(
                     db,
                     agent_hasn_id=job.agent_hasn_id,
                     owner_hasn_id=job.owner_hasn_id,
@@ -900,8 +909,8 @@ class StudioService:
                         # UI 拿到 other 不知道该播还是该下载。6 枚举里 video 本来就在。
                         kind='video',
                         title=artifact.title,
-                        asset_id=asset.asset_id,
-                        session_id=job.work_session_id,
+                        asset_id=stored.asset_id,
+                        work_session_id=job.work_session_id,
                         source_tool='hasn.studio.run_pipeline',
                         # 与 hasn.image.generate / voice.synthesize 同族：工具产出的媒体资产。
                         # 不能写 'app'——I4 钉死 source_kind='app' ⟺ artifact_kind='resource'，
@@ -915,6 +924,13 @@ class StudioService:
                             'studio_artifact_id': artifact.id,
                         },
                     ),
+                )
+                await _owner_storage.bind_asset_in_transaction(
+                    db,
+                    owner_hasn_id=job.owner_hasn_id,
+                    asset_id=stored.asset_id,
+                    resource_uri=f'hasn://artifact/{artifact_index_id}',
+                    role='source',
                 )
             except Exception as exc:
                 logger.warning('studio 成品回流 hasn_artifacts 失败: %s', exc)

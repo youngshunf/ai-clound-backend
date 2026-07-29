@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import Select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,7 +64,7 @@ class CRUDDictData(CRUDPlus[DictData]):
         :param type_id: 字典类型 ID
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if type_code is not None:
             filters['type_code'] = type_code

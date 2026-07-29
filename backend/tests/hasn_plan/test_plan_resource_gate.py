@@ -30,7 +30,7 @@ from backend.app.mcp.context import clear_authorized_resources, get_authorized_r
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 # 与「按 id 读/写某个具体事件」等价的内联声明（内联以锁死门的判定契约，不依赖任何真实工具声明）。
 _RA_EVENT_VIEWER = [{'param': 'event_id', 'type': PLAN_EVENT_RESOURCE_TYPE, 'need': 'viewer'}]

@@ -93,6 +93,14 @@ def _decimal_of(payload: dict[str, Any], key: str, fallback: Decimal = Decimal(0
         return fallback
 
 
+def _non_negative_int_of(payload: dict[str, Any], key: str) -> int:
+    """从目录 JSONB 读取非负整数字节数，非法配置按未配置处理。"""
+    raw = payload.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return 0
+    return raw
+
+
 @dataclass(slots=True, frozen=True)
 class TierCatalogEntry:
     """一个 LLM 订阅档在目录里的完整形态（月付 plan 为主档，年付 plan 只补价）。"""
@@ -104,6 +112,7 @@ class TierCatalogEntry:
     yearly_price: Decimal | None
     yearly_discount: Decimal | None
     max_agents: int
+    storage_bytes: int
     sort_order: int
     features: dict[str, Any] | None
     plan_id: int
@@ -133,6 +142,7 @@ def _build_tier(tier_name: str, monthly: BillingPlan, yearly: BillingPlan | None
         yearly_price=yearly.price_amount if yearly else None,
         yearly_discount=_decimal_of(display, 'yearly_discount', Decimal(0)) or None,
         max_agents=int(quota.get('max_agents') or 0),
+        storage_bytes=_non_negative_int_of(quota, 'storage_bytes'),
         sort_order=monthly.sort_order,
         features=display.get('features') if isinstance(display.get('features'), dict) else None,
         plan_id=monthly.id,

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 import logging
+
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
@@ -16,8 +17,9 @@ from backend.common.exception.errors import BaseExceptionError
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,8 @@ class ArtifactRegistrationOutboxService:
         project_id: str | None,
         action: str,
         dispatch_id: str | None,
+        metadata: dict[str, object] | None = None,
+        accumulate_metadata_keys: list[str] | None = None,
     ) -> None:
         """在 best-effort 登记失败后保留可重放的应用资源意图。"""
         app_id = descriptor.resource_kind.split('.', 1)[0]
@@ -77,6 +81,8 @@ class ArtifactRegistrationOutboxService:
             'project_id': project_id,
             'action': action,
             'dispatch_id': effective_dispatch_id,
+            'metadata': metadata or {},
+            'accumulate_metadata_keys': accumulate_metadata_keys or [],
         }
         statement = (
             insert(HasnArtifactRegistrationOutbox)
@@ -97,6 +103,22 @@ class ArtifactRegistrationOutboxService:
         """从 JSON 意图读取字符串，遇到坏载荷时明确拒绝重放。"""
         value = payload.get(key)
         return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _intent_metadata(payload: dict[object, object]) -> dict[str, object] | None:
+        """读取修复意图中的产物元数据，坏载荷不得进入统一登记服务。"""
+        value = payload.get('metadata', {})
+        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+            return None
+        return cast('dict[str, object]', value)
+
+    @staticmethod
+    def _intent_accumulate_keys(payload: dict[object, object]) -> list[str] | None:
+        """读取修复意图中的累计计数键，并保持原始顺序。"""
+        value = payload.get('accumulate_metadata_keys', [])
+        if not isinstance(value, list) or not all(isinstance(key, str) for key in value):
+            return None
+        return cast('list[str]', value)
 
     @staticmethod
     def _is_permanent_repair_error(exc: Exception) -> bool:
@@ -155,6 +177,8 @@ class ArtifactRegistrationOutboxService:
             summary = self._intent_value(payload, 'summary')
             work_session_id = self._intent_value(payload, 'work_session_id')
             project_id = self._intent_value(payload, 'project_id')
+            metadata = self._intent_metadata(payload)
+            accumulate_metadata_keys = self._intent_accumulate_keys(payload)
             if (
                 app_id is None
                 or resource_kind is None
@@ -164,6 +188,8 @@ class ArtifactRegistrationOutboxService:
                 or source_tool is None
                 or action is None
                 or dispatch_id is None
+                or metadata is None
+                or accumulate_metadata_keys is None
             ):
                 row.status = 'dead_letter'
                 row.last_error = '应用资源修复意图字段不完整'
@@ -198,7 +224,9 @@ class ArtifactRegistrationOutboxService:
                         source_tool=source_tool,
                         dispatch_id=dispatch_id,
                         project_id=project_id,
-                        action=cast(Literal['create', 'update'], action),
+                        action=cast('Literal["create", "update"]', action),
+                        metadata=metadata,
+                        accumulate_metadata_keys=accumulate_metadata_keys,
                     )
             except Exception as exc:
                 row.attempt_count += 1

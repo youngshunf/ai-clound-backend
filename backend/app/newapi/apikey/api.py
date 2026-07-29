@@ -14,7 +14,7 @@ from backend.app.newapi.apikey.schema import (
 )
 from backend.app.newapi.apikey.service import api_key_service
 from backend.common.pagination import DependsPagination, PageData
-from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.common.security.permission import RequestPermission
 from backend.common.security.rbac import DependsRBAC
@@ -73,7 +73,8 @@ async def get_full_api_key(db: CurrentSession, pk: int) -> ResponseSchemaModel:
 async def admin_create_api_key(
     db: CurrentSessionTransaction, obj: AdminCreateUserApiKeyParam
 ) -> ResponseSchemaModel[CreateUserApiKeyResponse]:
-    data = await api_key_service.create(db, obj, obj.user_id)
+    create_obj = CreateUserApiKeyParam.model_validate(obj)
+    data = await api_key_service.create(db, create_obj, obj.user_id)
     return response_base.success(data=data)
 
 
@@ -119,7 +120,7 @@ async def create_api_key(
 )
 async def update_api_key(
     request: Request, db: CurrentSessionTransaction, pk: int, obj: UpdateUserApiKeyParam
-) -> ResponseSchemaModel:
+) -> ResponseModel:
     user_id = request.user.id
     is_admin = request.user.is_superuser
     await api_key_service.update(db, pk, obj, user_id, is_admin)
@@ -131,7 +132,7 @@ async def update_api_key(
     summary='删除 API Key',
     dependencies=[DependsJwtAuth],
 )
-async def delete_api_key(request: Request, db: CurrentSessionTransaction, pk: int) -> ResponseSchemaModel:
+async def delete_api_key(request: Request, db: CurrentSessionTransaction, pk: int) -> ResponseModel:
     user_id = request.user.id
     is_admin = request.user.is_superuser
     await api_key_service.delete(db, pk, user_id, is_admin)

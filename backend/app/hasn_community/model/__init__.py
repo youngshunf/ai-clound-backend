@@ -7,8 +7,12 @@ from backend.app.hasn_community.model.hasn_comments import HasnComments as HasnC
 from backend.app.hasn_community.model.hasn_community_blocks import HasnCommunityBlocks as HasnCommunityBlocks
 from backend.app.hasn_community.model.hasn_content_topics import HasnContentTopics as HasnContentTopics
 from backend.app.hasn_community.model.hasn_doc_nodes import HasnDocNodes as HasnDocNodes
+from backend.app.hasn_community.model.hasn_doc_space_subscriptions import (
+    HasnDocSpaceSubscriptions as HasnDocSpaceSubscriptions,
+)
 from backend.app.hasn_community.model.hasn_doc_spaces import HasnDocSpaces as HasnDocSpaces
 from backend.app.hasn_community.model.hasn_follows import HasnFollows as HasnFollows
 from backend.app.hasn_community.model.hasn_likes import HasnLikes as HasnLikes
 from backend.app.hasn_community.model.hasn_posts import HasnPosts as HasnPosts
 from backend.app.hasn_community.model.hasn_topics import HasnTopics as HasnTopics
+from backend.app.hasn_community.model.im_command_outbox import ImCommandOutbox as ImCommandOutbox

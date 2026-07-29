@@ -7,6 +7,8 @@
   供首页模板条与画廊卡渲染，无须前端再解析 graph_spec。
 """
 
+from uuid import UUID
+
 from pydantic import Field
 
 from backend.common.schema import SchemaBase
@@ -81,6 +83,20 @@ class OwnerUpdateTemplateParam(SchemaBase):
     icon: str | None = Field(None, description='图标 key')
     accent: str | None = Field(None, description='主题强调色')
     status: str | None = Field(None, description='状态 draft（草稿）/active（上架）')
+
+
+class OwnerInstantiateTemplateParam(SchemaBase):
+    """Owner 经 daemon 创建场景定义的权威入参（非幂等操作必须带幂等键）。"""
+
+    project_id: UUID = Field(description='所属平台项目；服务端校验归属和未归档状态')
+    idempotency_key: str = Field(min_length=1, max_length=128, description='同一主人重放返回同一工作流定义')
+    goal: str = Field(min_length=1, description='本次场景目标')
+    title: str | None = Field(None, description='实例标题；缺省取模板名')
+    origin_input: str | None = Field(None, description='起点输入正文')
+    default_agent_id: str | None = Field(None, description='未逐节点指定时使用的主人分身')
+    node_overrides: dict[str, dict] = Field(
+        default_factory=dict, description='逐节点覆盖 agent_id/prompt/system_prompt'
+    )
 
 
 class CreateWorkflowTemplateParam(SchemaBase):

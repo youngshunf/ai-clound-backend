@@ -1,9 +1,9 @@
-"""分身社区内容审核开关（community_settings.agent_post_review）回归测试。
+"""分身社区内容主人确认边界与评论审核开关回归测试。
 
-覆盖「将真实的设置落地」之「发帖是否需主人审核」可配置化：
-- 设置默认 agent_post_review=True（维持出厂「分身内容进 pending_review 待审」行为）；
+覆盖施工方案 96 的不可绕过边界：
+- Agent 发帖、写文章恒进 pending_review，主人设置不能把协作产物直接公开；
+- 设置默认 agent_post_review=True，继续控制 Agent 评论是否需审核；
 - get_agent_post_review helper：默认 True / patch False 后 False / 未知主人保守 True；
-- 分身发帖 handler：审核开→pending_review；审核关→published（published_time 落值）；
 - 分身评论 handler：审核开→pending_review；审核关→visible（直接公开）。
 
 连真实 PG，事务回滚隔离（conftest db fixture：create_savepoint，handler 内 commit 也只释放 savepoint）。
@@ -13,9 +13,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
-from backend.app.hasn_community.model import HasnPosts
+from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.community_tool_handlers import (
+    handle_community_create_article,
     handle_community_create_comment,
     handle_community_create_post,
 )
@@ -27,9 +29,7 @@ from tests.hasn_community.conftest import seed_agent, seed_human
 async def _seed_published_post(db, *, author_hasn_id: str, content: str) -> str:
     """经 ORM（schema-aware）插一条已发布 human 帖，返回 post_id。
 
-    不用 conftest.seed_post：其裸 `INSERT INTO hasn_posts` 不带 hasn_community schema
-    前缀，在本应用「每应用独立 PG schema」下会 relation does not exist（同样拖垮 test_b_feed）。
-    ORM 路径继承 CommunityBase 的 schema=hasn_community，是已验证可用的写入路径。
+    直接走 ORM 路径，覆盖 CommunityBase 的 schema=hasn_community 映射。
     """
     from backend.utils.timezone import timezone
 
@@ -101,8 +101,8 @@ async def test_agent_create_post_review_on_is_pending(db):
 
 
 @pytest.mark.asyncio
-async def test_agent_create_post_review_off_is_published(db):
-    """审核关：分身发帖直接 published 并落 published_time。"""
+async def test_agent_post_and_article_stay_pending_when_comment_review_is_off(db):
+    """关闭评论审核也不能让 Agent 帖子或文章绕过主人确认直接公开。"""
     owner = await seed_human(db, nickname='主人')
     await community_settings_service.update_community_settings(
         db, hasn_id=owner['hasn_id'], patch={'agent_post_review': False}
@@ -112,15 +112,27 @@ async def test_agent_create_post_review_off_is_published(db):
         agent_hasn_id=agent['hasn_id'], owner_hasn_id=owner['hasn_id'], owner_user_id=owner['user_id']
     )
 
-    result = await handle_community_create_post(db, payload, {'content': '[E2E] 审核关的帖子。'})
-    assert result['status'] == 'published'
-    assert result['message'] == '帖子已发布'
+    post_result = await handle_community_create_post(db, payload, {'content': '[E2E] 强制待确认的帖子。'})
+    article_result = await handle_community_create_article(
+        db,
+        payload,
+        {'title': '强制待确认文章', 'content': '## 正文\n\n主人确认前不可公开。'},
+    )
+    assert post_result['status'] == 'pending_review'
+    assert article_result['status'] == 'pending_review'
 
-    # 已发布帖在公共信息流可见（验证 published_time 真落了值，能被 published 流取到）
-    detail = await __import__(
-        'backend.app.hasn_community.service.community_service', fromlist=['community_service']
-    ).community_service.get_post(db, post_id=result['post_id'], user_id=None)
-    assert detail['status'] == 'published'
+    post = (
+        await db.execute(
+            select(HasnPosts).where(HasnPosts.post_id == post_result['post_id'])
+        )
+    ).scalar_one()
+    article = (
+        await db.execute(
+            select(HasnArticles).where(HasnArticles.article_id == article_result['article_id'])
+        )
+    ).scalar_one()
+    assert post.published_time is None
+    assert article.published_time is None
 
 
 @pytest.mark.asyncio

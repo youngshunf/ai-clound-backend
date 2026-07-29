@@ -15,8 +15,8 @@ import pytest
 
 from backend.app.hasn_im.protocol import frame
 
-# ws_node.py 绝对路径（本文件 = backend/app/hasn_im/tests/test_protocol_frame.py）
-_WS_NODE_PY = Path(__file__).resolve().parents[2] / 'hasn' / 'api' / 'ws_node.py'
+# ws_node.py 已随 IM 服务化迁入本域，协议注册表直接锚定域内权威实现。
+_WS_NODE_PY = Path(__file__).resolve().parents[1] / 'api' / 'ws_node.py'
 
 
 def _ws_node_dispatch_methods() -> set[str]:
@@ -38,9 +38,15 @@ def _ws_node_dispatch_methods() -> set[str]:
         return False
 
     handlers_node = next(node for node in ast.walk(tree) if _is_handlers_target(node))
-    assert isinstance(handlers_node.value, ast.Dict), '_HANDLERS 必须是字面量 dict'
+    if isinstance(handlers_node, ast.AnnAssign):
+        value = handlers_node.value
+    elif isinstance(handlers_node, ast.Assign):
+        value = handlers_node.value
+    else:
+        raise AssertionError('_HANDLERS 必须是赋值表达式')
+    assert isinstance(value, ast.Dict), '_HANDLERS 必须是字面量 dict'
     methods: set[str] = set()
-    for key in handlers_node.value.keys:
+    for key in value.keys:
         assert isinstance(key, ast.Constant) and isinstance(key.value, str), '_HANDLERS 键必须是字符串字面量'
         methods.add(key.value)
     return methods

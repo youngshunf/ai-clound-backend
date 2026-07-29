@@ -4,8 +4,10 @@
 路由前缀: /api/v1/community/app
 认证方式: Owner JWT
 """
+from typing import Literal
+
 from fastapi import APIRouter, BackgroundTasks, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.hasn_community.service.community_service import community_service
 from backend.app.hasn_community.service.settings_service import community_settings_service
@@ -48,6 +50,32 @@ class CreateCommentRequest(BaseModel):
 
     content: str = Field(description='评论内容', min_length=1, max_length=1000)
     parent_id: str | None = Field(default=None, description='父评论 ID（楼中楼回复）')
+
+
+@router.get(
+    '/search',
+    summary='统一搜索社区资源',
+    description='按帖子、文章、用户或分身分组搜索，四组分别分页',
+    dependencies=[DependsJwtAuth],
+)
+async def search_community(
+    request: Request,
+    db: CurrentSession,
+    q: str,
+    group: Literal['posts', 'articles', 'humans', 'agents'],
+    cursor: str | None = None,
+    limit: int = 10,
+) -> ResponseModel:
+    """统一搜索一个资源组。"""
+    result = await community_service.search_group(
+        db,
+        query=q,
+        group=group,
+        viewer_user_id=request.user.id,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
 
 
 @router.get(
@@ -1283,10 +1311,11 @@ async def get_recommended_agents(
     category: str | None = None,
     sort: str = 'relevance',
     capability: str | None = None,
+    online: bool = False,
     cursor: str | None = None,
     limit: int = 3,
 ) -> ResponseModel:
-    """获取推荐/广场 Agent（支持 category/sort/capability 筛选 + 游标分页）"""
+    """获取推荐/广场分身（支持分类、排序、能力、在线筛选与游标分页）。"""
     user_id = request.user.id
 
     result = await community_service.get_recommended_agents(
@@ -1295,6 +1324,7 @@ async def get_recommended_agents(
         category=category,
         sort=sort,
         capability=capability,
+        online_only=online,
         cursor=cursor,
         limit=limit,
     )
@@ -1360,10 +1390,24 @@ class CreateCollectionRequest(BaseModel):
     is_public: bool = Field(default=False, description='是否公开')
 
 
+class UpdateCollectionRequest(BaseModel):
+    """更新收藏夹请求"""
+
+    name: str | None = Field(default=None, description='收藏夹名称', min_length=1, max_length=100)
+    is_public: bool | None = Field(default=None, description='是否公开')
+
+    @model_validator(mode='after')
+    def validate_non_empty_patch(self) -> 'UpdateCollectionRequest':
+        """PATCH 至少包含一个可更新字段。"""
+        if self.name is None and self.is_public is None:
+            raise ValueError('至少提供 name 或 is_public')
+        return self
+
+
 class CollectRequest(BaseModel):
     """收藏请求"""
 
-    target_type: str = Field(description='目标类型：post/article')
+    target_type: Literal['post', 'article'] = Field(description='目标类型：post/article')
     target_id: str = Field(description='目标 ID')
     collection_id: str | None = Field(default=None, description='收藏夹 ID（缺省进默认收藏夹）')
 
@@ -1396,6 +1440,30 @@ async def create_collection(
     hasn_id = await _require_human_hasn_id(db, request.user.id)
     result = await community_service.create_collection(
         db, owner_hasn_id=hasn_id, name=body.name, is_public=body.is_public
+    )
+    return response_base.success(data=result)
+
+
+@router.patch(
+    '/collections/{collection_id}',
+    summary='更新收藏夹',
+    description='更新本人收藏夹的名称或公开性',
+    dependencies=[DependsJwtAuth],
+)
+async def update_collection(
+    request: Request,
+    db: CurrentSessionTransaction,
+    collection_id: str,
+    body: UpdateCollectionRequest,
+) -> ResponseModel:
+    """更新收藏夹"""
+    hasn_id = await _require_human_hasn_id(db, request.user.id)
+    result = await community_service.update_collection(
+        db,
+        owner_hasn_id=hasn_id,
+        collection_id=collection_id,
+        name=body.name,
+        is_public=body.is_public,
     )
     return response_base.success(data=result)
 
@@ -1452,13 +1520,44 @@ async def get_collection_items(
     request: Request,
     db: CurrentSession,
     collection_id: str,
+    type: Literal['post', 'article'] | None = None,
     cursor: str | None = None,
     limit: int = 20,
 ) -> ResponseModel:
     """收藏夹内容列表"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
     result = await community_service.get_collection_items(
-        db, owner_hasn_id=hasn_id, collection_id=collection_id, cursor=cursor, limit=limit
+        db,
+        owner_hasn_id=hasn_id,
+        collection_id=collection_id,
+        target_type=type,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
+
+
+@router.delete(
+    '/collections/{collection_id}/items',
+    summary='从指定收藏夹移出内容',
+    description='仅移出当前收藏夹中的目标，不影响其他收藏夹副本',
+    dependencies=[DependsJwtAuth],
+)
+async def remove_collection_item(
+    request: Request,
+    db: CurrentSessionTransaction,
+    collection_id: str,
+    target_type: Literal['post', 'article'],
+    target_id: str,
+) -> ResponseModel:
+    """从指定收藏夹移出内容"""
+    hasn_id = await _require_human_hasn_id(db, request.user.id)
+    result = await community_service.remove_collection_item(
+        db,
+        owner_hasn_id=hasn_id,
+        collection_id=collection_id,
+        target_type=target_type,
+        target_id=target_id,
     )
     return response_base.success(data=result)
 
@@ -1598,7 +1697,7 @@ class UpdateCommunitySettingsRequest(BaseModel):
     searchable: bool | None = Field(default=None, description='是否可被搜索')
     allow_follow: bool | None = Field(default=None, description='是否允许被关注')
     default_comment_policy: str | None = Field(default=None, description='默认评论策略 all/followers/closed')
-    agent_post_review: bool | None = Field(default=None, description='分身社区内容（发帖/发文/评论）是否需主人审核后公开')
+    agent_post_review: bool | None = Field(default=None, description='分身评论是否需主人审核后公开；帖子与文章始终需确认')
     notify: dict | None = Field(default=None, description='通知开关 {like,comment,follow,collect}')
 
 

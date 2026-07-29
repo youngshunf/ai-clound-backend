@@ -11,7 +11,7 @@ from backend.plugin.code_generator.parser.sql_parser import sql_parser
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HASN_SQL_DIR = REPO_ROOT / "backend" / "sql" / "hasn"
 OPENAPI_FILE = REPO_ROOT / "docs" / "openapi-hasn-cloud-v1.yaml"
-ERRORS_FILE = REPO_ROOT / "sql" / "errors.md"
+ERRORS_FILE = HASN_SQL_DIR / "README.md"
 CODEGEN_DOC = REPO_ROOT / "backend" / "代码生成使用说明.md"
 HASN_S0S1_README = HASN_SQL_DIR / "README.md"
 
@@ -101,7 +101,10 @@ def test_openapi_and_error_contracts_are_readable_and_runtime_safe() -> None:
     assert "ERR_MESSAGE_DELIVERY_FAILED" in errors
     assert "不得用于 RuntimeUnavailable" in errors
     assert "ERR_RUNTIME_PRIVATE_METADATA_REJECTED" in errors
-    assert "RuntimeUnavailable != MessageDeliveryFailed" in errors
+    migration = (
+        HASN_SQL_DIR / "_archive" / "V001__hasn_s0_s1_existing_assets__migration.sql"
+    ).read_text(encoding="utf-8")
+    assert "RuntimeUnavailable != MessageDeliveryFailed" in migration
 
 
 def test_codegen_doc_freezes_hasn_sql_path_and_no_handwritten_crud() -> None:
@@ -168,12 +171,14 @@ def test_runtime_summary_tables_do_not_define_private_runtime_columns() -> None:
 
 
 def test_migration_backfill_and_rollback_assets_exist_under_hasn_sql_dir() -> None:
-    migration = HASN_SQL_DIR / "V001__hasn_s0_s1_existing_assets__migration.sql"
-    rollback = HASN_SQL_DIR / "V001__hasn_s0_s1_existing_assets__rollback.sql"
+    archive_dir = HASN_SQL_DIR / "_archive"
+    migration = archive_dir / "V001__hasn_s0_s1_existing_assets__migration.sql"
+    rollback = archive_dir / "V001__hasn_s0_s1_existing_assets__rollback.sql"
     readme = HASN_SQL_DIR / "README.md"
-    for path in (migration, rollback, readme):
+    for path in (migration, rollback):
         assert path.exists()
-        assert path.parent == HASN_SQL_DIR
+        assert path.parent == archive_dir
+    assert readme.exists()
 
     migration_text = migration.read_text(encoding="utf-8")
     rollback_text = rollback.read_text(encoding="utf-8")
@@ -212,7 +217,7 @@ def test_task_system_v21_migration_task_uuid_unique_matches_upsert_conflict_targ
 def test_task_assignment_keeps_one_current_row_per_task() -> None:
     migration = HASN_SQL_DIR / "migrations" / "2026-05-28-task-system-v21.sql"
     table_sql = HASN_SQL_DIR / "hasn_task_assignment.sql"
-    model_file = REPO_ROOT / "backend" / "app" / "hasn" / "model" / "hasn_task_assignment.py"
+    model_file = REPO_ROOT / "backend" / "app" / "hasn_task" / "model" / "assignment.py"
     for path in (migration, table_sql, model_file):
         assert path.exists()
 

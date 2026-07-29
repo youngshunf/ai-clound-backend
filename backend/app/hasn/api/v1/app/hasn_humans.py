@@ -45,8 +45,8 @@ async def create_my_hasn_humans(
     db: CurrentSessionTransaction,
     obj: CreateHasnHumansParam,
 ) -> ResponseModel:
-    result = await hasn_humans_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await hasn_humans_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

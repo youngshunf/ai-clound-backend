@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,7 @@ class CRUDHasnTaskRun(CRUDPlus[HasnTaskRun]):
         :param pk: 任务执行记录 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return cast(HasnTaskRun | None, await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取任务执行记录列表查询表达式"""
@@ -30,7 +31,7 @@ class CRUDHasnTaskRun(CRUDPlus[HasnTaskRun]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return cast(Sequence[HasnTaskRun], await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateHasnTaskRunParam) -> None:
         """

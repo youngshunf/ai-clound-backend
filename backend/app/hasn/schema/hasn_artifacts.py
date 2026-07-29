@@ -31,6 +31,9 @@ class HasnArtifactsSchemaBase(SchemaBase):
     body: str | None = Field(None, description='文本/markdown 正文直接入库 (kind=document 文本产物用，不上传文件)')
     asset_id: str | None = Field(None, description='关联资产 ID (public.hasn_assets.asset_id，image/voice/file 主路径)')
     resource_uri: str | None = Field(None, description='hasn:// 资源 URI (客户端无关，deck/webpage/外部结果无 asset 本体时用)')
+    source_asset_uri: str | None = Field(None, description='本地原件已显式上传后的 hasn://asset/{id} 私有快照')
+    source_hash: str | None = Field(None, description='已上传快照的 64 位 sha256')
+    source_synced_at: datetime | None = Field(None, description='快照上传时间')
     origin_ref: str | None = Field(None, description='产出所属业务资源 (resource:plan:todo:{id} 等，按业务反查)')
     conversation_id: str | UUID | None = Field(None, description='来源会话 ID (public.hasn_conversations.id)')
     message_id: int | None = Field(None, description='来源消息 ID (public.hasn_messages.id)')
@@ -88,6 +91,17 @@ class RecordArtifactParam(SchemaBase):
     body: str | None = Field(None, description='文本/markdown 正文直接入库（kind=document 文本产物用，不上传文件）')
     asset_id: str | None = Field(None, description='关联资产 ID（image/voice/file 主路径）')
     resource_uri: str | None = Field(None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
+    source_asset_uri: str | None = Field(
+        None,
+        pattern=r'^hasn://asset/[^/]+$',
+        description='本地原件已显式上传后的 hasn://asset/{id} 私有快照',
+    )
+    source_hash: str | None = Field(
+        None,
+        pattern=r'^[0-9a-f]{64}$',
+        description='已上传快照的 64 位小写 sha256',
+    )
+    source_synced_at: datetime | None = Field(None, description='快照上传时间')
     local_locator_key: str | None = Field(None, description='经节点守卫生成的不可逆本地对象定位键')
     local_entry_kind: LocalEntryKind | None = Field(None, description='本地条目类型')
     node_id: str | None = Field(None, description='产出设备节点 ID（给 local_locator_key 时必填）')
@@ -98,6 +112,8 @@ class RecordArtifactParam(SchemaBase):
     # 工作会话轴与运行时 session 是两回事（设计 §4.3）：前者是主人在工作会话页看到的那条会话，
     # 后者只是本次派发的运行时标识。历史上两者共用 `session_id` 入参，主会话派发时写进去的其实是
     # 运行时 ID，于是工作会话筛选里长期混着一批永远筛不出东西的值。新调用点一律用本字段。
+    # P2-8d 起旧「session_id 在册收窄」回落退役：`session_id` 只进 metadata.runtime_session_id
+    # 溯源，绝不再占工作会话列——工作会话归属只认本字段。
     work_session_id: str | None = Field(None, description='所属工作会话 id（只接受工作会话，不接受运行时 session）')
     tool_call_id: str | None = Field(
         None,
@@ -143,6 +159,18 @@ class RecordArtifactParam(SchemaBase):
         normalized.setdefault('local_entry_kind', 'file')
         return normalized
 
+    @model_validator(mode='after')
+    def validate_source_snapshot(self) -> 'RecordArtifactParam':
+        """私有快照三元组必须原子出现，NULL 明确表示尚未上传。"""
+        present = (
+            self.source_asset_uri is not None,
+            self.source_hash is not None,
+            self.source_synced_at is not None,
+        )
+        if any(present) and not all(present):
+            raise ValueError('source_asset_uri/source_hash/source_synced_at 必须全空或全非空')
+        return self
+
 
 class RecordArtifactResult(SchemaBase):
     """登记结果（返回 artifact_id；去重命中时返回既有 id）。"""
@@ -174,6 +202,9 @@ class ArtifactItem(SchemaBase):
     body: str | None = Field(None, description='文本/markdown 正文（kind=document 文本产物，前端内联渲染）')
     asset_id: str | None = None
     resource_uri: str | None = None
+    source_asset_uri: str | None = Field(None, description='已显式上传的本地原件私有快照引用')
+    source_hash: str | None = Field(None, description='已上传快照的 sha256')
+    source_synced_at: datetime | None = Field(None, description='快照上传时间')
     local_path: str | None = Field(None, description='本地文件绝对路径（本地产物；正文留在产出设备磁盘，云端只存指针）')
     node_id: str | None = Field(None, description='产出设备 node_id（local_path 在场必带；UI 据此判本机可开还是在其他设备）')
     origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等）')

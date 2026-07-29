@@ -19,15 +19,20 @@ import uuid
 import pytest
 import pytest_asyncio
 
+import sqlalchemy as sa
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_messages import HasnMessages
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
+from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
 from backend.app.notification.service.notification_service import NotificationService
 from backend.database.db import SQLALCHEMY_DATABASE_URL
+from backend.database.schema_names import SCHEMA_NAMES
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,46 +83,125 @@ async def _card_msgs(session, to_id: str) -> list[HasnMessages]:
     )
 
 
+async def _real_gateway_for(session, owner: str, agent: str) -> PythonLocalImGateway:
+    """提交真实身份，并返回绑定当前测试 engine 的 IM gateway。"""
+    sessionmaker = async_sessionmaker(session.bind, expire_on_commit=False)
+    marker = owner.removeprefix('h_')
+    async with sessionmaker.begin() as setup:
+        setup.add(
+            HasnHumans(
+                hasn_id=owner,
+                star_id=f'hreport{marker}',
+                user_id=int(uuid.uuid4().hex[:15], 16),
+                nickname=f'汇报测试主人{marker}',
+                status='active',
+            )
+        )
+        setup.add(
+            HasnAgents(
+                hasn_id=agent,
+                star_id=f'areport{marker}',
+                owner_id=owner,
+                display_name='小星',
+                agent_name=f'report{marker}',
+                api_key_hash=uuid.uuid4().hex,
+                status='active',
+                created_via='client',
+            )
+        )
+    return PythonLocalImGateway(session_factory=sessionmaker)
+
+
+async def _cleanup_real_gateway_case(session, owner: str, agent: str) -> None:
+    """清理 helper 提交的空会话与身份。"""
+    sessionmaker = async_sessionmaker(session.bind, expire_on_commit=False)
+    conversations = SCHEMA_NAMES.im_table('hasn_conversations')
+    memberships = SCHEMA_NAMES.im_table('hasn_conversation_memberships')
+    async with sessionmaker.begin() as cleanup:
+        conversation_ids = list(
+            (
+                await cleanup.execute(
+                    sa.text(
+                        f'SELECT id FROM {conversations} '
+                        'WHERE participant_a_id = :owner OR participant_a_id = :agent '
+                        'OR participant_b_id = :owner OR participant_b_id = :agent'
+                    ),
+                    {'owner': owner, 'agent': agent},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if conversation_ids:
+            await cleanup.execute(
+                sa.text(
+                    f'DELETE FROM {memberships} '
+                    'WHERE conversation_id = ANY(:conversation_ids)'
+                ),
+                {'conversation_ids': conversation_ids},
+            )
+            await cleanup.execute(
+                sa.text(
+                    f'DELETE FROM {conversations} '
+                    'WHERE id = ANY(:conversation_ids)'
+                ),
+                {'conversation_ids': conversation_ids},
+            )
+        await cleanup.execute(
+            sa.delete(HasnAgents).where(HasnAgents.hasn_id == agent)
+        )
+        await cleanup.execute(
+            sa.delete(HasnHumans).where(HasnHumans.hasn_id == owner)
+        )
+
+
 # ==================== 快路：source.on_behalf_of==recipient ====================
 
 
 async def test_owner_loopback_via_on_behalf_of_no_center_row(session):
-    """自分身→主人（on_behalf_of 快路）：不落权威行，投主会话汇报卡。"""
+    """自分身→主人：不落通知行，同事务登记汇报卡命令。"""
     owner, agent = _ids()
-    msg_id = await NotificationService.emit(
-        session,
-        recipient_id=owner,
-        source={'kind': 'agent', 'id': agent, 'on_behalf_of': owner, 'display_name': '小星'},
-        category='agent',
-        type='designsystem.ready',
-        title='设计系统已完成',
-        body='「深空 SaaS」设计系统已就绪',
-        payload={
-            'link': f'/designsystem/ds_{uuid.uuid4().hex[:8]}',
-            'target': {'kind': 'designsystem', 'id': 'ds_x'},
-            'preview': '皇家蓝 + 深空底，8 组组件',
-        },
-    )
-    await session.flush()
+    gateway = await _real_gateway_for(session, owner, agent)
+    try:
+        command_id = await NotificationService.emit(
+            session,
+            recipient_id=owner,
+            source={'kind': 'agent', 'id': agent, 'on_behalf_of': owner, 'display_name': '小星'},
+            category='agent',
+            type='designsystem.ready',
+            title='设计系统已完成',
+            body='「深空 SaaS」设计系统已就绪',
+            payload={
+                'link': f'/designsystem/ds_{uuid.uuid4().hex[:8]}',
+                'target': {'kind': 'designsystem', 'id': 'ds_x'},
+                'preview': '皇家蓝 + 深空底，8 组组件',
+            },
+            im_gateway=gateway,
+        )
+        await session.flush()
 
-    # 未落通知中心权威行
-    assert await _center_rows(session, owner) == []
-    # 投了主会话汇报卡（content_type=5）
-    cards = await _card_msgs(session, owner)
-    assert len(cards) == 1
-    card = cards[0]
-    assert card.id == msg_id
-    assert card.from_id == agent
-    assert card.msg_type == 'notification'
-    body = card.content
-    assert body['schema_version'] == 'hasn.card/0.1'
-    assert body['source']['kind'] == 'agent'
-    assert body['metadata'].get('report') is True
-    # 汇报卡是普通消息，无 dismiss/知道了 动作
-    assert body['actions'] == []
-    # primary_action 直指真实资源（云端权威链接被提升为 canonical hasn:// URI）
-    assert body['primary_action']['uri'].startswith('hasn:/')
-    assert 'designsystem' in body['primary_action']['uri']
+        assert await _center_rows(session, owner) == []
+        assert await _card_msgs(session, owner) == []
+        row = (
+            await session.execute(
+                sa.text(
+                    'SELECT command_id, status, payload '
+                    'FROM public.hasn_notification_im_command_outbox '
+                    'WHERE command_id = :command_id'
+                ),
+                {'command_id': command_id},
+            )
+        ).one()
+        assert row.status == 'pending'
+        body = row.payload['message']['content']
+        assert body['schema_version'] == 'hasn.card/0.1'
+        assert body['source']['kind'] == 'agent'
+        assert body['metadata'].get('report') is True
+        assert body['actions'] == []
+        assert body['primary_action']['uri'].startswith('hasn:/')
+        assert 'designsystem' in body['primary_action']['uri']
+    finally:
+        await _cleanup_real_gateway_case(session, owner, agent)
 
 
 # ==================== 兜底：DB 查 HasnAgents.owner_id==recipient ====================
@@ -126,22 +210,34 @@ async def test_owner_loopback_via_on_behalf_of_no_center_row(session):
 async def test_owner_loopback_via_db_owner_lookup(session):
     """producer 漏带 on_behalf_of 时，守卫回退 DB 查分身主人也应判为汇报面。"""
     owner, agent = _ids()
-    session.add(HasnAgents(hasn_id=agent, owner_id=owner, display_name='小星', agent_name='xiaoxing'))
-    await session.flush()
+    gateway = await _real_gateway_for(session, owner, agent)
+    try:
+        await NotificationService.emit(
+            session,
+            recipient_id=owner,
+            source={'kind': 'agent', 'id': agent},  # 故意不带 on_behalf_of
+            category='reminder',
+            type='task.pending_approval',
+            title='任务待审批',
+            payload={'link': f'/tasks/sessions/{uuid.uuid4().hex[:8]}', 'target': {'kind': 'task', 'id': 't1'}},
+            im_gateway=gateway,
+        )
+        await session.flush()
 
-    await NotificationService.emit(
-        session,
-        recipient_id=owner,
-        source={'kind': 'agent', 'id': agent},  # 故意不带 on_behalf_of
-        category='reminder',
-        type='task.pending_approval',
-        title='任务待审批',
-        payload={'link': f'/tasks/sessions/{uuid.uuid4().hex[:8]}', 'target': {'kind': 'task', 'id': 't1'}},
-    )
-    await session.flush()
-
-    assert await _center_rows(session, owner) == []
-    assert len(await _card_msgs(session, owner)) == 1
+        assert await _center_rows(session, owner) == []
+        assert await _card_msgs(session, owner) == []
+        pending = await session.scalar(
+            sa.text(
+                'SELECT count(*) '
+                'FROM public.hasn_notification_im_command_outbox '
+                "WHERE status = 'pending' "
+                "AND payload->'principal'->>'canonical_sender' = :agent"
+            ),
+            {'agent': agent},
+        )
+        assert pending == 1
+    finally:
+        await _cleanup_real_gateway_case(session, owner, agent)
 
 
 # ==================== 通知面：外部事件照旧落权威行 ====================

@@ -31,7 +31,7 @@ hasn-mcp execute 内的执行期闸门（``enforce_visibility_upgrade_gate``）�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -105,13 +105,16 @@ _SOURCE_REF_SCHEMA = {
     'description': '组件型来源溯源 {app, id}（如 deck，由 webui 路径 B 渲染成静态 HTML 随 html 一并传入）',
 }
 
-PUBLISH_AI_NATIVE_MANIFEST = {
+PUBLISH_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'publish',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'publish': '网页发布（建站/可见性/撤回）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': True,
+    'project_required': False,
+    'project_integration': 'project_aware',
     # catalog 枚举 local_tool（本地工具数据面 + 原生 UI）。
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Platform/Local → daemon PublishGateway），不经云端 Runtime Gateway。
@@ -144,6 +147,11 @@ PUBLISH_AI_NATIVE_MANIFEST = {
                     'description': '本地 HTML 文件路径（限 Agent 数据目录内，白名单校验）',
                 },
                 'source_ref': _SOURCE_REF_SCHEMA,
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'format': 'uuid',
+                    'description': '可选：继承当前工作会话的平台项目云端权威 UUID',
+                },
                 'title': {'type': ['string', 'null'], 'description': '可选：站点标题'},
                 'visibility': {
                     'enum': ['private', 'password', 'unlisted', 'public', None],
@@ -274,4 +282,6 @@ def build_publish_app() -> App:
         entry_route='/apps/publish',
         install_policy='auto',
         execution_mode='local_tool',
+        project_aware=True,
+        project_required=False,
     )

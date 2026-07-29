@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 from backend.scripts.rebase_credit_baseline import (
     REASON_ACCOUNT_UNREADABLE,
@@ -171,7 +172,7 @@ def test_report_records_pre_change_balance_as_recoverable_backup() -> None:
 
 def test_fingerprint_changes_when_baseline_changes() -> None:
     """逐用户 hash 必须随基线变化，否则起不到复核作用。"""
-    common = {
+    common: dict[str, Any] = {
         'user_id': 1,
         'newapi_user_id': 4242,
         'evidence': {},

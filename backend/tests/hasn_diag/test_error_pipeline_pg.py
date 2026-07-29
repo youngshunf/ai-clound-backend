@@ -25,7 +25,7 @@ from backend.app.hasn_diag.service.error_report_service import IngestEvent, inge
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _T0 = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
 
@@ -338,6 +338,8 @@ async def test_list_issues_keyset_pagination() -> None:
     """⑦ list_issues：limit + next_cursor 顺游标翻页，last_seen DESC。"""
     async with async_db_session() as db:
         try:
+            # 独立开发库可能保留客户端时钟漂移产生的未来数据，使用远未来窗口隔离本用例。
+            base_time = datetime(2099, 1, 1, tzinfo=timezone.utc)
             # 5 个 open issue，last_seen 递增（t0..t4）；DESC 排序应 t4→t0
             fps = []
             for i in range(5):
@@ -345,13 +347,17 @@ async def test_list_issues_keyset_pagination() -> None:
                 fps.append(fp)
                 await _ingest(
                     db, owner='h_o1', node='n1',
-                    events=[_ev(fingerprint=fp, occurred_at=_T0 + timedelta(minutes=i))],
+                    events=[_ev(fingerprint=fp, occurred_at=base_time + timedelta(minutes=i))],
                 )
-            page1 = await error_issue_service.list_issues(db, status='open', limit=2)
+            page1 = await error_issue_service.list_issues(db, status='open', since=base_time, limit=2)
             assert len(page1['items']) == 2 and page1['next_cursor']
-            page2 = await error_issue_service.list_issues(db, status='open', limit=2, cursor=page1['next_cursor'])
+            page2 = await error_issue_service.list_issues(
+                db, status='open', since=base_time, limit=2, cursor=page1['next_cursor']
+            )
             assert len(page2['items']) == 2 and page2['next_cursor']
-            page3 = await error_issue_service.list_issues(db, status='open', limit=2, cursor=page2['next_cursor'])
+            page3 = await error_issue_service.list_issues(
+                db, status='open', since=base_time, limit=2, cursor=page2['next_cursor']
+            )
             assert len(page3['items']) == 1 and page3['next_cursor'] is None, '末页无 next_cursor'
             seen = [r['fingerprint'] for r in page1['items'] + page2['items'] + page3['items']]
             assert set(seen) == set(fps), '三页并集 = 全部 5 个，无重无漏'

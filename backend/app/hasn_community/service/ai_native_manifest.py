@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-COMMUNITY_AI_NATIVE_MANIFEST = {
+from typing import Any
+
+
+COMMUNITY_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'community',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'community': '社区（帖子/文章/评论/关注/点赞）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     # 通知发布能力声明（统一通知设计 §7 / P5）：App 可经 Agent JWT 通道
     # backend_gateway.for_agent(agent).notification.emit 发通知给主人；
     # categories = 允许的通知粗类白名单；card_message = 是否可投递卡片承载。
@@ -107,7 +113,7 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
         {
             'capability_id': 'community.post.create.capability',
             'name': '发布社区帖子',
-            'description': '以 Agent 身份生成帖子，按主人或企业策略进入发布或待确认状态',
+            'description': '以 Agent 身份生成帖子，始终进入待主人确认状态',
             'tool_id': 'community.create_post',
             'mcp_name': 'hasn.community.create_post',
             'required_scopes': ['community:post'],
@@ -143,7 +149,7 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
         {
             'capability_id': 'community.article.create.capability',
             'name': '发布社区文章',
-            'description': '以 Agent 身份生成长文内容（正文用 Markdown 组织：小标题、列表、加粗），按主人或企业策略进入发布或待确认状态',
+            'description': '以 Agent 身份生成长文内容（正文用 Markdown 组织：小标题、列表、加粗），始终进入待主人确认状态',
             'tool_id': 'community.create_article',
             'mcp_name': 'hasn.community.create_article',
             'required_scopes': ['community:post'],
@@ -1075,8 +1081,9 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
         {'tool_id': 'community.create_doc_space', 'mcp_name': 'hasn.community.create_doc_space', 'transport': 'gateway_internal', 'handler': 'community.create_doc_space', 'required_scopes': ['community:doc'], 'risk_level': 'medium', 'idempotent': False},
         {'tool_id': 'community.create_doc_node', 'mcp_name': 'hasn.community.create_doc_node', 'transport': 'gateway_internal', 'handler': 'community.create_doc_node', 'required_scopes': ['community:doc'], 'risk_level': 'medium', 'idempotent': False},
     ],
-    # 分身发的帖子/文章是主人事后要能打开的产物（doc31 §2）：完成卡 / 工作会话资源栏 / 分身产物 tab /
-    # hasn:// 解析全从这份声明派生。两类都不声明 ref_type——register-on-write 显式传 descriptor，
+    # 分身发的帖子/文章与维护的文集都是主人事后要能打开的产物（doc31 §2）：
+    # 完成卡 / 工作会话资源栏 / 分身产物 tab / hasn:// 解析全从这份声明派生。
+    # 三类都不声明 ref_type——register-on-write 显式传 descriptor，
     # 不走 local_ref 解析；声明了反而会把整个 app 拖进多资源模式（`{ref_type}:{id}` 形状）。
     'resources': [
         {
@@ -1091,6 +1098,13 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             'uri_domain': 'community/articles',  # → hasn://community/articles/{article_id}
             'open': {'mode': 'internal_route', 'route_template': '/apps/community/articles/:id'},
             'card': {'verb': '文章', 'action_label': '打开文章'},
+            'artifact_kind': 'resource',
+        },
+        {
+            'resource_kind': 'community.doc_space',
+            'uri_domain': 'community/doc-spaces',  # → hasn://community/doc-spaces/{space_id}
+            'open': {'mode': 'internal_route', 'route_template': '/apps/community/docs/:id'},
+            'card': {'verb': '文集', 'action_label': '打开文集'},
             'artifact_kind': 'resource',
         },
     ],

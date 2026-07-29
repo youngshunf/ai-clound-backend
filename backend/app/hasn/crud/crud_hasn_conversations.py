@@ -6,6 +6,7 @@ from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnConversations
 from backend.app.hasn.schema.hasn_conversations import CreateHasnConversationsParam, UpdateHasnConversationsParam
+from backend.database.result import affected_rows
 
 
 class CRUDHasnConversations(CRUDPlus[HasnConversations]):
@@ -109,7 +110,7 @@ class CRUDHasnConversations(CRUDPlus[HasnConversations]):
             )
             .values(status='unreachable')
         )
-        return result.rowcount or 0
+        return affected_rows(result)
 
 
 hasn_conversations_dao: CRUDHasnConversations = CRUDHasnConversations(HasnConversations)

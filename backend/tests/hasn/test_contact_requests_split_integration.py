@@ -12,12 +12,13 @@ PG 不可达则 skip（非 mock 兜底）。
 """
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import func, select
+from sqlalchemy import Table, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -32,6 +33,9 @@ from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.model import HasnAgents, HasnContactRequests, HasnContacts, HasnHumans
 from backend.app.hasn.schema.hasn_contacts_business import HasnContactRequestReq, HasnContactRespondReq
+from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import (
+    SqlAlchemyRelationGateway,
+)
 from backend.app.hasn_im.application.message_service import check_relation_permission
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -172,7 +176,7 @@ B_STAR = 'creqit90002'
 
 @pytest_asyncio.fixture
 async def pg_session_endpoint():
-    """端点级 E2E 用：commit→flush（端点内部会 commit），末尾 rollback 不落库。"""
+    """端点级 E2E：API 读会话与 RelationGateway 独立 IM 会话连接同一真库。"""
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -180,13 +184,54 @@ async def pg_session_endpoint():
     except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过端点级 E2E: {exc!r}')
-    session = async_sessionmaker(engine, expire_on_commit=False)()
-    session.commit = session.flush  # 端点 commit 改 flush，事务末尾统一 rollback
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_factory()
+    session.info['relation_gateway'] = SqlAlchemyRelationGateway(
+        session_factory=session_factory,
+    )
+
+    async def cleanup() -> None:
+        """删除本文件固定测试身份产生的真实关系数据。"""
+        async with session_factory() as cleanup_session:
+            all_ids = [A, B, A_AGENT, B_AGENT]
+            await cleanup_session.execute(
+                cast(Table, HasnContactRequests.__table__).delete().where(
+                    (HasnContactRequests.from_id.in_(all_ids))
+                    | (HasnContactRequests.to_id.in_(all_ids))
+                )
+            )
+            await cleanup_session.execute(
+                cast(Table, HasnContacts.__table__).delete().where(
+                    (HasnContacts.owner_id.in_(all_ids))
+                    | (HasnContacts.peer_id.in_(all_ids))
+                )
+            )
+            await cleanup_session.execute(
+                cast(Table, HasnAgents.__table__).delete().where(
+                    HasnAgents.hasn_id.in_([A_AGENT, B_AGENT])
+                )
+            )
+            await cleanup_session.execute(
+                cast(Table, HasnHumans.__table__).delete().where(
+                    HasnHumans.hasn_id.in_([A, B])
+                )
+            )
+            await cleanup_session.execute(
+                cast(Table, User.__table__).delete().where(
+                    User.username == 'creqit_phone_u'
+                )
+            )
+            await cleanup_session.commit()
+
+    from backend.app.admin.model import User
+
+    await cleanup()
     try:
         yield session
     finally:
         await session.rollback()
         await session.close()
+        await cleanup()
         await engine.dispose()
 
 
@@ -202,11 +247,17 @@ async def _seed_human(session, hasn_id: str, star_id: str, nickname: str) -> Non
     await session.flush()
 
 
+def _relation_gateway(session) -> SqlAlchemyRelationGateway:
+    """取得与当前真实 PostgreSQL 引擎绑定的关系端口。"""
+    return session.info['relation_gateway']
+
+
 async def test_e2e_send_list_accept_builds_bidirectional_edges(pg_session_endpoint) -> None:
     """A 发 → B received 列表可见 → B accept → 双向 connected 边 + 请求 accepted+resulting_contact_id。"""
     session = pg_session_endpoint
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_human(session, B, B_STAR, 'Bob')
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -218,6 +269,7 @@ async def test_e2e_send_list_accept_builds_bidirectional_edges(pg_session_endpoi
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='交个朋友'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
         request_id = sent.data['request_id']
         assert sent.data['status'] == 'pending'
@@ -231,6 +283,7 @@ async def test_e2e_send_list_accept_builds_bidirectional_edges(pg_session_endpoi
         resp = await respond_to_request(
             request_id=request_id, obj_in=HasnContactRespondReq(action='accept'),
             db=session, auth={'hasn_id': B},
+            relation_gateway=_relation_gateway(session),
         )
     assert resp.data['status'] == 'connected'
 
@@ -240,6 +293,7 @@ async def test_e2e_send_list_accept_builds_bidirectional_edges(pg_session_endpoi
     assert rev is not None and rev.status == 'connected' and rev.trust_level == 2
 
     req = await hasn_contact_requests_dao.get(session, request_id)
+    assert req is not None
     assert req.status == 'accepted'
     assert req.resulting_contact_id == fwd.id
 
@@ -249,6 +303,7 @@ async def test_e2e_reject_then_resend_succeeds(pg_session_endpoint) -> None:
     session = pg_session_endpoint
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_human(session, B, B_STAR, 'Bob')
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -260,15 +315,18 @@ async def test_e2e_reject_then_resend_succeeds(pg_session_endpoint) -> None:
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='第一次'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
         await respond_to_request(
             request_id=sent.data['request_id'], obj_in=HasnContactRespondReq(action='reject'),
             db=session, auth={'hasn_id': B},
+            relation_gateway=_relation_gateway(session),
         )
         # reject 后重新申请：不应被部分唯一索引挡
         resent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='再试一次'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
     assert resent.data['status'] == 'pending'
     assert resent.data['request_id'] != sent.data['request_id']
@@ -284,7 +342,7 @@ async def test_e2e_blocked_sender_cannot_request(pg_session_endpoint) -> None:
         session, owner_id=B, peer_id=A, peer_type='human',
         relation_type=REL, trust_level=0, status='blocked', channel_source='manual',
     )
-    await session.flush()
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -296,6 +354,7 @@ async def test_e2e_blocked_sender_cannot_request(pg_session_endpoint) -> None:
         await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
     # 被拉黑：断言没有建出 pending 请求（send 返回 fail）
     pending = await hasn_contact_requests_dao.get_active_pending(session, A, B, REL)
@@ -319,6 +378,7 @@ async def test_e2e_add_source_roundtrips_to_contact(pg_session_endpoint) -> None
     session = pg_session_endpoint
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_human(session, B, B_STAR, 'Bob')
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -330,16 +390,19 @@ async def test_e2e_add_source_roundtrips_to_contact(pg_session_endpoint) -> None
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='手机号加的', add_source='search_phone'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
         request_id = sent.data['request_id']
         assert sent.data['add_source'] == 'search_phone'  # 响应回显来源
 
         req = await hasn_contact_requests_dao.get(session, request_id)
+        assert req is not None
         assert req.add_source == 'search_phone'  # 请求行落库来源
 
         await respond_to_request(
             request_id=request_id, obj_in=HasnContactRespondReq(action='accept'),
             db=session, auth={'hasn_id': B},
+            relation_gateway=_relation_gateway(session),
         )
 
     # accept 后：发起方→目标 的联系人边带上来源与附言；反向边来源 NULL（接受方未经搜索）
@@ -406,6 +469,7 @@ async def test_e2e_agent_request_not_blocked_by_owner_friendship(pg_session_endp
     await _seed_human(session, B, B_STAR, 'Bob')
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -417,6 +481,7 @@ async def test_e2e_agent_request_not_blocked_by_owner_friendship(pg_session_endp
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='想和你的分身聊聊'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
     # 不再被"你们已经是好友"挡掉：返回 pending + target 是 agent 本体。
     assert sent.data['status'] == 'pending'
@@ -424,6 +489,7 @@ async def test_e2e_agent_request_not_blocked_by_owner_friendship(pg_session_endp
     assert sent.data['target']['hasn_id'] == B_AGENT
 
     req = await hasn_contact_requests_dao.get(session, sent.data['request_id'])
+    assert req is not None
     assert req.to_type == 'agent'
     assert req.to_id == B_AGENT
     assert req.to_owner_id == B
@@ -437,6 +503,7 @@ async def test_e2e_agent_request_lists_show_agent_target(pg_session_endpoint) ->
     await _seed_human(session, B, B_STAR, 'Bob')
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -448,6 +515,7 @@ async def test_e2e_agent_request_lists_show_agent_target(pg_session_endpoint) ->
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
         rid = sent.data['request_id']
         received = await list_pending_requests(db=session, auth={'hasn_id': B}, direction='received')
@@ -467,6 +535,7 @@ async def test_e2e_agent_accept_builds_forward_agent_edge(pg_session_endpoint) -
     await _seed_human(session, B, B_STAR, 'Bob')
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -478,10 +547,12 @@ async def test_e2e_agent_accept_builds_forward_agent_edge(pg_session_endpoint) -
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
         resp = await respond_to_request(
             request_id=sent.data['request_id'], obj_in=HasnContactRespondReq(action='accept'),
             db=session, auth={'hasn_id': B},
+            relation_gateway=_relation_gateway(session),
         )
     assert resp.data['status'] == 'connected'
 
@@ -493,6 +564,7 @@ async def test_e2e_agent_accept_builds_forward_agent_edge(pg_session_endpoint) -
     assert await hasn_contacts_dao.get_relation(session, B_AGENT, A, REL) is None
 
     req = await hasn_contact_requests_dao.get(session, sent.data['request_id'])
+    assert req is not None
     assert req.status == 'accepted' and req.resulting_contact_id == fwd.id
 
 
@@ -503,6 +575,7 @@ async def test_e2e_agent_request_idempotent(pg_session_endpoint) -> None:
     await _seed_human(session, B, B_STAR, 'Bob')
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -514,10 +587,12 @@ async def test_e2e_agent_request_idempotent(pg_session_endpoint) -> None:
         first = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='一次'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
         second = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='又一次'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
     assert second.data['status'] == 'pending'
     assert second.data['request_id'] == first.data['request_id']  # 幂等：同一行
@@ -529,6 +604,7 @@ async def test_e2e_cannot_request_own_agent(pg_session_endpoint) -> None:
     session = pg_session_endpoint
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_agent(session, A_AGENT, A_AGENT_STAR, owner_id=A, display_name='Alice 的分身')
+    await session.commit()
 
     with patch(
         'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
@@ -540,6 +616,7 @@ async def test_e2e_cannot_request_own_agent(pg_session_endpoint) -> None:
         result = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=A_AGENT_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
+            relation_gateway=_relation_gateway(session),
         )
     assert result.code == 400
     assert await _count_pending(session, A, A_AGENT) == 0

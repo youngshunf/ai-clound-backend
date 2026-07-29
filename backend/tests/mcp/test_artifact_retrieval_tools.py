@@ -18,6 +18,8 @@ input_schema 必填项 + 出参裁剪常量防漂移。
 
 from __future__ import annotations
 
+import asyncio
+import os
 import uuid
 
 from typing import TYPE_CHECKING
@@ -54,18 +56,26 @@ def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str) -> AgentContext:
     )
 
 
-async def _db_reachable() -> bool:
-    try:
-        from sqlalchemy import text
+async def _require_db() -> None:
+    from sqlalchemy import text
 
-        from backend.database.db import async_db_session
+    from backend.database.db import async_db_session
 
-        async with async_db_session() as db:
-            await db.execute(text('SELECT 1'))
-    except Exception:
-        return False
-    else:
-        return True
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            async with async_db_session() as db:
+                await db.execute(text('SELECT 1'))
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+                continue
+        else:
+            return
+    if os.getenv('DATABASE_PORT'):
+        pytest.fail(f'已显式配置活体 PostgreSQL，但连接失败: {last_error!r}')
+    pytest.skip(f'需活体 PostgreSQL；未配置或连接失败: {last_error!r}')
 
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
@@ -138,21 +148,21 @@ def test_asset_id_normalizer() -> None:
     assert _normalize_asset_id('  hasn://asset/ast_abc  ') == 'ast_abc'
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_search_rejects_missing_query() -> None:
     """search 缺 query → RuntimeError（校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='query'):
         await ArtifactSearchTool().execute(_agent_ctx('h_x', 'a_x'), {})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_get_rejects_missing_artifact_id() -> None:
     """get 缺 artifact_id → RuntimeError（校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='artifact_id'):
         await ArtifactGetTool().execute(_agent_ctx('h_x', 'a_x'), {})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_asset_get_rejects_missing_id() -> None:
     """asset.get 缺 asset_id → RuntimeError（校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='asset_id'):
@@ -203,6 +213,29 @@ async def _seed_extra_agent(owner: str, agent: str) -> None:
         )
 
 
+async def _seed_work_session(owner: str, agent: str, session_id: str) -> None:
+    """种一条 hasn_sessions kind=task 工作会话行（设计 02 §4.3 分流）。
+
+    真实世界工作会话派发前 AppCollab launch 已把会话上云；本夹具照此贴近真实在册状态。
+    P2-8d 起登记绑定不再依赖本种子（工作会话轴只认显式 `work_session_id`，无在册收窄查询）。
+    """
+    from backend.app.hasn.model import HasnSessions
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as db:
+        db.add(
+            HasnSessions(
+                session_id=session_id,
+                owner_id=owner,
+                hasn_id=agent,
+                session_kind='task',
+                session_scope='summary_only',
+                session_status='active',
+                origin_type='app',
+            )
+        )
+
+
 async def _record(
     owner: str,
     agent: str,
@@ -216,6 +249,9 @@ async def _record(
     source_kind: str | None = None,
 ) -> str:
     """经 service 真登记一条产物，返回 artifact_id。
+
+    `session_id` 形参表示产物所属**工作会话**（P2-8d 起工作会话轴只认显式
+    `work_session_id`，旧 `session_id` 收窄回落已退役；形参名保留只为少动调用点）。
 
     `source_kind` 不传则按产出者推导，与 `source_tool` 保持同一口径（doc35 §5）：
     图片走平台工具 `hasn.image.generate`→`platform_tool`，其余是分身自撰
@@ -232,7 +268,7 @@ async def _record(
         summary=summary,
         body=body,
         asset_id=asset_id,
-        session_id=session_id,
+        work_session_id=session_id,
         source_kind=source_kind or ('platform_tool' if is_platform_media else 'agent_note'),
         source_tool='hasn.image.generate' if kind == 'image' else 'hasn.artifact.record',
     )
@@ -249,6 +285,7 @@ async def _cleanup(owner: str) -> None:
         HasnArtifactRegistrationOutbox,
         HasnArtifacts,
         HasnHumans,
+        HasnSessions,
     )
     from backend.app.hasn.model.hasn_assets import HasnAssets
     from backend.database.db import async_db_session
@@ -263,15 +300,15 @@ async def _cleanup(owner: str) -> None:
         await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
         await db.execute(delete(HasnAssets).where(HasnAssets.owner_hasn_id == owner))
+        await db.execute(delete(HasnSessions).where(HasnSessions.owner_id == owner))
         await db.execute(delete(HasnAgents).where(HasnAgents.owner_id == owner))
         await db.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_list_strips_body_and_projects_asset_uri_real_db() -> None:
     """真实 PG：list 剥离 body 全文（has_body 替代）、summary 截断、给 asset_uri。"""
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     tag = uuid.uuid4().hex[:12]
     owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
@@ -310,17 +347,17 @@ async def test_list_strips_body_and_projects_asset_uri_real_db() -> None:
         await _cleanup(owner)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_list_filters_by_kind_and_session_real_db() -> None:
     """真实 PG：list 按 kind / session_id 过滤。"""
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     tag = uuid.uuid4().hex[:12]
     owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
     sess = f'sess_{tag}'
     try:
         await _seed_owner_and_agent(owner, agent)
+        await _seed_work_session(owner, agent, sess)
         await _record(owner, agent, kind='image', title='图A', asset_id='ast_a', session_id=sess)
         await _record(owner, agent, kind='document', title='文B', body='b', session_id=sess)
         await _record(owner, agent, kind='image', title='图C', asset_id='ast_c')  # 别的会话
@@ -366,15 +403,14 @@ async def _record_app_resource(
         )
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_list_filters_by_app_dimension_real_db() -> None:
     """doc36 U3 真实 PG：list 按 app / resource_kind 过滤 + 出参给应用归属两列。
 
     这是 doc36 §1.4 的正题：应用资源的 `kind` 恒为 `resource`（doc35 四维分类），
     18 个应用的资源全挤在这一个桶里——「我在知识库里建过哪些库」按 kind 根本筛不出来。
     """
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     tag = uuid.uuid4().hex[:12]
     owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
@@ -426,7 +462,7 @@ async def test_list_filters_by_app_dimension_real_db() -> None:
         await _cleanup(owner)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_list_filters_by_project_real_db() -> None:
     """doc95 §6.4 真实 PG：list/search 按平台项目（project_id）收窄。
 
@@ -434,8 +470,7 @@ async def test_list_filters_by_project_real_db() -> None:
     list/search 时，系统注入的 `_hasn_project_id` 进 ContextVar，缺省即收窄到本项目；跨项目查
     才显式传 project_id。project_id 只是聚合过滤键、不是权限边界（归属仍由 owner+agent 隔离兜底）。
     """
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     from backend.app.mcp.context import clear_current_project_id, set_current_project_id
 
@@ -512,7 +547,7 @@ async def test_list_filters_by_project_real_db() -> None:
         await _cleanup(owner)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_project_scope_reads_across_agents_real_db() -> None:
     """doc97 T1-A 真实 PG：命中项目时 list/search **跨分身**读；未命中项目仍按本分身隔离。
 
@@ -520,8 +555,7 @@ async def test_project_scope_reads_across_agents_real_db() -> None:
     调用分身隔离，就永远取不到第 1 环（别的分身）的产出，还会据此对主人断言「项目里就这些」。
     权限边界仍是 owner 隔离——与 `hasn.artifact.get`「同主人任意分身的产物均可读」同口径。
     """
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     tag = uuid.uuid4().hex[:12]
     owner = f'h_own_{tag}'
@@ -596,11 +630,10 @@ async def test_project_scope_reads_across_agents_real_db() -> None:
         await _cleanup(owner)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_search_keyword_and_semantics_and_escape_real_db() -> None:
     """真实 PG：search 切词 AND 语义 + ILIKE 通配符转义。"""
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     tag = uuid.uuid4().hex[:12]
     owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
@@ -632,11 +665,10 @@ async def test_search_keyword_and_semantics_and_escape_real_db() -> None:
         await _cleanup(owner)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_get_body_truncation_and_owner_isolation_real_db() -> None:
     """真实 PG：get 返回 body（>20000 截断 + body_truncated）；owner 隔离（同主人跨分身可读、他主人 NotFound）。"""
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     from backend.common.exception.errors import NotFoundError
 
@@ -683,11 +715,10 @@ async def test_get_body_truncation_and_owner_isolation_real_db() -> None:
         await _cleanup(other_owner)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_asset_get_metadata_owner_check_and_transcript_trim_real_db() -> None:
     """真实 PG：asset.get 返回技术元数据 + owner 校验（无权/不存在统一「资产不存在」）+ transcript 截断。"""
-    if not await _db_reachable():
-        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+    await _require_db()
 
     from backend.app.hasn.model.hasn_assets import HasnAssets
     from backend.database.db import async_db_session
@@ -759,7 +790,7 @@ def test_domains_tool_contract() -> None:
     assert tool.name in {t.name for t in ARTIFACT_TOOLS}
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_domains_projects_manifest_declarations() -> None:
     """doc36 §5.2：域目录如实投影 manifest `resources[]`，与 `resource_routes()` 同源。
 

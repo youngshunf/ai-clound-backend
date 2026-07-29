@@ -5,7 +5,7 @@
 - `hasn.contact.search`：按昵称/唤星号/备注名搜索主人的联系人（好友 + 好友名下的 agent）。
   返回项的 `contact_hasn_id` 可直接用作 `hasn.message.send` 的 `to`，打通"搜联系人→发消息"闭环。
 - `hasn.contact.request`：代主人向某用户（或其分身）发起好友请求，打通"搜陌生人(hasn.user.search)
-  →发起加好友"闭环。复用 HasnContactsService.request_contact（人端 owner 端点同一实现）。
+  →发起加好友"闭环。人端与工具端统一经 RelationGateway 写入。
 
 读类直接走 DAO 真实查询；写类（request）走 service 单一实现。零 mock。
 """
@@ -13,16 +13,26 @@
 from typing import Any
 
 from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
-from backend.app.hasn.service.hasn_contacts_service import ContactRequestError, HasnContactsService
+from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import RelationGatewayError
+from backend.app.hasn_im.application.provider import get_relation_gateway
 from backend.app.hasn_core import hasn_agents_dao, hasn_humans_dao
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
-from backend.database.db import async_db_session
+from backend.common.exception import errors
+from backend.database.db import async_db_session, im_service_db_session
 
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 100
 # search / include_agents 需先取一批联系人再在内存过滤/展开；单主人联系人量级很小，取足够大的窗口即可。
 _FETCH_CAP = 500
+
+
+def _owner_hasn_id(context: AgentContext) -> str:
+    """从已认证 Agent 上下文取得主人 HASN ID；缺失时显式拒绝。"""
+    owner_hasn_id = context.owner_hasn_id
+    if not owner_hasn_id:
+        raise errors.TokenError(msg='AgentContext 缺少 owner_hasn_id')
+    return owner_hasn_id
 
 
 async def _resolve_peer(db: Any, peer_id: str, peer_type: str) -> tuple[str, str]:
@@ -82,7 +92,8 @@ async def _friend_agents(db: Any, friend_hasn_id: str, friend_name: str) -> list
 
 
 async def _collect_contacts(
-    db: Any,
+    relation_db: Any,
+    identity_db: Any,
     owner_hasn_id: str,
     *,
     query: str = '',
@@ -92,12 +103,15 @@ async def _collect_contacts(
     """统一收集逻辑：取连接关系 → 按 query 过滤 → 可选展开 human 好友名下 agent → 去重截断。"""
     q = (query or '').strip().lower()
     rows = await hasn_contacts_dao.list_contacts(
-        db, owner_id=owner_hasn_id, status='connected', limit=_FETCH_CAP,
+        relation_db,
+        owner_id=owner_hasn_id,
+        status='connected',
+        limit=_FETCH_CAP,
     )
     seen: set[str] = set()
     results: list[dict[str, Any]] = []
     for row in rows:
-        contact = await _contact_dict(db, row)
+        contact = await _contact_dict(identity_db, row)
         if not _matches(q, contact, row):
             continue
         cid = contact['contact_hasn_id']
@@ -105,7 +119,11 @@ async def _collect_contacts(
             seen.add(cid)
             results.append(contact)
         if include_agents and row.peer_type == 'human':
-            for agent in await _friend_agents(db, row.peer_id, contact['display_name']):
+            for agent in await _friend_agents(
+                identity_db,
+                row.peer_id,
+                contact['display_name'],
+            ):
                 aid = agent['contact_hasn_id']
                 if aid and aid not in seen:
                     seen.add(aid)
@@ -175,10 +193,14 @@ class ContactListTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         # 维度① 能力授权由 server.call_tool 三态 mode 统一判定（D3），工具内不二次校验。
         limit = _coerce_limit(arguments.get('limit', _DEFAULT_LIMIT))
-        async with async_db_session() as db:
+        async with (
+            im_service_db_session() as relation_db,
+            async_db_session() as identity_db,
+        ):
             contacts = await _collect_contacts(
-                db,
-                agent_context.owner_hasn_id,
+                relation_db,
+                identity_db,
+                _owner_hasn_id(agent_context),
                 query=str(arguments.get('query') or ''),
                 include_agents=bool(arguments.get('include_agents')),
                 limit=limit,
@@ -247,10 +269,14 @@ class ContactSearchTool(BaseTool):
         include_agents = bool(arguments.get('include_agents', True))
         if not query:
             return {'contacts': [], 'total': 0, 'query': query}
-        async with async_db_session() as db:
+        async with (
+            im_service_db_session() as relation_db,
+            async_db_session() as identity_db,
+        ):
             contacts = await _collect_contacts(
-                db,
-                agent_context.owner_hasn_id,
+                relation_db,
+                identity_db,
+                _owner_hasn_id(agent_context),
                 query=query,
                 include_agents=include_agents,
                 limit=limit,
@@ -314,16 +340,14 @@ class ContactRequestTool(BaseTool):
         if not target:
             return {'ok': False, 'error': 'target 不能为空（对方唤星号或 HASN ID）'}
         message = str(arguments.get('message') or '') or None
-        async with async_db_session() as db:
-            try:
-                # 代主人加好友：requester = 主人本人（owner），非分身。审批人=对方/分身主人。
-                result = await HasnContactsService.request_contact(
-                    db,
-                    requester_hasn_id=agent_context.owner_hasn_id,
-                    target=target,
-                    message=message,
-                    add_source='agent_discovery',
-                )
-            except ContactRequestError as e:
-                return {'ok': False, 'error': e.msg}
-            return {'ok': True, **result}
+        try:
+            # 代主人加好友：requester = 主人本人（owner），非分身。审批人=对方/分身主人。
+            result = await get_relation_gateway().request_contact(
+                from_hasn_id=_owner_hasn_id(agent_context),
+                to_hasn_id=target,
+                message=message,
+                channel_source='agent_discovery',
+            )
+        except RelationGatewayError as exc:
+            return {'ok': False, 'error': str(exc)}
+        return {'ok': True, **result}

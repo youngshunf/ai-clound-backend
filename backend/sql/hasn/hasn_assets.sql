@@ -17,12 +17,28 @@ CREATE TABLE hasn_assets (
     transcript         TEXT,
     thumbnail_asset_id VARCHAR(40),
     extract_status     VARCHAR(16)  NOT NULL DEFAULT 'pending',
+    object_id          VARCHAR(40),
+    category           VARCHAR(32),
+    original_name      VARCHAR(512),
+    source_app         VARCHAR(64),
+    upload_idempotency_key VARCHAR(128),
+    derived_from_asset_id VARCHAR(40),
+    lifecycle_status   VARCHAR(24)  NOT NULL DEFAULT 'active',
+    trashed_time       TIMESTAMPTZ,
+    deleted_time       TIMESTAMPTZ,
+    version            BIGINT       NOT NULL DEFAULT 1,
     created_time       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_time       TIMESTAMPTZ
 );
 
 CREATE UNIQUE INDEX uq_hasn_assets_asset_id ON hasn_assets (asset_id);
 CREATE INDEX idx_hasn_assets_owner ON hasn_assets (owner_hasn_id);
+CREATE INDEX idx_hasn_assets_owner_lifecycle ON hasn_assets (owner_hasn_id, lifecycle_status);
+CREATE INDEX idx_hasn_assets_object ON hasn_assets (object_id);
+CREATE INDEX idx_hasn_assets_category_created ON hasn_assets (category, created_time);
+CREATE UNIQUE INDEX uq_hasn_assets_owner_upload_idempotency
+    ON hasn_assets (owner_hasn_id, upload_idempotency_key)
+    WHERE upload_idempotency_key IS NOT NULL;
 
 COMMENT ON TABLE hasn_assets IS 'HASN 资产注册表（消息附件/私有文档等对象的逻辑引用与元数据）';
 COMMENT ON COLUMN hasn_assets.asset_id IS '资产 ID (hasn://asset/{asset_id})';
@@ -39,5 +55,15 @@ COMMENT ON COLUMN hasn_assets.duration_ms IS '语音时长 (毫秒)';
 COMMENT ON COLUMN hasn_assets.transcript IS '语音转写文本 (STT 结果)';
 COMMENT ON COLUMN hasn_assets.thumbnail_asset_id IS '缩略图资产 ID';
 COMMENT ON COLUMN hasn_assets.extract_status IS '抽取状态 (pending:待处理:orange/done:完成:green/unsupported:不支持:gray/stt_unavailable:STT不可用:red)';
+COMMENT ON COLUMN hasn_assets.object_id IS '物理对象 ID';
+COMMENT ON COLUMN hasn_assets.category IS '业务资产类别';
+COMMENT ON COLUMN hasn_assets.original_name IS '用户可见原始文件名';
+COMMENT ON COLUMN hasn_assets.source_app IS '来源应用或平台模块';
+COMMENT ON COLUMN hasn_assets.upload_idempotency_key IS 'Owner 范围内的上传幂等键';
+COMMENT ON COLUMN hasn_assets.derived_from_asset_id IS '转存来源逻辑资产 ID';
+COMMENT ON COLUMN hasn_assets.lifecycle_status IS '生命周期状态 (uploading:上传中:orange/active:可用:green/trashed:回收站:orange/deleting:删除中:orange/deleted:已删除:gray/error:异常:red)';
+COMMENT ON COLUMN hasn_assets.trashed_time IS '进入回收站时间';
+COMMENT ON COLUMN hasn_assets.deleted_time IS '逻辑资产确认删除时间';
+COMMENT ON COLUMN hasn_assets.version IS '生命周期乐观锁版本';
 COMMENT ON COLUMN hasn_assets.created_time IS '创建时间';
 COMMENT ON COLUMN hasn_assets.updated_time IS '更新时间';

@@ -109,13 +109,31 @@ def test_deck_tools_scope_split() -> None:
 
 def test_required_fields_match_contract() -> None:
     create_schema = _tool('hasn.deck.create').input_schema
+    list_schema = _tool('hasn.deck.list').input_schema
     assert 'required' not in create_schema
     assert 'platform_project_id' in create_schema['properties']
+    assert 'platform_project_id' in list_schema['properties']
     assert _tool('hasn.deck.get').input_schema['required'] == ['deck_id']
     assert _tool('hasn.deck.outline.set').input_schema['required'] == ['deck_id', 'pages']
     assert _tool('hasn.deck.page.write').input_schema['required'] == ['deck_id', 'position', 'html']
     assert _tool('hasn.deck.page.reorder').input_schema['required'] == ['deck_id', 'page_ids']
     assert _tool('hasn.deck.style.get').input_schema['required'] == ['style_id']
+
+
+def test_page_html_schema_teaches_exportable_advanced_animations() -> None:
+    """三个页写工具都应向分身暴露可原生导出的高级入场动画契约。"""
+    descriptions = [
+        _tool('hasn.deck.page.write_batch').input_schema['properties']['pages']['items'][
+            'properties'
+        ]['html']['description'],
+        _tool('hasn.deck.page.write').input_schema['properties']['html']['description'],
+        _tool('hasn.deck.page.edit').input_schema['properties']['html']['description'],
+    ]
+    for description in descriptions:
+        for effect in ('rise', 'zoom', 'fly-up', 'fly-down', 'fly-left', 'fly-right'):
+            assert effect in description
+        assert '运动方向' in description
+        assert 'data-anim' in description
 
 
 def test_create_inherits_project_from_work_session_context() -> None:
@@ -242,7 +260,7 @@ def test_skeleton_rejects_cropping_image_object_fit() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_deck_lifecycle_roundtrip_real_db() -> None:
     """真实 PG：create→outline.set→page.write_batch(含 rejected)→get→reorder→edit→delete-page→delete。"""
     if not await _db_reachable():

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import types
 
+from typing import Any
+
 import pytest
 
 from backend.plugin.code_generator.utils.gen_template import GenTemplate
@@ -17,7 +19,7 @@ from backend.plugin.code_generator.utils.gen_template import GenTemplate
 _ADAPTER_TPL = 'python/resource_adapter.jinja'
 
 
-def _stub_business(app_name: str = 'hasn_demo') -> types.SimpleNamespace:
+def _stub_business(app_name: str = 'hasn_demo') -> Any:
     """构造一个仅够 get_template_path_mapping / _parse_scopes 求值的最小 business 桩。"""
     return types.SimpleNamespace(app_name=app_name, filename='demo', api_version='v1', api_scope='app')
 

@@ -81,6 +81,8 @@ class GenColumnService:
         """
 
         column = await gen_column_dao.get(db, pk)
+        if column is None:
+            raise errors.NotFoundError(msg='模型列不存在')
         if obj.name != column.name:
             gen_columns = await gen_column_dao.get_all_by_business(db, obj.gen_business_id)
             if obj.name in [gen_column.name for gen_column in gen_columns]:

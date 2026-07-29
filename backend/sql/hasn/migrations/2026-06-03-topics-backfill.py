@@ -17,7 +17,10 @@ import asyncpg
 from backend.app.hasn_community.service.topic_normalize import normalize_topic_name, slugify_topic
 from backend.database.db import uuid4_str
 
-DB = {'host': '127.0.0.1', 'port': 15432, 'user': 'mac', 'database': 'huanxing'}
+DB_HOST = '127.0.0.1'
+DB_PORT = 15432
+DB_USER = 'mac'
+DB_NAME = 'huanxing'
 
 
 async def _resolve_topic(conn: asyncpg.Connection, name: str) -> str | None:
@@ -48,7 +51,7 @@ async def _resolve_topic(conn: asyncpg.Connection, name: str) -> str | None:
 
 
 async def main() -> None:
-    conn = await asyncpg.connect(**DB)
+    conn = await asyncpg.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, database=DB_NAME)
     topics_created = links = follows_fixed = 0
     try:
         for content_type, table, id_col in (('post', 'hasn_posts', 'post_id'), ('article', 'hasn_articles', 'article_id')):

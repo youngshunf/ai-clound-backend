@@ -642,7 +642,7 @@ class ExternalMcpGateway:
     def _server_to_public_dict(server: ExternalMcpServer) -> dict[str, Any]:
         """管理面出参：剔除 headers/env 值（可能含 secret:// 引用），只暴露是否已配凭据 + 工具计数。"""
         headers = server.headers or {}
-        tools = server.advertised_tools_cache or []
+        tools: list[dict[str, Any]] = server.advertised_tools_cache or []
         return {
             'mcp_id': server.mcp_id,
             'name': server.name,

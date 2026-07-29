@@ -15,15 +15,21 @@ from __future__ import annotations
 
 import uuid
 
+from typing import Any
+
 import pytest
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_community.service.community_service import CommunityService
+from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import (
+    SqlAlchemyRelationGateway,
+)
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.database.db import SQLALCHEMY_DATABASE_URL
+from backend.database.schema_names import SCHEMA_NAMES
 
 pytestmark = pytest.mark.asyncio
 
@@ -87,8 +93,18 @@ async def test_discover_peers_all_modes() -> None:
             await db.commit()
 
         async with session_maker() as db:
+            relation_options: Any = {
+                'relation_gateway': SqlAlchemyRelationGateway(
+                    session_factory=session_maker,
+                )
+            }
             # 1) 无参发现：兴趣命中人 + 分身都在，隐身人不在，且各带 match_reason
-            disc = await CommunityService.discover_peers(db, viewer_user_id=viewer_uid, limit=50)
+            disc = await CommunityService.discover_peers(
+                db,
+                viewer_user_id=viewer_uid,
+                limit=50,
+                **relation_options,
+            )
             assert disc['mode'] == 'discover'
             by_id = {it['hasn_id']: it for it in disc['items']}
             assert match_hid in by_id, '兴趣命中的人应被发现'
@@ -104,39 +120,92 @@ async def test_discover_peers_all_modes() -> None:
             assert all('existing_relation' in it for it in disc['items'])
 
             # 2) 昵称前缀搜索：命中兴趣人，隐身人因 searchable=false 不出
-            srch = await CommunityService.discover_peers(db, viewer_user_id=viewer_uid, query=f'发现兴趣人{m}')
+            srch = await CommunityService.discover_peers(
+                db,
+                viewer_user_id=viewer_uid,
+                query=f'发现兴趣人{m}',
+                **relation_options,
+            )
             assert srch['mode'] == 'search'
             srch_ids = {it['hasn_id'] for it in srch['items']}
             assert match_hid in srch_ids
-            srch_hidden = await CommunityService.discover_peers(db, viewer_user_id=viewer_uid, query=f'发现隐身人{m}')
+            srch_hidden = await CommunityService.discover_peers(
+                db,
+                viewer_user_id=viewer_uid,
+                query=f'发现隐身人{m}',
+                **relation_options,
+            )
             assert hidden_hid not in {it['hasn_id'] for it in srch_hidden['items']}, 'searchable=false 不可被昵称搜出'
 
             # 3) 唤星号精确搜索：命中且 rank 置顶（match_reason=唤星号精确）
-            by_star = await CommunityService.discover_peers(db, viewer_user_id=viewer_uid, query=f'disc_match_{m}')
+            by_star = await CommunityService.discover_peers(
+                db,
+                viewer_user_id=viewer_uid,
+                query=f'disc_match_{m}',
+                **relation_options,
+            )
             assert by_star['items'], '唤星号应能搜到'
             assert by_star['items'][0]['hasn_id'] == match_hid
             assert by_star['items'][0]['match_reason'] == '唤星号精确'
 
             # 4) 分身显示名前缀搜索 + 唤星号(含#)精确
             by_agent_name = await CommunityService.discover_peers(
-                db, viewer_user_id=viewer_uid, query=f'发现专家{m}', peer_type='agent'
+                db,
+                viewer_user_id=viewer_uid,
+                query=f'发现专家{m}',
+                peer_type='agent',
+                **relation_options,
             )
             assert agent_hid in {it['hasn_id'] for it in by_agent_name['items']}
             assert all(it['type'] == 'agent' for it in by_agent_name['items'])
 
             # 5) 类型过滤：只看人
             only_human = await CommunityService.discover_peers(
-                db, viewer_user_id=viewer_uid, peer_type='human', limit=50
+                db,
+                viewer_user_id=viewer_uid,
+                peer_type='human',
+                limit=50,
+                **relation_options,
             )
             assert only_human['items'], '应有活跃人兜底'
             assert all(it['type'] == 'human' for it in only_human['items'])
             assert agent_hid not in {it['hasn_id'] for it in only_human['items']}
 
             # 6) 活跃回落：无兴趣信号的访客（user_id 无对应 human）仍能拿到推荐
-            anon = await CommunityService.discover_peers(db, viewer_user_id=None, limit=50)
+            anon = await CommunityService.discover_peers(
+                db,
+                viewer_user_id=None,
+                limit=50,
+                **relation_options,
+            )
             assert anon['items'], '匿名/无兴趣也应按活跃度兜底推荐'
+
+            # 7) 权威通信设置已迁入 IM：即使身份兼容列仍为 true，IM 设置关闭后也不得被发现。
+            relation_gateway = relation_options['relation_gateway']
+            await relation_gateway.update_agent_communication_settings(
+                owner_hasn_id=agent_owner_hid,
+                agent_hasn_id=agent_hid,
+                social_enabled=False,
+            )
+            hidden_agent = await CommunityService.discover_peers(
+                db,
+                viewer_user_id=viewer_uid,
+                query=f'发现专家{m}',
+                peer_type='agent',
+                **relation_options,
+            )
+            assert agent_hid not in {
+                item['hasn_id'] for item in hidden_agent['items']
+            }
     finally:
         async with session_maker() as db:
+            await db.execute(
+                text(
+                    f'DELETE FROM {SCHEMA_NAMES.im_table("agent_communication_settings")} '  # noqa: S608 测试内部注册表表名
+                    'WHERE agent_hasn_id = :agent_hasn_id'
+                ),
+                {'agent_hasn_id': agent_hid},
+            )
             await db.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent_hid))
             await db.execute(delete(HasnHumans).where(HasnHumans.hasn_id.in_(seeded_humans)))
             await db.commit()

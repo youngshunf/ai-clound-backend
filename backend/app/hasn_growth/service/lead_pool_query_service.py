@@ -18,11 +18,14 @@ import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn_growth.model import LeadContact, LeadQuota, LeadRef
+from backend.app.hasn_growth.model import LeadContact, LeadQuota
 
 # 复用 funnel 的线索序列化 + PII 脱敏（单一实现，避免脱敏逻辑漂移——安全敏感不重复造）。
 from backend.app.hasn_growth.service.funnel_service import _lead_to_dict
 from backend.app.hasn_growth.service.industry_tagging_service import IndustryTaggingService
+from backend.app.hasn_growth.service.project_lead_compatibility_service import (
+    project_lead_compatibility_service,
+)
 from backend.common.log import log
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
@@ -228,12 +231,15 @@ class LeadPoolQueryService:
         # （用户重复请求已拥有的线索不重复计费）。用户列表 = lead_ref JOIN contact，引用即「拥有」。
         newly_acquired = 0
         for lead in delivered:
-            res = await db.execute(
-                pg_insert(LeadRef)
-                .values(user_id=user_id, lead_contact_id=lead.id, source='request', status='new')
-                .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
+            created = await project_lead_compatibility_service.upsert_reference(
+                db,
+                user_id=user_id,
+                lead_contact_id=lead.id,
+                source='request',
+                status='new',
+                update_existing=False,
             )
-            if (res.rowcount or 0) > 0:
+            if created:
                 newly_acquired += 1
         await db.flush()
         leads = [_lead_to_dict(r, reveal_pii=reveal_pii) for r in delivered]

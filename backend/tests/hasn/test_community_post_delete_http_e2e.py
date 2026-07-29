@@ -39,7 +39,7 @@ from backend.common.exception import errors
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 
-_USER_ID = 980000 + int(uuid.uuid4().int % 20000)
+_USER_ID = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
 
 # 模块级构建（依赖图一次成型）。
 _APP = FastAPI()
@@ -55,7 +55,7 @@ def test_delete_post_route_registered() -> None:
     methods: set[str] = set()
     for r in _APP.routes:
         if getattr(r, 'path', '') == '/api/v1/community/app/posts/{post_id}':
-            methods |= set(r.methods)
+            methods |= set(getattr(r, 'methods'))
     assert 'DELETE' in methods, f'DELETE 未注册，仅 {methods}——即 405 回归'
 
 

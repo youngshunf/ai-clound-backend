@@ -1,8 +1,10 @@
+from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, UniversalText, id_key
+from backend.common.model import Base, TimeZone, UniversalText, id_key
 
 
 class HasnAssets(Base):
@@ -19,9 +21,30 @@ class HasnAssets(Base):
     kind: Mapped[str] = mapped_column(sa.String(16), default='', comment='资产类型 (image:图片:blue/voice:语音:purple/file:文件:gray)')
     mime: Mapped[str] = mapped_column(sa.String(128), default='', comment='MIME 类型')
     size_bytes: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='字节大小')
+    content_sha256: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='资产内容 sha256；本地原件快照据此幂等上传'
+    )
     width: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='图片宽 (px)')
     height: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='图片高 (px)')
     duration_ms: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='语音时长 (毫秒)')
     transcript: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='语音转写文本 (STT 结果)')
     thumbnail_asset_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='缩略图资产 ID')
     extract_status: Mapped[str] = mapped_column(sa.String(16), default='', comment='抽取状态 (pending:待处理:orange/done:完成:green/unsupported:不支持:gray/stt_unavailable:STT不可用:red)')
+    object_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='物理对象 ID')
+    category: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment='业务资产类别')
+    original_name: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='用户可见原始文件名')
+    source_app: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='来源应用或平台模块')
+    upload_idempotency_key: Mapped[str | None] = mapped_column(
+        sa.String(128),
+        default=None,
+        comment='Owner 范围内的上传幂等键',
+    )
+    derived_from_asset_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='转存来源逻辑资产 ID')
+    lifecycle_status: Mapped[str] = mapped_column(
+        sa.String(24),
+        default='active',
+        comment='生命周期状态 (uploading:上传中:orange/active:可用:green/trashed:回收站:orange/deleting:删除中:orange/deleted:已删除:gray/error:异常:red)',
+    )
+    trashed_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='进入回收站时间')
+    deleted_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='逻辑资产确认删除时间')
+    version: Mapped[int] = mapped_column(sa.BIGINT(), default=1, comment='生命周期乐观锁版本')

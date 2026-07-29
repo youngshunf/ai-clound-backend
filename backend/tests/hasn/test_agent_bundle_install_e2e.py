@@ -70,7 +70,7 @@ async def e2e():
 
     tag = _uid()
     owner = f'h_owner_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     agent_hasn = f'a_{tag}'
     package_id = f'huanxing/backend-dev-{tag}'
     bundle_slug = f'backend-dev-{tag}'

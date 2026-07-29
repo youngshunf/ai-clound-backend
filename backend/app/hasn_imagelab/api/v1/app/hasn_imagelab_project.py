@@ -18,7 +18,7 @@ daemon 侧 `ensure_cloud_project_registered`（apps/daemon/src/domains/imagelab/
 from fastapi import APIRouter, Request
 from pydantic import Field
 
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.app.hasn_imagelab.service.hasn_imagelab_project_service import hasn_imagelab_project_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base

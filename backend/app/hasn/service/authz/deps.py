@@ -62,7 +62,11 @@ def DependsResourceAccess(  # noqa: N802
             )
 
         # 挂声明元数据供守卫内省（S7 共享治理门守卫按此核对「路由带 need=manager 声明」）。
-        _dep_agent._g6_resource_access = {'resource_type': resource_type, 'need': need, 'path_param': path_param}
+        setattr(
+            _dep_agent,
+            '_g6_resource_access',
+            {'resource_type': resource_type, 'need': need, 'path_param': path_param},
+        )
         return Depends(_dep_agent)
 
     async def _dep_owner(
@@ -79,5 +83,9 @@ def DependsResourceAccess(  # noqa: N802
         return await resource_gate.require(db, subject, resource_type=resource_type, resource_id=resource_id, need=need)
 
     # 挂声明元数据供守卫内省（S7 共享治理门守卫按此核对「路由带 need=manager 声明」）。
-    _dep_owner._g6_resource_access = {'resource_type': resource_type, 'need': need, 'path_param': path_param}
+    setattr(
+        _dep_owner,
+        '_g6_resource_access',
+        {'resource_type': resource_type, 'need': need, 'path_param': path_param},
+    )
     return Depends(_dep_owner)
