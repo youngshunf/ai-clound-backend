@@ -516,7 +516,7 @@ pyyaml==6.0.3
     #   uvicorn
 qiniu==7.18.0
     # via huanxing-backend
-redis==7.2.0
+redis==8.0.1
     # via
     #   huanxing-backend
     #   rq

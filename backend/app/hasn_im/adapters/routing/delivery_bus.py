@@ -18,6 +18,8 @@
 import asyncio
 import json
 
+from typing import Literal
+
 from fastapi import WebSocket
 
 from backend.app.hasn_im.adapters.routing.redis_presence_store import NODE_GENERATION_KEY
@@ -29,6 +31,7 @@ from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     local_nodes,
 )
 from backend.common.log import log
+from backend.core.conf import settings
 from backend.database.redis import RedisCli, redis_client
 
 # 共享投递频道：所有 worker 订阅，发送方 publish
@@ -43,7 +46,7 @@ DELIVERY_SEND_TIMEOUT_SECS = 10.0
 _RECONNECT_DELAY_SECS = 2.0
 _RETRY_PENDING_INTERVAL_SECS = 2.0
 
-# Redis 6.0 没有 LMOVE；用 Lua 保持“队头取出并追加到处理中队尾”的原子语义。
+# Redis 6.0 没有 LMOVE；兼容路径用 Lua 保持“队头取出并追加到处理中队尾”的原子语义。
 _MOVE_PENDING_TO_PROCESSING_LUA = """
 local payload = redis.call('LPOP', KEYS[1])
 if payload then
@@ -51,6 +54,8 @@ if payload then
 end
 return payload
 """
+
+RedisListMoveMode = Literal['lua', 'lmove']
 
 
 def _decode_payload(raw: str | bytes | None) -> dict | None:
@@ -64,8 +69,21 @@ def _decode_payload(raw: str | bytes | None) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-async def _move_pending_to_processing(pending_key: str, processing_key: str) -> str | None:
-    """兼容 Redis 6.0，原子领取一条待投帧。"""
+async def _move_pending_to_processing(
+    pending_key: str,
+    processing_key: str,
+    *,
+    move_mode: RedisListMoveMode | None = None,
+) -> str | None:
+    """按显式模式原子领取一条待投帧，并保持 FIFO。"""
+    selected_mode = settings.REDIS_LIST_MOVE_MODE if move_mode is None else move_mode
+    if selected_mode == 'lmove':
+        return await redis_client.lmove(
+            pending_key,
+            processing_key,
+            src='LEFT',
+            dest='RIGHT',
+        )
     return await redis_client.eval(
         _MOVE_PENDING_TO_PROCESSING_LUA,
         2,
