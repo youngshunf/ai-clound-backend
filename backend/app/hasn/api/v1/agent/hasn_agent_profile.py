@@ -1,7 +1,7 @@
 """HASN Agent Profile - Agent 端 API（云端权威化）
 
-认证方式: DependsAgentJwtAuth（Agent JWT）
-身份: **恒取自 JWT**（agent.agent_hasn_id），绝不从请求体/路径读取身份字段。
+认证方式: DependsAgentJwtAuth（Agent JWT / Agent MCP Key）
+身份: **恒取自已验证凭证**（agent.agent_hasn_id），绝不从请求体/路径读取身份字段。
 
 Runtime（huanxing-hermes-runtime）用 agent JWT 直连这里拉取自己 Agent 的 Profile，
 物化为本地 SOUL.md/AGENTS.md/USER.md/MEMORY.md + 按 skills 清单下载技能包。
@@ -92,9 +92,10 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
         version = ref.get('version')
         ver_filter = 'AND v.version = :version' if version else 'AND v.is_latest = true'
         bundle_row = (
-            await db.execute(
-                sa.text(
-                    f"""
+            (
+                await db.execute(
+                    sa.text(
+                        f"""
                     SELECT v.bundle_slug, v.command_key, v.hermes_yaml
                     FROM hasn_marketplace.marketplace_template_version v
                     JOIN hasn_marketplace.marketplace_template t ON t.template_id = v.template_id
@@ -103,19 +104,20 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
                       {ver_filter}
                     LIMIT 1
                     """
-                ),
-                {'template_id': template_id, 'version': version},
+                    ),
+                    {'template_id': template_id, 'version': version},
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if bundle_row is None or not bundle_row.get('hermes_yaml'):
             continue
-        out.append(
-            {
-                'bundle_slug': bundle_row['bundle_slug'],
-                'command_key': bundle_row['command_key'],
-                'hermes_yaml': bundle_row['hermes_yaml'],
-            }
-        )
+        out.append({
+            'bundle_slug': bundle_row['bundle_slug'],
+            'command_key': bundle_row['command_key'],
+            'hermes_yaml': bundle_row['hermes_yaml'],
+        })
     return out
 
 
@@ -192,7 +194,8 @@ async def get_agent_profile_revision(
 ) -> ResponseSchemaModel[AgentProfileRevisionResponse]:
     row = (
         await db.execute(
-            sa.select(HasnAgents.profile_revision, HasnAgents.skills)
+            sa
+            .select(HasnAgents.profile_revision, HasnAgents.skills)
             .where(HasnAgents.hasn_id == agent.agent_hasn_id)
             .limit(1)
         )

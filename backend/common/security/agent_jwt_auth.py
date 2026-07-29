@@ -1,10 +1,10 @@
 """
-Agent JWT 认证依赖
+Agent JWT / Agent MCP Key 认证依赖
 
-Agent 使用独立的 JWT 进行身份认证，通过 Authorization header 传递。
-支持细粒度的 Scope 权限控制。
+Agent 通过 Authorization Bearer 传递独立 JWT 或长期可吊销的 ``hasn_amk_*``。
+两者都只从已验证凭证自识别 Agent/主人，禁止依赖请求头声明身份。
 
-认证方式: Header `Authorization: Bearer <agent_jwt>`
+认证方式: Header `Authorization: Bearer <agent_jwt|agent_mcp_key>`
 路由前缀: /api/v1/hasn/agent/
 
 @author Ysf
@@ -13,12 +13,16 @@ Agent 使用独立的 JWT 进行身份认证，通过 Authorization header 传�
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 
+from backend.app.hasn.model import HasnAgents, HasnHumans
+from backend.app.hasn.service.hasn_agent_mcp_keys_service import hasn_agent_mcp_keys_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.security.agent_jwt import verify_agent_token
 from backend.database.db import CurrentSession
+from backend.utils.timezone import timezone
 
 # Bearer token 提取器
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -34,7 +38,7 @@ async def agent_jwt_auth(
 
     用法::
 
-        @router.get("/xxx", dependencies=[DependsAgentJwtAuth])
+        @router.get('/xxx', dependencies=[DependsAgentJwtAuth])
         async def xxx(request: Request):
             agent = request.state.agent
             agent_hasn_id = agent.agent_hasn_id
@@ -42,7 +46,7 @@ async def agent_jwt_auth(
 
     或作为参数注入::
 
-        @router.get("/xxx")
+        @router.get('/xxx')
         async def xxx(agent: AgentTokenPayload = DependsAgentJwtAuth):
             agent_hasn_id = agent.agent_hasn_id
 
@@ -51,35 +55,64 @@ async def agent_jwt_auth(
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=401,
-            detail="缺少 Authorization header。请提供 Bearer token。",
+            detail='缺少 Authorization header。请提供 Bearer token。',
         )
 
     token = credentials.credentials
 
     try:
+        if token.startswith('hasn_amk_'):
+            record = await hasn_agent_mcp_keys_service.verify(
+                db,
+                presented_key=token,
+                node_id=request.headers.get('X-Node-Id'),
+            )
+            agent_row = (
+                await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == record.agent_hasn_id).limit(1))
+            ).scalar_one_or_none()
+            if agent_row is None or agent_row.status != 'active':
+                raise errors.AuthorizationError(msg='Agent 不存在或非活跃状态')
+            owner_user_id = record.owner_user_id
+            if owner_user_id is None:
+                owner_user_id = (
+                    await db.execute(
+                        select(HasnHumans.user_id).where(HasnHumans.hasn_id == record.owner_hasn_id).limit(1)
+                    )
+                ).scalar_one_or_none()
+            if owner_user_id is None:
+                raise errors.AuthorizationError(msg='Agent MCP Key 无法解析主人')
+            agent_payload = AgentTokenPayload(
+                agent_hasn_id=record.agent_hasn_id,
+                agent_name=agent_row.agent_name or '',
+                owner_hasn_id=record.owner_hasn_id,
+                owner_user_id=int(owner_user_id),
+                session_uuid=f'amk_{record.id}',
+                expire_time=record.expire_time or timezone.now(),
+            )
+            request.state.agent = agent_payload
+            log.info(f'Agent MCP Key 认证成功: {agent_payload.agent_hasn_id}')
+            return agent_payload
+
         # 验证 Agent JWT
         agent_payload = await verify_agent_token(token)
 
         # 注入到 request.state 方便后续使用
         request.state.agent = agent_payload
 
-        log.info(
-            f"Agent JWT 认证成功: {agent_payload.agent_hasn_id} "
-            f"(owner: {agent_payload.owner_hasn_id})"
-        )
+        log.info(f'Agent JWT 认证成功: {agent_payload.agent_hasn_id} (owner: {agent_payload.owner_hasn_id})')
 
         return agent_payload
 
     except errors.TokenError as e:
         raise HTTPException(
             status_code=401,
-            detail=f"Agent JWT 验证失败: {e!s}",
+            detail=f'Agent JWT 验证失败: {e!s}',
         )
     except Exception as e:
-        log.error(f"Agent JWT 认证异常: {e!s}")
+        log.error(f'Agent JWT 认证异常: {e!s}')
         raise HTTPException(
             status_code=401,
-            detail="Agent JWT 认证失败",
+            detail='Agent JWT 认证失败',
         )
 
 

@@ -46,9 +46,7 @@ async def _owner_llm_credentials(db: AsyncSession, user_id: int) -> tuple[str, s
     from backend.app.admin.model import User
     from backend.app.newapi.service import llm_newapi_user_mapping_service
 
-    user_row = (
-        await db.execute(sa.select(User).where(User.id == user_id).limit(1))
-    ).scalar_one_or_none()
+    user_row = (await db.execute(sa.select(User).where(User.id == user_id).limit(1))).scalar_one_or_none()
     mapping = await llm_newapi_user_mapping_service.ensure_newapi_user(
         db,
         user_id,
@@ -93,9 +91,7 @@ async def _owner_phone(db: AsyncSession, user_id: int) -> str | None:
     agent-profile 聚合在同一手机号目录下（福仔 2026-06-27）。"""
     from backend.app.admin.model import User
 
-    phone = (
-        await db.execute(sa.select(User.phone).where(User.id == user_id).limit(1))
-    ).scalar_one_or_none()
+    phone = (await db.execute(sa.select(User.phone).where(User.id == user_id).limit(1))).scalar_one_or_none()
     return str(phone) if phone else None
 
 
@@ -199,6 +195,9 @@ async def ensure_cloud_profile_provisioned(
         agent_mcp_key = await _ensure_cloud_agent_mcp_key(
             db, agent_hasn_id=agent_hasn_id, owner_hasn_id=owner_hasn_id, owner_user_id=user_id
         )
+        cloud_base_url = str(settings.HUANXING_CLOUD_INTERNAL_BASE_URL or '').rstrip('/')
+        if not cloud_base_url:
+            raise errors.ServerError(msg='云端 Runtime 权威目录内部地址未配置')
         await client.ensure_agent(
             {
                 'agent_id': profile_id,
@@ -211,6 +210,12 @@ async def ensure_cloud_profile_provisioned(
                 # 云端 MCP 工具凭据 → hermes 物化进 config.yaml 的 mcp_servers.cloud header。
                 # 仅传云端 key，绝不传 local_mcp_key（云端注入本地 server 会断连）。
                 'agent_mcp_key': agent_mcp_key,
+                # required ensure 拉 Agent Profile 与个人技能包时也使用同一把 node-agnostic
+                # Agent MCP Key。它是长期、可吊销凭证，不依赖 Owner cookie，也不会像短期
+                # Agent JWT 到期后让无人值守的云端定时任务失去权威目录访问能力。
+                'agent_jwt': agent_mcp_key,
+                'cloud_base_url': cloud_base_url,
+                'marketplace_base_url': cloud_base_url,
                 'llm': {
                     'mode': 'platform',
                     'provider': 'openai_compatible',
