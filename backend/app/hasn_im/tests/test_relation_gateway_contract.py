@@ -50,7 +50,7 @@ async def _dispose_global_engine():
     """每测试结束（其自身事件循环内）dispose 全局应用引擎池，根除跨 loop teardown 噪声。
 
     收编期 gateway 委托的现网 service（如 remove_contact 的 post-commit 通知推送）会在
-    **全局引擎池**（pool_size=10 的 AsyncAdaptedQueuePool）上开连接。pytest-asyncio 每测试
+    **全局引擎池**（容量由数据库池配置控制）上开连接。pytest-asyncio 每测试
     新建事件循环；若全局池连接跨 loop 存活，GC 时 asyncpg 会在已关闭 loop 上 cancel，抛
     「Future attached to a different loop / Event loop is closed」——被 unraisable 插件算作
     随机测试失败（本套件里随机命中 update_trust_missing / resolve_blocked_missing 等）。
