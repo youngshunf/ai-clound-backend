@@ -112,6 +112,10 @@ class LlmCredentialIssuer(Protocol):
     async def issue(self, db: AsyncSession, user: Any) -> tuple[str | None, str | None, str | None]: ...
 
 
+class RegistrationCreditGranter(Protocol):
+    async def grant_new_user(self, db: AsyncSession, user_id: int) -> None: ...
+
+
 class AgentTokenIssuer(Protocol):
     async def issue(
         self,
@@ -188,6 +192,18 @@ class SqlAlchemyLlmCredentialIssuer:
         # daemon 收到 None 即把本地镜像列覆盖为 NULL（session.rs 覆盖式 upsert），
         # 存量 owner 下次登录自愈，无需迁移。未来若要真正的 per-user 选模型，再写真实值。
         return f'sk-{mapping.newapi_token_key}', settings.LLM_API_BASE_URL, None
+
+
+class SqlAlchemyRegistrationCreditGranter:
+    """为 HASN 手机注册登记正式的免费合同与注册奖励履约命令。"""
+
+    async def grant_new_user(self, db: AsyncSession, user_id: int) -> None:
+        from backend.app.billing.service.credit_grant_service import credit_grant_service
+
+        # 额度以 NewAPI 为唯一权威；这里只在当前事务登记幂等 outbox，
+        # 实际增量发放由 credit_outbox_dispatch 在事务提交后完成。
+        await credit_grant_service.ensure_free_contract(db, user_id=user_id)
+        await credit_grant_service.grant_registration_bonus(db, user_id=user_id)
 
 
 class SqlAlchemyAgentTokenIssuer:
@@ -426,6 +442,7 @@ class HasnPhoneAuthService:
     code_generator: Any | None = None
     token_creator: Any = create_access_token
     llm_credentials: LlmCredentialIssuer = field(default_factory=SqlAlchemyLlmCredentialIssuer)
+    registration_credits: RegistrationCreditGranter = field(default_factory=SqlAlchemyRegistrationCreditGranter)
     agent_tokens: AgentTokenIssuer = field(default_factory=SqlAlchemyAgentTokenIssuer)
 
     async def send_code(self, request: PhoneSendCodeRequest) -> PhoneSendCodeResponse:
@@ -459,7 +476,7 @@ class HasnPhoneAuthService:
             raise errors.RequestError(msg='验证码错误')
 
         await self.redis.delete(f'{SMS_CODE_PREFIX}:{phone}')
-        user, _ = await self.users.get_or_create_phone_user(db, phone)
+        user, is_new_user = await self.users.get_or_create_phone_user(db, phone)
         user.last_login_time = timezone.now()
         await db.flush()
 
@@ -484,6 +501,11 @@ class HasnPhoneAuthService:
             llm_token, llm_base_url, llm_model = None, None, None
         except Exception as exc:
             raise errors.ServerError(msg=f'LLM 服务初始化失败: {exc}') from exc
+        else:
+            if is_new_user:
+                # 与 Admin 手机注册保持同一正式履约语义；必须先建立 NewAPI 映射，
+                # credit_grant_service 才能为该用户登记指向权威账户的增量事件。
+                await self.registration_credits.grant_new_user(db, user.id)
 
         refresh_token_data = await create_refresh_token(
             access_token.session_uuid,
