@@ -84,11 +84,9 @@ class SyncProjector:
         if not audience:
             return
 
-        # 仅当携带溯源时才解析发送方 owner（用于受众分叉；否则省一次查询）。
-        sender_owner_id: str | None = None
-        if facts.origin_session_id:
-            resolved = await cp._resolve_owner_ids(db, [facts.sender_hasn_id])
-            sender_owner_id = resolved.get(facts.sender_hasn_id)
+        # owner-relative framing 不能依赖终端本地 Agent 名册；投影时一次性盖章发送方归属。
+        resolved = await cp._resolve_owner_ids(db, [facts.sender_hasn_id])
+        sender_owner_id = resolved.get(facts.sender_hasn_id)
 
         for owner_id in audience:
             owner_origin_session_id = (
@@ -100,7 +98,11 @@ class SyncProjector:
                 event_type=_MESSAGE_NEW,
                 aggregate_type='message',
                 aggregate_id=facts.message_id,
-                payload=_message_new_payload(facts, owner_origin_session_id),
+                payload=_message_new_payload(
+                    facts,
+                    owner_origin_session_id,
+                    sender_is_owned=owner_id == sender_owner_id,
+                ),
                 # 跨重启第二层去重键（§7.3）：durable cursor 之外再叠 (owner, producer, source_event_id)。
                 # 同一集成事件扇出到各 owner，去重键含 owner_id（在 append_event 函数内），各 owner 各落一行。
                 producer=_PRODUCER,
@@ -163,12 +165,21 @@ class SyncProjector:
             )
 
 
-def _message_new_payload(facts: MessageCommittedFacts, origin_session_id: str | None) -> dict[str, Any]:
-    """message.new 瘦事件 payload（8 字段 + 条件 origin_session_id，与现网 append_message_new_event 同构）。"""
+def _message_new_payload(
+    facts: MessageCommittedFacts,
+    origin_session_id: str | None,
+    *,
+    sender_is_owned: bool,
+) -> dict[str, Any]:
+    """生成带权威顺序和发送方归属的 owner-relative ``message.new`` 载荷。"""
+    if facts.conversation_seq is None or facts.conversation_seq < 1:
+        raise ValueError('message.new 缺少有效 conversation_seq')
     payload: dict[str, Any] = {
         'conversation_id': facts.conversation_id,
         'message_id': facts.message_id,
+        'conversation_seq': facts.conversation_seq,
         'sender_hasn_id': facts.sender_hasn_id,
+        'sender_is_owned': sender_is_owned,
         'origin_node_id': facts.origin_node_id,
         'content_type': cp.content_type_to_mime(facts.content_type),
         'content_body': facts.content_body,

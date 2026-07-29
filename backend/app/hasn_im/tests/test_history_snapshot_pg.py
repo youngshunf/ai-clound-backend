@@ -328,23 +328,53 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
         conversations = first_conversations.items + second_conversations.items
         messages = first_messages.items + second_messages.items
         assert snapshot.head_revision == 88
-        assert snapshot.conversation_count == 2
-        assert snapshot.message_count == 4
+        assert snapshot.conversation_count == 3
+        assert snapshot.message_count == 5
         assert snapshot.history_complete is True
-        assert {item['conversation_id'] for item in conversations} == {owner_conversation, agent_conversation}
-        assert unauthorized_conversation not in {item['conversation_id'] for item in conversations}
-        assert disabled_agent_conversation not in {
-            item['conversation_id'] for item in conversations
+        assert {item['conversation_id'] for item in conversations} == {
+            owner_conversation,
+            agent_conversation,
+            disabled_agent_conversation,
         }
-        assert len(messages) == 4
+        assert unauthorized_conversation not in {item['conversation_id'] for item in conversations}
+        assert len(messages) == 5
         assert {item['content_body']['text'] for item in messages} == {
             '主人消息一',
             '主人消息二',
             '分身消息一',
             '分身消息二',
+            '已停用分身消息',
+        }
+        ownership_by_content = {
+            item['content_body']['text']: item['sender_is_owned']
+            for item in messages
+        }
+        assert ownership_by_content == {
+            '主人消息一': True,
+            '主人消息二': False,
+            '分身消息一': True,
+            '分身消息二': False,
+            '已停用分身消息': True,
         }
         assert all(item['history_complete'] is True for item in conversations)
-        assert all(item['unread_count'] == 1 for item in conversations)
+        unread_by_conversation = {
+            item['conversation_id']: item['unread_count']
+            for item in conversations
+        }
+        assert unread_by_conversation == {
+            owner_conversation: 1,
+            agent_conversation: 1,
+            disabled_agent_conversation: 0,
+        }
+        upper_bound_by_conversation = {
+            item['conversation_id']: item['snapshot_message_seq_upper_bound']
+            for item in conversations
+        }
+        assert upper_bound_by_conversation == {
+            owner_conversation: 2,
+            agent_conversation: 2,
+            disabled_agent_conversation: 1,
+        }
         assert all(item['read_state'] and item['read_state'][0]['read_seq'] == 0 for item in conversations)
         assert first_conversations.has_more is True
         assert first_messages.has_more is True
@@ -504,10 +534,23 @@ async def test_snapshot_excludes_lower_message_id_committed_after_capture(
                 after=None,
                 limit=500,
             )
+            conversations = await list_history_snapshot_conversations(
+                session,
+                owner_id=owner,
+                snapshot_token=snapshot.snapshot_token,
+                after=None,
+                limit=500,
+            )
 
         contents = {item['content_body']['text'] for item in page.items}
         assert '快照前已提交的较大 ID' in contents
         assert '快照之后才提交的较小 ID' not in contents
+        delayed_conversation = next(
+            item
+            for item in conversations.items
+            if item['conversation_id'] == late_conversation
+        )
+        assert delayed_conversation['snapshot_message_seq_upper_bound'] == 1
     finally:
         if late_session.in_transaction():
             await late_session.rollback()

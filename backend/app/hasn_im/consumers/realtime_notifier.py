@@ -74,10 +74,9 @@ class RealtimeNotifier:
         if not audience:
             return
 
-        sender_owner_id: str | None = None
-        if facts.origin_session_id:
-            resolved = await cp._resolve_owner_ids(db, [facts.sender_hasn_id])
-            sender_owner_id = resolved.get(facts.sender_hasn_id)
+        # 实时帧与 durable feed 使用同一 owner-relative 归属，终端无需等待 Agent 名册。
+        resolved = await cp._resolve_owner_ids(db, [facts.sender_hasn_id])
+        sender_owner_id = resolved.get(facts.sender_hasn_id)
 
         for owner_id in audience:
             owner_origin_session_id = (
@@ -87,7 +86,11 @@ class RealtimeNotifier:
             )
             frame = RealtimeFrame(
                 method=_METHOD_MESSAGE_NEW,
-                params=_frame_params(facts, owner_origin_session_id),
+                params=_frame_params(
+                    facts,
+                    owner_origin_session_id,
+                    sender_is_owned=owner_id == sender_owner_id,
+                ),
             )
             await self.gateway.push_to_owner(owner_id, frame)
 
@@ -135,12 +138,21 @@ class RealtimeNotifier:
             )
 
 
-def _frame_params(facts: MessageCommittedFacts, origin_session_id: str | None) -> dict[str, Any]:
+def _frame_params(
+    facts: MessageCommittedFacts,
+    origin_session_id: str | None,
+    *,
+    sender_is_owned: bool,
+) -> dict[str, Any]:
     """实时帧 params（与 sync_projector 的 message.new payload 同构，客户端按 message_id 去重）。"""
+    if facts.conversation_seq is None or facts.conversation_seq < 1:
+        raise ValueError('hasn.message.new 缺少有效 conversation_seq')
     params: dict[str, Any] = {
         'conversation_id': facts.conversation_id,
         'message_id': facts.message_id,
+        'conversation_seq': facts.conversation_seq,
         'sender_hasn_id': facts.sender_hasn_id,
+        'sender_is_owned': sender_is_owned,
         'origin_node_id': facts.origin_node_id,
         'content_type': cp.content_type_to_mime(facts.content_type),
         'content_body': facts.content_body,
