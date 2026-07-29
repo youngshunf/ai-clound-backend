@@ -5,7 +5,7 @@ from re import Pattern
 from re import compile as compile_pattern
 from typing import Any, Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH
@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # 数据库
     DATABASE_ECHO: bool | Literal['debug'] = False
     DATABASE_POOL_ECHO: bool | Literal['debug'] = False
+    # R3 后同一进程最多建立主库与三个受限角色的四个独立池；生产又有多 API/Celery
+    # 进程，因此单池默认必须保守，避免所有进程按旧 10+20 配置耗尽 PostgreSQL 连接。
+    DATABASE_POOL_SIZE: int = Field(default=2, ge=1, le=20)
+    DATABASE_MAX_OVERFLOW: int = Field(default=2, ge=0, le=40)
     DATABASE_SCHEMA: str = 'huanxing'
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'

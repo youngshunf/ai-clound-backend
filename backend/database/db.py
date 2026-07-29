@@ -58,9 +58,9 @@ def create_database_async_engine(url: str | URL) -> AsyncEngine:
             echo=settings.DATABASE_ECHO,
             echo_pool=settings.DATABASE_POOL_ECHO,
             future=True,
-            # 中等并发
-            pool_size=10,  # 低：- 高：+
-            max_overflow=20,  # 低：- 高：+
+            # R3 三角色会为每个进程建立独立池，容量必须由部署配置统一收敛。
+            pool_size=settings.DATABASE_POOL_SIZE,
+            max_overflow=settings.DATABASE_MAX_OVERFLOW,
             pool_timeout=30,  # 低：+ 高：-
             pool_recycle=3600,  # 低：+ 高：-
             pool_pre_ping=True,  # 低：False 高：True

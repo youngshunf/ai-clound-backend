@@ -78,10 +78,14 @@ print(json.dumps({
     "pool_ids": [id(engine.pool) for engine in engines],
     "bind_ids": [id(maker.kw["bind"]) for maker in makers],
     "users": [engine.url.username for engine in engines],
+    "pool_sizes": [engine.pool.size() for engine in engines],
+    "max_overflows": [engine.pool._max_overflow for engine in engines],
 }))
 """,
         ENVIRONMENT='dev',
         HASN_IM_SCHEMA_CUTOVER='false',
+        DATABASE_POOL_SIZE='2',
+        DATABASE_MAX_OVERFLOW='3',
         **_ROLE_URLS,
     )
     assert proc.returncode == 0, proc.stderr
@@ -94,6 +98,8 @@ print(json.dumps({
         'astra_sync_service',
         'astra_python_backend',
     ]
+    assert result['pool_sizes'] == [2, 2, 2]
+    assert result['max_overflows'] == [3, 3, 3]
 
 
 def test_prod_create_tables_does_not_open_database_connection() -> None:
