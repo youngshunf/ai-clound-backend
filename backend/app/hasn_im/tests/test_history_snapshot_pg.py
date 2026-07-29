@@ -21,6 +21,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.model import (
     HasnConversationMemberships,
     HasnConversations,
+    HasnImHistorySnapshots,
     HasnMessages,
 )
 from backend.app.hasn_core import HasnAgents, HasnHumans
@@ -145,6 +146,7 @@ async def _cleanup(
     identities: list[str],
 ) -> None:
     async with sessionmaker.begin() as session:
+        await session.execute(sa.delete(HasnImHistorySnapshots).where(HasnImHistorySnapshots.owner_id.in_(identities)))
         conversation_ids = (
             (
                 await session.execute(
@@ -168,6 +170,34 @@ async def _cleanup(
         await session.execute(sa.delete(HasnHumans).where(HasnHumans.hasn_id.in_(identities)))
 
 
+def _message(
+    *,
+    conversation_id: str,
+    conversation_seq: int,
+    sender: str,
+    recipient: str,
+    content: str,
+) -> HasnMessages:
+    return HasnMessages(
+        conversation_id=uuid.UUID(conversation_id),
+        conversation_seq=conversation_seq,
+        owner_id=None,
+        from_id=sender,
+        from_type=2 if sender.startswith('a_') else 1,
+        to_id=recipient,
+        to_type=2 if recipient.startswith('a_') else 1,
+        content_type=1,
+        content={'text': content},
+        process_blocks=[],
+        msg_type='message',
+        status=1,
+        priority='normal',
+        local_id=f'snapshot-concurrent-{uuid.uuid4().hex}',
+        mention_all=False,
+        origin_node_id='cloud',
+    )
+
+
 async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound(
     sessionmaker_pg: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -175,7 +205,8 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
     peer = _human('snapshot_peer_')
     other_owner = _human('snapshot_other_')
     owned_agent = _agent('snapshot_agent_')
-    identities = [owner, peer, other_owner, owned_agent]
+    disabled_agent = _agent('snapshot_disabled_')
+    identities = [owner, peer, other_owner, owned_agent, disabled_agent]
     try:
         async with sessionmaker_pg.begin() as session:
             _seed_humans(session, owner, peer, other_owner)
@@ -189,6 +220,18 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
                     agent_name=f'snapshot{marker[:10]}',
                     api_key_hash=marker,
                     status='active',
+                    created_via='client',
+                )
+            )
+            session.add(
+                HasnAgents(
+                    hasn_id=disabled_agent,
+                    star_id=f'd{marker[:24]}',
+                    owner_id=owner,
+                    display_name='已停用快照测试分身',
+                    agent_name=f'disabled{marker[:10]}',
+                    api_key_hash=f'disabled{marker}',
+                    status='disabled',
                     created_via='client',
                 )
             )
@@ -216,8 +259,14 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
                 right=peer,
                 messages=[(other_owner, peer, '不可见消息')],
             )
+            disabled_agent_conversation = await _seed_direct_conversation(
+                session,
+                left=disabled_agent,
+                right=peer,
+                messages=[(disabled_agent, peer, '已停用分身消息')],
+            )
 
-        async with sessionmaker_pg() as session:
+        async with sessionmaker_pg.begin() as session:
             snapshot = await start_history_snapshot(
                 session,
                 owner_id=owner,
@@ -246,7 +295,7 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
                 )
             )
 
-        async with sessionmaker_pg() as session:
+        async with sessionmaker_pg.begin() as session:
             first_conversations = await list_history_snapshot_conversations(
                 session,
                 owner_id=owner,
@@ -279,8 +328,14 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
         conversations = first_conversations.items + second_conversations.items
         messages = first_messages.items + second_messages.items
         assert snapshot.head_revision == 88
+        assert snapshot.conversation_count == 2
+        assert snapshot.message_count == 4
+        assert snapshot.history_complete is True
         assert {item['conversation_id'] for item in conversations} == {owner_conversation, agent_conversation}
         assert unauthorized_conversation not in {item['conversation_id'] for item in conversations}
+        assert disabled_agent_conversation not in {
+            item['conversation_id'] for item in conversations
+        }
         assert len(messages) == 4
         assert {item['content_body']['text'] for item in messages} == {
             '主人消息一',
@@ -289,6 +344,8 @@ async def test_snapshot_restores_owner_and_owned_agent_history_with_stable_bound
             '分身消息二',
         }
         assert all(item['history_complete'] is True for item in conversations)
+        assert all(item['unread_count'] == 1 for item in conversations)
+        assert all(item['read_state'] and item['read_state'][0]['read_seq'] == 0 for item in conversations)
         assert first_conversations.has_more is True
         assert first_messages.has_more is True
     finally:
@@ -303,7 +360,7 @@ async def test_snapshot_token_cannot_cross_owner(
     try:
         async with sessionmaker_pg.begin() as session:
             _seed_humans(session, owner, other_owner)
-        async with sessionmaker_pg() as session:
+        async with sessionmaker_pg.begin() as session:
             snapshot = await start_history_snapshot(
                 session,
                 owner_id=owner,
@@ -319,3 +376,262 @@ async def test_snapshot_token_cannot_cross_owner(
                 )
     finally:
         await _cleanup(sessionmaker_pg, [owner, other_owner])
+
+
+async def test_snapshot_freezes_conversation_projection_and_message_content(
+    sessionmaker_pg: async_sessionmaker[AsyncSession],
+) -> None:
+    owner = _human('snapshot_frozen_owner_')
+    peer = _human('snapshot_frozen_peer_')
+    try:
+        async with sessionmaker_pg.begin() as session:
+            _seed_humans(session, owner, peer)
+            conversation_id = await _seed_direct_conversation(
+                session,
+                left=owner,
+                right=peer,
+                messages=[(owner, peer, '快照建立前的正文')],
+            )
+
+        async with sessionmaker_pg.begin() as session:
+            snapshot = await start_history_snapshot(
+                session,
+                owner_id=owner,
+                head_revision=2,
+            )
+
+        async with sessionmaker_pg.begin() as session:
+            conversation = await session.get(
+                HasnConversations,
+                uuid.UUID(conversation_id),
+            )
+            assert conversation is not None
+            conversation.revision = 99
+            message = (
+                (
+                    await session.execute(
+                        sa.select(HasnMessages).where(HasnMessages.conversation_id == uuid.UUID(conversation_id))
+                    )
+                )
+                .scalars()
+                .one()
+            )
+            message.content = {'text': '快照建立后的篡改正文'}
+
+        async with sessionmaker_pg.begin() as session:
+            conversations = await list_history_snapshot_conversations(
+                session,
+                owner_id=owner,
+                snapshot_token=snapshot.snapshot_token,
+                after=None,
+                limit=200,
+            )
+            messages = await list_history_snapshot_messages(
+                session,
+                owner_id=owner,
+                snapshot_token=snapshot.snapshot_token,
+                after=None,
+                limit=500,
+            )
+
+        assert conversations.items[0]['revision'] == 1
+        assert messages.items[0]['content_body']['text'] == '快照建立前的正文'
+    finally:
+        await _cleanup(sessionmaker_pg, [owner, peer])
+
+
+async def test_snapshot_excludes_lower_message_id_committed_after_capture(
+    sessionmaker_pg: async_sessionmaker[AsyncSession],
+) -> None:
+    owner = _human('late_owner_')
+    peer = _human('late_peer_')
+    other_peer = _human('late_other_')
+    late_session = sessionmaker_pg()
+    try:
+        async with sessionmaker_pg.begin() as session:
+            _seed_humans(session, owner, peer, other_peer)
+            late_conversation = await _seed_direct_conversation(
+                session,
+                left=owner,
+                right=peer,
+                messages=[(owner, peer, '并发会话基线')],
+            )
+            higher_conversation = await _seed_direct_conversation(
+                session,
+                left=owner,
+                right=other_peer,
+                messages=[],
+            )
+
+        await late_session.begin()
+        late_message = _message(
+            conversation_id=late_conversation,
+            conversation_seq=2,
+            sender=owner,
+            recipient=peer,
+            content='快照之后才提交的较小 ID',
+        )
+        late_session.add(late_message)
+        await late_session.flush()
+        late_message_id = int(late_message.id)
+
+        async with sessionmaker_pg.begin() as session:
+            higher_message = _message(
+                conversation_id=higher_conversation,
+                conversation_seq=1,
+                sender=owner,
+                recipient=other_peer,
+                content='快照前已提交的较大 ID',
+            )
+            session.add(higher_message)
+            await session.flush()
+            assert int(higher_message.id) > late_message_id
+
+        async with sessionmaker_pg.begin() as session:
+            snapshot = await start_history_snapshot(
+                session,
+                owner_id=owner,
+                head_revision=5,
+            )
+
+        await late_session.commit()
+
+        async with sessionmaker_pg() as session:
+            page = await list_history_snapshot_messages(
+                session,
+                owner_id=owner,
+                snapshot_token=snapshot.snapshot_token,
+                after=None,
+                limit=500,
+            )
+
+        contents = {item['content_body']['text'] for item in page.items}
+        assert '快照前已提交的较大 ID' in contents
+        assert '快照之后才提交的较小 ID' not in contents
+    finally:
+        if late_session.in_transaction():
+            await late_session.rollback()
+        await late_session.close()
+        await _cleanup(sessionmaker_pg, [owner, peer, other_peer])
+
+
+async def test_snapshot_rejects_page_after_owned_agent_is_transferred(
+    sessionmaker_pg: async_sessionmaker[AsyncSession],
+) -> None:
+    owner = _human('snapshot_revoke_owner_')
+    other_owner = _human('snapshot_revoke_other_')
+    peer = _human('snapshot_revoke_peer_')
+    owned_agent = _agent('snapshot_revoke_agent_')
+    identities = [owner, other_owner, peer, owned_agent]
+    try:
+        async with sessionmaker_pg.begin() as session:
+            _seed_humans(session, owner, other_owner, peer)
+            marker = uuid.uuid4().hex
+            session.add(
+                HasnAgents(
+                    hasn_id=owned_agent,
+                    star_id=f'a{marker[:24]}',
+                    owner_id=owner,
+                    display_name='即将转移的分身',
+                    agent_name=f'snapshot{marker[:10]}',
+                    api_key_hash=marker,
+                    status='active',
+                    created_via='client',
+                )
+            )
+            await _seed_direct_conversation(
+                session,
+                left=owned_agent,
+                right=peer,
+                messages=[(owned_agent, peer, '分身私密历史')],
+            )
+
+        async with sessionmaker_pg.begin() as session:
+            snapshot = await start_history_snapshot(
+                session,
+                owner_id=owner,
+                head_revision=3,
+            )
+
+        async with sessionmaker_pg.begin() as session:
+            agent = (
+                (await session.execute(sa.select(HasnAgents).where(HasnAgents.hasn_id == owned_agent))).scalars().one()
+            )
+            agent.owner_id = other_owner
+
+        async with sessionmaker_pg() as session:
+            with pytest.raises(
+                HistorySnapshotTokenError,
+                match='身份归属已变化',
+            ):
+                await list_history_snapshot_messages(
+                    session,
+                    owner_id=owner,
+                    snapshot_token=snapshot.snapshot_token,
+                    after=None,
+                    limit=500,
+                )
+    finally:
+        await _cleanup(sessionmaker_pg, identities)
+
+
+async def test_snapshot_keeps_disbanded_conversation_history(
+    sessionmaker_pg: async_sessionmaker[AsyncSession],
+) -> None:
+    owner = _human('disband_owner_')
+    peer = _human('disband_peer_')
+    try:
+        async with sessionmaker_pg.begin() as session:
+            _seed_humans(session, owner, peer)
+            conversation_id = await _seed_direct_conversation(
+                session,
+                left=owner,
+                right=peer,
+                messages=[(owner, peer, '解散前仍应恢复的历史')],
+            )
+            conversation = await session.get(
+                HasnConversations,
+                uuid.UUID(conversation_id),
+            )
+            assert conversation is not None
+            conversation.status = 'disbanded'
+            memberships = (
+                (
+                    await session.execute(
+                        sa.select(HasnConversationMemberships).where(
+                            HasnConversationMemberships.conversation_id == uuid.UUID(conversation_id)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for membership in memberships:
+                membership.left_seq = 1
+                membership.state = 'left'
+
+        async with sessionmaker_pg.begin() as session:
+            snapshot = await start_history_snapshot(
+                session,
+                owner_id=owner,
+                head_revision=4,
+            )
+            conversations = await list_history_snapshot_conversations(
+                session,
+                owner_id=owner,
+                snapshot_token=snapshot.snapshot_token,
+                after=None,
+                limit=200,
+            )
+            messages = await list_history_snapshot_messages(
+                session,
+                owner_id=owner,
+                snapshot_token=snapshot.snapshot_token,
+                after=None,
+                limit=500,
+            )
+
+        assert [item['conversation_id'] for item in conversations.items] == [conversation_id]
+        assert [item['content_body']['text'] for item in messages.items] == ['解散前仍应恢复的历史']
+    finally:
+        await _cleanup(sessionmaker_pg, [owner, peer])

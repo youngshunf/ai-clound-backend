@@ -417,6 +417,7 @@ async def get_or_create_conversation(
                 read_seq=0,
                 state='active',
                 joined_at=timezone.now(),
+                history_complete_from_seq=1,
             ),
             HasnConversationMemberships(
                 conversation_id=conv.id,
@@ -427,6 +428,7 @@ async def get_or_create_conversation(
                 read_seq=0,
                 state='active',
                 joined_at=timezone.now(),
+                history_complete_from_seq=1,
             ),
         ]
     )

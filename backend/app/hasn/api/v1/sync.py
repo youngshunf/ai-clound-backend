@@ -1,4 +1,5 @@
 """P0 HASN sync/runtime report endpoints."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -13,7 +14,8 @@ from backend.app.hasn.schema.hasn_sync import (
     FullRefreshDirective,
     MemorySyncPullRequest,
     MemorySyncPullResponse,
-    MessageHistoryBootstrapPageRequest,
+    MessageHistoryBootstrapConversationPageRequest,
+    MessageHistoryBootstrapMessagePageRequest,
     MessageHistoryBootstrapPageResponse,
     MessageHistoryBootstrapStartRequest,
     MessageHistoryBootstrapStartResponse,
@@ -52,6 +54,7 @@ from backend.common.response.response_schema import ResponseSchemaModel, respons
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import (
     CurrentImSession,
+    CurrentImSessionTransaction,
     CurrentSessionTransaction,
     CurrentSyncSession,
     CurrentSyncSessionTransaction,
@@ -115,11 +118,7 @@ async def pull_sync_events(
         ],
         next_cursor=result.next_cursor,
         has_more=result.has_more,
-        full_refresh=(
-            FullRefreshDirective(**asdict(result.full_refresh))
-            if result.full_refresh is not None
-            else None
-        ),
+        full_refresh=(FullRefreshDirective(**asdict(result.full_refresh)) if result.full_refresh is not None else None),
     )
 
 
@@ -131,7 +130,7 @@ async def pull_sync_events(
 async def start_message_history_bootstrap(
     request: Request,
     sync_db: CurrentSyncSession,
-    im_db: CurrentImSession,
+    im_db: CurrentImSessionTransaction,
     request_body: MessageHistoryBootstrapStartRequest,
 ) -> MessageHistoryBootstrapStartResponse:
     """固定同步流头与消息上界，供新设备从稳定快照恢复本地镜像。"""
@@ -150,6 +149,9 @@ async def start_message_history_bootstrap(
         head_revision=snapshot.head_revision,
         head_cursor=owner_cursor(owner_id, snapshot.head_revision),
         message_upper_bound=snapshot.message_upper_bound,
+        conversation_count=snapshot.conversation_count,
+        message_count=snapshot.message_count,
+        history_complete=snapshot.history_complete,
     )
 
 
@@ -161,7 +163,7 @@ async def start_message_history_bootstrap(
 async def page_message_history_conversations(
     request: Request,
     db: CurrentImSession,
-    request_body: MessageHistoryBootstrapPageRequest,
+    request_body: MessageHistoryBootstrapConversationPageRequest,
 ) -> MessageHistoryBootstrapPageResponse:
     """返回主人本人和名下分身当前可见的会话对象投影。"""
     owner_id = require_owner_identity(request, request_body.owner_id)
@@ -190,7 +192,7 @@ async def page_message_history_conversations(
 async def page_message_history_messages(
     request: Request,
     db: CurrentImSession,
-    request_body: MessageHistoryBootstrapPageRequest,
+    request_body: MessageHistoryBootstrapMessagePageRequest,
 ) -> MessageHistoryBootstrapPageResponse:
     """按成员周期裁剪并返回快照上界内的权威消息。"""
     owner_id = require_owner_identity(request, request_body.owner_id)
@@ -245,13 +247,11 @@ async def push_sync_events(
             )
         )
     result = await accept_envelopes(db, envelopes)
-    for item in result.items:
-        if item.status == 'conflict':
-            rejected.append(
-                _CONFLICT_ERROR.model_copy(
-                    update={'detail': {'client_event_id': item.client_event_id}}
-                )
-            )
+    rejected.extend(
+        _CONFLICT_ERROR.model_copy(update={'detail': {'client_event_id': item.client_event_id}})
+        for item in result.items
+        if item.status == 'conflict'
+    )
     bounds = await SQLAlchemySyncStore().stream_bounds(db, owner_id=owner_id)
     return SyncPushResponse(
         accepted=result.accepted,

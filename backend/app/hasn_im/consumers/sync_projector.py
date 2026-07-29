@@ -79,6 +79,7 @@ class SyncProjector:
         audience = await resolve_audience_owner_ids(
             db,
             conversation_id=facts.conversation_id,
+            conversation_seq=facts.conversation_seq,
         )
         if not audience:
             return
@@ -91,9 +92,7 @@ class SyncProjector:
 
         for owner_id in audience:
             owner_origin_session_id = (
-                facts.origin_session_id
-                if (facts.origin_session_id and owner_id == sender_owner_id)
-                else None
+                facts.origin_session_id if (facts.origin_session_id and owner_id == sender_owner_id) else None
             )
             envelope = SyncEnvelope(
                 owner_id=owner_id,
@@ -119,6 +118,7 @@ class SyncProjector:
         audience = await resolve_audience_owner_ids(
             db,
             conversation_id=facts.conversation_id,
+            conversation_seq=facts.conversation_seq,
         )
         for owner_id in audience:
             await self.appender.append(
