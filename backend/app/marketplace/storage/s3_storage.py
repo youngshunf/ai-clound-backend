@@ -73,6 +73,31 @@ class MarketplaceStorageService:
                 return storage.id
         return None  # 无公共桶配置则回退默认行为（storages[0]）
 
+    async def _require_public_storage_id(
+        self,
+        db: AsyncSession,
+        storage_id: int | None,
+    ) -> int:
+        """解析公开市场制品桶；缺少或误配私有桶时显式失败。"""
+        resolved = await self._resolve_public_storage_id(db, storage_id)
+        if resolved is None:
+            raise errors.NotFoundError(msg='公开市场制品缺少 access=public 的 S3 存储配置')
+        storage = await s3_storage_dao.get(db, resolved)
+        if storage is None or getattr(storage, 'access', None) != 'public':
+            raise errors.RequestError(msg='公开市场制品只能写入 access=public 的 S3 存储')
+        return resolved
+
+    async def is_public_url(self, db: AsyncSession, url: str) -> bool:
+        """判断持久化 URL 是否属于当前任一公开存储配置。"""
+        if not url:
+            return False
+        storages = await s3_storage_dao.get_all(db)
+        return any(
+            getattr(storage, 'access', None) == 'public'
+            and url.startswith(self._build_url(storage, ''))
+            for storage in storages
+        )
+
     @staticmethod
     def _calculate_hash(content: bytes) -> str:
         """计算内容的 SHA256 哈希值"""
@@ -198,6 +223,7 @@ class MarketplaceStorageService:
         同一语义版本允许内容指纹推进；对象键包含 ZIP SHA256，旧 CDN URL 永不被覆盖，
         避免边缘缓存继续返回同版本旧包。
         """
+        storage_id = await self._require_public_storage_id(db, storage_id)
         op, s3_storage = await self._get_operator(db, storage_id)
         file_hash = self._calculate_hash(content)
         file_size = len(content)
@@ -214,6 +240,7 @@ class MarketplaceStorageService:
         storage_id: int | None,
     ) -> tuple[str, str, int]:
         """上传已按 SHA256 生成对象键的不可变发布制品。"""
+        storage_id = await self._require_public_storage_id(db, storage_id)
         op, s3_storage = await self._get_operator(db, storage_id)
         await op.write(path, content)
         return (
