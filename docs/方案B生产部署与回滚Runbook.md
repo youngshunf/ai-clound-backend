@@ -184,15 +184,17 @@ pending/processing 是持久投递事实，回滚不得清空。
 ### 6.1 三态顺序
 
 1. `HASN_OFFLINE_RECOVERY=redis`：旧事实源。
-2. `HASN_OFFLINE_RECOVERY=dual`：客户端只读 Redis；PostgreSQL sync 仅 shadow 对账。
+2. `HASN_OFFLINE_RECOVERY=dual`：客户端只走 PostgreSQL sync/history 恢复；Redis LIST
+   继续影子写入，仅用于稳定身份对账，不参与 claim、ACK 或客户端展示。
 3. `HASN_OFFLINE_RECOVERY=sync`：客户端从 PostgreSQL sync 恢复；Redis offline 停写。
 
-`dual` 禁止双重回放。每个 durable 写点必须先有 PostgreSQL sync event，Redis 只保留短期加速。
+`dual` 禁止双重回放。每个 durable 写点必须先有 PostgreSQL sync event，Redis 只保留短期
+影子证据。
 
 ### 6.2 门禁
 
 - 7 天以上离线、空库恢复、双设备并发、断点重连均通过真实 E2E。
-- 7 天 shadow 中 `redis_only=0` 且不存在不可恢复 gap。
+- 7 天 shadow 中 `redis_only_unrecoverable=0` 且不存在不可恢复 gap。
 - SQLite 事务失败不推进 cursor。
 - task.exec 重放由 inbox lease、运行中 work session 和终态 work session 三层幂等收敛。
 - `SCAN hasn:offline:*` 的计数与抽样稳定消息 ID 已同 sync feed 对账并留证。

@@ -757,12 +757,12 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B5-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0e323c25` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-02 | 实现已合入，生产四 consumer 与原位重连、隔离 broker 真实重启恢复已通过；真实 Redis pending 完整组合拓扑待验 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`8696e9b6` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-03 | 实现已合入，10 万条真实 shadow 对账通过；生产 24h 观察待 B3 门禁解除 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`559a6bca` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B6-01 | 待开始 | — | — | — | — |
-| B6-02 | 待开始 | — | — | — | — |
-| B6-03 | 待开始 | — | — | — | — |
-| B6-04 | 待开始 | — | — | — | — |
-| B7-01 | 待开始 | — | — | — | — |
-| B7-02 | 待开始 | — | — | — | — |
+| B6-01 | 覆盖矩阵、静态守卫和后端事务实现已合入；生产真实 PostgreSQL/双设备验收待部署 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B6-02 | daemon 常驻补拉、历史快照、SQLite 命令收件箱与幂等提交已合入 hasn-node `main`；真实云端 E2E 待部署 | `fix/doc03-message-history-bootstrap` | `hasn-node/.worktrees/doc03-message-history-bootstrap` | `c972720ac`–`ac637fbe2` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B6-03 | offline dual、低基数对账和定时任务实现已合入；生产 7 天 shadow 待 B2/B3 门禁通过后启动 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B6-04 | `sync` 停写/停读 Redis offline 的实现门禁已具备；正式切换等待生产 7 天 shadow 与客户端 E2E | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B7-01 | 代码、指标、私网采集、dashboard 和 10 条规则已生产就绪；真实 trace、接收器路由与 alarm 演练待完成 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `05551659`、`c641db26a`、`935600d1f` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B7-02 | Runbook 已合入，生产可观测配置已留证；跨阶段最终演练和全部切换收口待前置门槛 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `05551659`、`935600d1f` | `docs/方案B生产部署与回滚Runbook.md`、父仓生产部署记录 |
 
 ## 8. 最终完成定义
 

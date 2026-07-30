@@ -833,7 +833,185 @@ test_real_rabbitmq_recovers_after_isolated_broker_restart -q
 pending、四个完整 API worker、broker 停机与周期 drain”合并为一个端到端拓扑，
 因此 B5-02 的对应组合验收项保持未勾选。
 
-## 10. 后续证据索引
+## 10. B6 离线恢复收口
+
+### 10.1 B6-01/B6-03/B6-04 后端实现
+
+实现提交为 `0eeed735`。`docs/方案B离线帧Durable覆盖矩阵.md` 逐项登记所有生产
+`RealtimeFrame`，把它们归入 durable sync、瞬时无需离线或缺口待补；AST 静态守卫确保
+新增离线方法没有登记时 CI 直接失败。实现同时满足：
+
+- `HASN_OFFLINE_RECOVERY=dual` 时，客户端恢复只走 PostgreSQL sync/history；
+  `hasn:offline:*` 继续影子写入，但不参与 claim、ACK 或用户可见展示；
+- `HASN_OFFLINE_RECOVERY=sync` 在构造 Redis offline key 前停止写入、claim、ACK 和遗留读取；
+- `hasn.task.exec` 的任务 run、dispatch outbox 和 sync event 共用业务事务与稳定
+  `dispatch_id=task:run:{run_id}:exec`；
+- 定时对账按稳定身份区分 Redis 独有、sync 独有和两边都有，指标只使用低基数
+  `result` 标签；Redis 候选会精确查询仍保留的历史 sync 事实，避免 LIST 整键 TTL
+  被新写入刷新后误报。
+
+2026-07-30 复跑 B6/B7 相关测试：
+
+```text
+uv run pytest \
+  backend/app/hasn_im/tests/test_architecture_guards.py \
+  backend/app/hasn_im/tests/test_observability_metrics.py \
+  backend/app/hasn_im/tests/test_offline_frame_policy.py \
+  backend/app/hasn_im/tests/test_offline_shadow_reconciler.py \
+  backend/app/hasn_im/tests/test_task_dispatch_outbox_pg.py \
+  backend/tests/tasks/test_celery_broker_config.py \
+  backend/tests/test_rabbitmq_observability.py -q
+=> 68 passed，2 errors
+```
+
+两项 error 都来自真实 PostgreSQL fixture 连接 `127.0.0.1:5432` 被拒绝；没有改成
+mock、skip 或假数据。它们是 B6 生产部署后必须补跑的真实事务与 Redis 恢复门槛，
+因此 B6-01 尚不能标记生产验收完成。
+
+### 10.2 B6-02 daemon durable 命令与同步补拉
+
+`hasn-node` 使用既有 worktree
+`.worktrees/doc03-message-history-bootstrap`、分支
+`fix/doc03-message-history-bootstrap` 实现，并于 2026-07-30 fast-forward 合入主分支、
+从主 clone 推送至 `origin/main@ac637fbe2`。该分支从 `c972720ac` 起包含消息历史
+bootstrap 全链，新增 durable 命令提交为 `03c0ee844`，Clippy 守卫收口为
+`ac637fbe2`：
+
+- owner schema 新增 V027 `sync_command_inbox`，实时 `hasn.task.exec` 与 sync pull
+  先经过同一个 SQLite 幂等收件箱；
+- 命令使用租约领取、到期接管和持久化退避，登录、冷启动、恢复、重连和周期补拉均会
+  drain；
+- 调度入口对运行中稳定工作会话和 completed/error/cancelled 终态工作会话均返回
+  `AlreadyRunning`，避免同一 `dispatch_id` 重复执行；
+- `message.recalled` 在 SQLite 事务内原子修正消息状态、正文和会话预览；
+  `conversation.updated` 按权威 revision 回源，失败时不推进 cursor；
+- retention gap 进入历史快照，WS 与 sync 依靠稳定 ID 收敛。
+
+截至 2026-07-30 的定向验证：
+
+```text
+cargo test -p hasn-node runtime::sync_pull
+=> 56 passed
+
+cargo test -p hasn-daemon --test cross_device_msg_sync
+=> 3 passed
+
+cargo test -p hasn-daemon --lib \
+  wire_session::tests::handle_inbound_task_exec_dispatches_runtime_and_reports_task_result \
+  -- --exact
+=> 1 passed
+```
+
+此外，消息撤回、SQLite inbox、运行中/终态重复、迁移目录和四库参考 schema 的精确测试
+全部通过；`cargo fmt --all -- --check`、`cargo check -p hasn-node`、
+`cargo check -p hasn-daemon`，以及下列生产代码 Clippy 也已通过：
+
+```text
+cargo clippy -p hasn-node -p hasn-daemon --lib --all-features -- -D warnings
+=> 通过
+```
+
+全 targets Clippy 先发现并修复本分支测试的 `expect_used`、`panic` 和不必要借用；
+继续运行后只剩主线既有增长派发测试的
+`literal_string_with_formatting_args`。为继续审计而临时放行该单项时，外置
+`/Volumes/ExtraData` 从系统中消失，导致未修改的 `hasn-mcp` 编译器进程以
+`SIGBUS` 退出；`diskutil` 已确认对应物理盘不再可见。内置盘仅余约 24 GiB，
+不得用新建本地全量 target 把系统盘写满。因此 `--all-targets --all-features`
+门槛保持未完成，外置盘恢复后必须从明确 target 重跑。真实云端、PostgreSQL、
+双设备和 `p0_real_e2e.py` 仍须等待后端与 daemon 同窗部署。
+
+### 10.3 尚未通过的 B6 生产门槛
+
+- 后端新代码尚未生产部署，`HASN_OFFLINE_RECOVERY` 仍未进入生产 `dual`。
+- 生产 7 天 shadow 尚未开始；没有
+  `redis_only_unrecoverable=0` 的连续七天证据。
+- 真实双设备断网、撤回、成员变更、任务命令、retention gap、空库恢复尚未完成。
+- 上述门槛通过前不得切到 `sync`，也不得清理旧 Redis offline key。
+
+## 11. B7 可观测与生产收口
+
+### 11.1 代码与监控资产
+
+实现提交为 `05551659`，主分支合入提交为 `c641db26a`，私网防火墙 Runbook 修订为
+`935600d1f`。实现包含：
+
+- W3C `traceparent`/`tracestate` 传播，不传播 baggage；
+- `hasn.im.integration_event.process → rabbitmq.publish → rabbitmq.process →
+  websocket.send` span 链；
+- publish confirm、delivery ACK 和 redelivery 应用指标；
+- RabbitMQ 原生指标的私网 systemd socket proxy；
+- 生产 dashboard、Prometheus 采集、10 条告警规则和完整 Runbook。
+
+本地验证结果：
+
+```text
+RabbitMQ/B6/B7 非 PostgreSQL 定向用例
+=> 68 passed
+
+uv run mypy <6 个 B7 源文件>
+=> Success: no issues found
+
+uv run pytest backend/tests/test_rabbitmq_observability.py -q
+=> 7 passed
+
+uv run prek run --files <B7 变更文件>
+=> 全部 hooks 通过
+```
+
+### 11.2 生产 Prometheus 与 Grafana
+
+2026-07-30 生产配置备份位于：
+
+```text
+/data2/huanxing-observability/backups/scheme-b-observability-20260730-101155
+```
+
+RabbitMQ 原生 Prometheus endpoint 保持 `127.0.0.1:15692`。生产启用精确的 systemd
+socket proxy：
+
+```text
+listen  = 172.24.0.1:15693
+forward = 127.0.0.1:15692
+service = active，NRestarts=0
+```
+
+UFW 只允许固定 Prometheus 地址 `172.24.0.250` 访问该私网端口；从外部网络探测
+15693 不可达。Prometheus 只读挂载 rules 目录并仅重建自身容器后：
+
+- `rabbitmq` target 为 `up`；
+- `scheme-b-rabbitmq` 规则组 10/10 `health=ok`，当前全部 inactive；
+- Grafana file provider 已加载 UID `huanxing-scheme-b-rabbitmq`，位于“唤星生产”目录。
+
+10:23 CST 的真实 broker 样本：
+
+```text
+published=19388
+confirmed=19388
+returned=0
+delivered_ack=1802
+acked=1770
+redelivery=0
+ready=0
+unacked=0
+consumers=4
+memory_alarm=0
+disk_alarm=0
+```
+
+本轮仅重建 Prometheus，并未重启 RabbitMQ、Celery、API 或 HASN worker，因而没有重置
+B2 的 Celery/RabbitMQ 稳定观察窗。
+
+### 11.3 尚未通过的 B7 门槛
+
+- 后端 B7 代码尚未生产部署，真实消息 trace 还不能在 Tempo/Grafana Explore 验证。
+- Grafana 当前没有 contact point，默认 policy receiver 为 `empty`。必须取得真实
+  PagerDuty、企业微信、邮件或 webhook 接收器后，才能执行通知和 resolved 闭环；
+  禁止配置本地或伪造接收器冒充验收。
+- 在真实接收器就绪前不得执行 memory/disk alarm 生产演练。
+- 当前环境没有可用的已登录 Browser 会话，dashboard JSON 与加载状态已机械验证，
+  但可视化截图验收仍待浏览器会话。
+
+## 12. 后续证据索引
 
 | 阶段 | 证据 |
 |---|---|
@@ -841,5 +1019,5 @@ pending、四个完整 API worker、broker 停机与周期 drain”合并为一�
 | B3 | B3-01 见第 5 节；B3-02 见第 6 节，恢复核验已完成，生产切换被共享实例归属门禁阻断 |
 | B4 | 实现和生产真实互通见第 7 节，正式切换等待观察门槛 |
 | B5 | B5-01 见第 8 节；B5-02/B5-03 实现及生产真实测试见第 9 节 |
-| B6 | 待 offline sync 后端/daemon 分支建立后登记 |
-| B7 | 待可观测与最终生产收口分支建立后登记 |
+| B6 | 实现与当前验证见第 10 节；生产 dual 七天观察和真实双设备 E2E 待完成 |
+| B7 | 代码、生产采集、dashboard 和规则见第 11 节；真实 trace、接收器与 alarm 演练待完成 |
