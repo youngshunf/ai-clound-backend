@@ -48,6 +48,18 @@ def test_message_infrastructure_defaults_preserve_redis_behavior(
     assert configured.REALTIME_RABBITMQ_VHOST == 'huanxing'
 
 
+@pytest.mark.parametrize(('raw_value', 'expected'), [('2', 2), ('3', 3)])
+def test_redis_protocol_environment_string_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected: int,
+) -> None:
+    """`.env` 文本值必须归一化为 redis-py 接受的整数协议版本。"""
+    configured = _settings(monkeypatch, REDIS_PROTOCOL=raw_value)
+
+    assert expected == configured.REDIS_PROTOCOL
+
+
 def test_new_settings_are_declared_in_model_and_example_environment() -> None:
     example = ENV_EXAMPLE_FILE_PATH.read_text(encoding='utf-8')
 

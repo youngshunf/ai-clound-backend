@@ -5,7 +5,7 @@ from re import Pattern
 from re import compile as compile_pattern
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH
@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     REDIS_PROTOCOL: Literal[2, 3] = 2
     # Redis 6 使用 Lua；Redis 8 蓝绿验收后由生产环境显式切到原生 LMOVE。
     REDIS_LIST_MOVE_MODE: Literal['lua', 'lmove'] = 'lua'
+
+    @field_validator('REDIS_PROTOCOL', mode='before')
+    @classmethod
+    def normalize_redis_protocol(cls, value: object) -> object:
+        """把 `.env` 文本协议版本归一化为 redis-py 需要的整数。"""
+        if isinstance(value, str) and value in {'2', '3'}:
+            return int(value)
+        return value
 
     # 缓存
     CACHE_LOCAL_ENABLED: bool = True
