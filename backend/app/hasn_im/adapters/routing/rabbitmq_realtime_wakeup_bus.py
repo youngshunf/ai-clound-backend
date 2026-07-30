@@ -23,6 +23,9 @@ from aio_pika.abc import (
 from aio_pika.robust_channel import RobustChannel
 
 from backend.app.hasn_im.observability.metrics import (
+    HASN_RABBITMQ_DELIVERY_ACK_TOTAL,
+    HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL,
+    HASN_RABBITMQ_REDELIVERY_TOTAL,
     HASN_REALTIME_WAKEUP_CONSUME_TOTAL,
     HASN_REALTIME_WAKEUP_LATENCY_SECONDS,
     HASN_REALTIME_WAKEUP_PUBLISH_TOTAL,
@@ -34,10 +37,17 @@ from backend.common.messaging.rabbitmq import (
     build_amqp_dsn,
     describe_rabbitmq_endpoint,
 )
+from backend.common.observability.otel import (
+    inject_rabbitmq_trace_headers,
+    mark_messaging_span,
+    rabbitmq_consume_span,
+    rabbitmq_publish_span,
+)
 from backend.core.conf import settings
 
 REALTIME_EXCHANGE = 'huanxing.realtime'
 REALTIME_QUEUE_PREFIX = 'huanxing.realtime.worker.'
+REALTIME_QUEUE_TRACE_DESTINATION = 'huanxing.realtime.worker'
 REALTIME_QUEUE_EXPIRES_MS = 300_000
 RECONNECT_DELAY_SECS = 2.0
 PUBLISHER_RECOVERY_TIMEOUT_SECS = 30.0
@@ -262,41 +272,52 @@ class RabbitMQRealtimeWakeupBus:
         await asyncio.wait_for(self._ready.wait(), timeout=timeout)
 
     async def _publish(self, body: bytes) -> None:
-        message = aio_pika.Message(
-            body=body,
-            content_type='application/json',
-            delivery_mode=aio_pika.DeliveryMode.NOT_PERSISTENT,
-        )
-        for attempt in range(2):
-            exchange: AbstractExchange | None = None
-            try:
-                exchange = await self._publisher()
-                await exchange.publish(
-                    message,
-                    routing_key='',
-                )
-            except Exception as exc:
-                if attempt == 0 and exchange is not None:
-                    # confirm 失败时交付状态可能不确定；同一 event_id 最多重放一次。
-                    # 唤醒不承载业务事实，重复由 pending/generation 语义幂等收敛。
-                    log.warning(
-                        '[RabbitMQRealtimeWakeupBus] publisher 连接失效，'
-                        f'重建后重放一次 {self._endpoint} error={type(exc).__name__}'
+        with rabbitmq_publish_span(REALTIME_EXCHANGE) as span:
+            message = aio_pika.Message(
+                body=body,
+                content_type='application/json',
+                delivery_mode=aio_pika.DeliveryMode.NOT_PERSISTENT,
+                headers=inject_rabbitmq_trace_headers(),
+            )
+            for attempt in range(2):
+                exchange: AbstractExchange | None = None
+                try:
+                    exchange = await self._publisher()
+                    await exchange.publish(
+                        message,
+                        routing_key='',
                     )
-                    await self._reset_publisher_if_current(exchange)
-                    await asyncio.sleep(RECONNECT_DELAY_SECS)
-                    continue
-                HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
-                    transport='rabbitmq',
-                    result='error',
-                ).inc()
-                raise
-            else:
-                HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
-                    transport='rabbitmq',
-                    result='ok',
-                ).inc()
-                return
+                except Exception as exc:
+                    if attempt == 0 and exchange is not None:
+                        # confirm 失败时交付状态可能不确定；同一 event_id 最多重放一次。
+                        # 唤醒不承载业务事实，重复由 pending/generation 语义幂等收敛。
+                        span.set_attribute('hasn.messaging.retried', True)
+                        log.warning(
+                            '[RabbitMQRealtimeWakeupBus] publisher 连接失效，'
+                            f'重建后重放一次 {self._endpoint} error={type(exc).__name__}'
+                        )
+                        await self._reset_publisher_if_current(exchange)
+                        await asyncio.sleep(RECONNECT_DELAY_SECS)
+                        continue
+                    HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                        transport='rabbitmq',
+                        result='error',
+                    ).inc()
+                    HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL.labels(
+                        result='error',
+                    ).inc()
+                    mark_messaging_span(span, result='confirm_error', error=exc)
+                    raise
+                else:
+                    HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                        transport='rabbitmq',
+                        result='ok',
+                    ).inc()
+                    HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL.labels(
+                        result='confirmed',
+                    ).inc()
+                    mark_messaging_span(span, result='confirmed')
+                    return
 
     async def _publisher(self) -> AbstractExchange:
         async with self._publisher_lock:
@@ -400,58 +421,85 @@ class RabbitMQRealtimeWakeupBus:
                 await self._close_consumer()
 
     async def _consume_message(self, message: AbstractIncomingMessage) -> None:
-        async with message.process(requeue=False):
-            event = decode_wakeup_event(message.body)
-            if event is None:
-                HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL.labels(
-                    transport='rabbitmq',
-                ).inc()
-                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
-                    transport='rabbitmq',
-                    result='schema_error',
-                ).inc()
-                log.warning('[RabbitMQRealtimeWakeupBus] 丢弃并确认 schema 非法的唤醒事件')
-                return
-            latency_seconds = max(
-                (time.time_ns() // 1_000_000 - event.sent_at_ms) / 1000,
-                0.0,
-            )
-            HASN_REALTIME_WAKEUP_LATENCY_SECONDS.labels(
-                transport='rabbitmq',
-            ).observe(latency_seconds)
-            observer = self._consume_observer
-            if observer is not None:
-                try:
-                    observer(event)
-                except Exception as exc:
-                    log.warning(
-                        '[RabbitMQRealtimeWakeupBus] consume observer 失败 '
-                        f'event_id={event.event_id} error={type(exc).__name__}'
-                    )
-            handler = self._handler
-            if handler is None:
-                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
-                    transport='rabbitmq',
-                    result='handler_missing',
-                ).inc()
-                log.warning('[RabbitMQRealtimeWakeupBus] consumer 未绑定 handler，事件已确认')
-                return
+        redelivered = bool(message.redelivered)
+        if redelivered:
+            HASN_RABBITMQ_REDELIVERY_TOTAL.inc()
+        with rabbitmq_consume_span(
+            destination=REALTIME_QUEUE_TRACE_DESTINATION,
+            headers=message.headers,
+            redelivered=redelivered,
+        ) as span:
+            result = 'ok'
+            processing_error: Exception | None = None
             try:
-                await handler(event.delivery_event)
+                async with message.process(requeue=False):
+                    event = decode_wakeup_event(message.body)
+                    if event is None:
+                        result = 'schema_error'
+                        HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL.labels(
+                            transport='rabbitmq',
+                        ).inc()
+                        HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                            transport='rabbitmq',
+                            result=result,
+                        ).inc()
+                        log.warning('[RabbitMQRealtimeWakeupBus] 丢弃并确认 schema 非法的唤醒事件')
+                    else:
+                        latency_seconds = max(
+                            (time.time_ns() // 1_000_000 - event.sent_at_ms) / 1000,
+                            0.0,
+                        )
+                        HASN_REALTIME_WAKEUP_LATENCY_SECONDS.labels(
+                            transport='rabbitmq',
+                        ).observe(latency_seconds)
+                        observer = self._consume_observer
+                        if observer is not None:
+                            try:
+                                observer(event)
+                            except Exception as exc:
+                                log.warning(
+                                    '[RabbitMQRealtimeWakeupBus] consume observer 失败 '
+                                    f'event_id={event.event_id} error={type(exc).__name__}'
+                                )
+                        handler = self._handler
+                        if handler is None:
+                            result = 'handler_missing'
+                            HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                                transport='rabbitmq',
+                                result=result,
+                            ).inc()
+                            log.warning('[RabbitMQRealtimeWakeupBus] consumer 未绑定 handler，事件已确认')
+                        else:
+                            try:
+                                await handler(event.delivery_event)
+                            except Exception as exc:
+                                result = 'handler_error'
+                                processing_error = exc
+                                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                                    transport='rabbitmq',
+                                    result=result,
+                                ).inc()
+                                log.warning(
+                                    '[RabbitMQRealtimeWakeupBus] handler 失败，事件不重入队 '
+                                    f'event_id={event.event_id} error={type(exc).__name__}'
+                                )
+                            else:
+                                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                                    transport='rabbitmq',
+                                    result=result,
+                                ).inc()
             except Exception as exc:
-                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
-                    transport='rabbitmq',
-                    result='handler_error',
-                ).inc()
-                log.warning(
-                    '[RabbitMQRealtimeWakeupBus] handler 失败，事件不重入队 '
-                    f'event_id={event.event_id} error={type(exc).__name__}'
-                )
+                HASN_RABBITMQ_DELIVERY_ACK_TOTAL.labels(result='error').inc()
+                mark_messaging_span(span, result='ack_error', error=exc)
+                raise
             else:
-                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
-                    transport='rabbitmq',
-                    result='ok',
-                ).inc()
+                HASN_RABBITMQ_DELIVERY_ACK_TOTAL.labels(result='acked').inc()
+                mark_messaging_span(
+                    span,
+                    result=result,
+                    error=processing_error,
+                    failed=result != 'ok',
+                )
 
     async def _close_consumer(self) -> None:
         channel = self._consumer_channel

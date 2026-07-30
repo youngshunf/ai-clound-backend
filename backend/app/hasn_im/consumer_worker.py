@@ -17,37 +17,41 @@ import os
 import signal
 import socket
 import time
+
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.hasn_im.consumers import store
-from backend.app.hasn_im.consumers.framework import ConsumerRunner
-from backend.app.hasn_im.consumers.push_notifier import PushNotifier
-from backend.app.hasn_im.consumers.realtime_notifier import RealtimeNotifier
-from backend.app.hasn_im.consumers.sync_projector import SyncProjector
+from backend.app.hasn.service.group_im_outbox import build_group_im_relay
+from backend.app.hasn.service.hasn_relation_command_outbox_service import (
+    RelationCommandOutboxRelay,
+)
+from backend.app.hasn.service.session_im_outbox import build_session_im_relay
+from backend.app.hasn_community.service.community_im_outbox import (
+    build_community_im_relay,
+)
 from backend.app.hasn_im.application.provider import (
     get_im_gateway,
     get_realtime_gateway,
     get_relation_gateway,
 )
+from backend.app.hasn_im.consumers import store
+from backend.app.hasn_im.consumers.framework import ConsumerRunner
+from backend.app.hasn_im.consumers.push_notifier import PushNotifier
+from backend.app.hasn_im.consumers.realtime_notifier import RealtimeNotifier
+from backend.app.hasn_im.consumers.sync_projector import SyncProjector
 from backend.app.hasn_im.observability import metrics
-from backend.app.hasn.service.session_im_outbox import build_session_im_relay
-from backend.app.hasn.service.group_im_outbox import build_group_im_relay
-from backend.app.hasn.service.hasn_relation_command_outbox_service import (
-    RelationCommandOutboxRelay,
+from backend.app.hasn_task.service.task_dispatch_outbox import (
+    build_task_dispatch_relay,
 )
 from backend.app.notification.service.notification_im_outbox import (
     build_notification_im_relay,
 )
-from backend.app.hasn_community.service.community_im_outbox import (
-    build_community_im_relay,
-)
-from backend.app.hasn_task.service.task_dispatch_outbox import (
-    build_task_dispatch_relay,
-)
+from backend.common.observability.otel import init_resource, init_tracer
+from backend.core.conf import settings
 from backend.database.db import im_service_db_session, python_backend_db_session
 from backend.database.schema_names import SCHEMA_NAMES
 
@@ -58,6 +62,13 @@ _DURABLE_CONSUMERS = frozenset({'sync_projector'})
 _EVENTS = SCHEMA_NAMES.im_event_table('integration_events')
 _OFFSETS = SCHEMA_NAMES.im_event_table('event_consumer_offsets')
 _FAILURES = SCHEMA_NAMES.im_event_table('event_consumer_failures')
+
+
+def init_worker_tracing() -> None:
+    """为独立 IM 消费者进程启用 OTLP trace 导出。"""
+    if not settings.GRAFANA_METRICS_ENABLE:
+        return
+    init_tracer(init_resource('hasn_im_consumer_worker'))
 
 
 @dataclass(frozen=True)
@@ -162,20 +173,16 @@ def build_producer_relays(*, instance_id: str) -> list[tuple[str, Any]]:
 
 async def collect_probe(
     session_factory: async_sessionmaker[AsyncSession] = im_service_db_session,
-    producer_session_factory: async_sessionmaker[AsyncSession] = (
-        python_backend_db_session
-    ),
+    producer_session_factory: async_sessionmaker[AsyncSession] = (python_backend_db_session),
 ) -> WorkerProbe:
     """从真实 IM 表读取 head/cursor/failure/DLQ，并刷新低基数指标。"""
     async with session_factory() as db:
-        database_role = str(
-            (await db.execute(sa.text('SELECT current_user'))).scalar_one()
-        )
+        database_role = str((await db.execute(sa.text('SELECT current_user'))).scalar_one())
         event_head = int(
             (
                 await db.execute(
                     sa.text(
-                        f'SELECT COALESCE(MAX(event_seq), 0) FROM {_EVENTS} '  # noqa: S608 内部常量表名
+                        f'SELECT COALESCE(MAX(event_seq), 0) FROM {_EVENTS} '  # 内部常量表名
                         'WHERE shard_key = 0'
                     )
                 )
@@ -188,7 +195,7 @@ async def collect_probe(
                 await db.execute(
                     sa.text(
                         'SELECT consumer_name, last_acked_seq, lease_owner, lease_until '
-                        f'FROM {_OFFSETS} '  # noqa: S608 内部常量表名
+                        f'FROM {_OFFSETS} '  # 内部常量表名
                         'WHERE consumer_name = ANY(:consumer_names)'
                     ),
                     {'consumer_names': list(_CONSUMER_NAMES)},
@@ -203,7 +210,7 @@ async def collect_probe(
                         'SELECT consumer_name, COUNT(*) AS failures, '
                         'COUNT(*) FILTER (WHERE dead_lettered_at IS NOT NULL '
                         'AND resolution IS NULL) AS unresolved_dead_letters '
-                        f'FROM {_FAILURES} '  # noqa: S608 内部常量表名
+                        f'FROM {_FAILURES} '  # 内部常量表名
                         'WHERE consumer_name = ANY(:consumer_names) '
                         'GROUP BY consumer_name'
                     ),
@@ -224,24 +231,14 @@ async def collect_probe(
                 cursor=cursor,
                 lag=lag,
                 failures=int(failure.failures) if failure else 0,
-                unresolved_dead_letters=(
-                    int(failure.unresolved_dead_letters) if failure else 0
-                ),
+                unresolved_dead_letters=(int(failure.unresolved_dead_letters) if failure else 0),
                 lease_owner=str(offset.lease_owner) if offset and offset.lease_owner else None,
-                lease_until=(
-                    offset.lease_until.isoformat()
-                    if offset and offset.lease_until
-                    else None
-                ),
+                lease_until=(offset.lease_until.isoformat() if offset and offset.lease_until else None),
             )
         )
         metrics.HASN_IM_CONSUMER_LAG.labels(consumer=name).set(lag)
     metrics.HASN_IM_INTEGRATION_EVENT_HEAD.set(event_head)
-    healthy = not any(
-        item.consumer in _DURABLE_CONSUMERS
-        and item.unresolved_dead_letters > 0
-        for item in consumers
-    )
+    healthy = not any(item.consumer in _DURABLE_CONSUMERS and item.unresolved_dead_letters > 0 for item in consumers)
     producer_outboxes: list[ProducerOutboxProbe] = []
     producer_tables = (
         ('relation', 'public.hasn_relation_command_outbox'),
@@ -253,18 +250,20 @@ async def collect_probe(
     async with producer_session_factory() as db:
         for producer, table_name in producer_tables:
             producer_counts = (
-                await db.execute(
-                    sa.text(
-                        'SELECT status, count(*) AS count '
-                        f'FROM {table_name} '  # noqa: S608 代码内固定表名
-                        "WHERE status IN ('pending', 'processing', 'dead_letter') "
-                        'GROUP BY status'
+                (
+                    await db.execute(
+                        sa.text(
+                            'SELECT status, count(*) AS count '
+                            f'FROM {table_name} '  # 代码内固定表名
+                            "WHERE status IN ('pending', 'processing', 'dead_letter') "
+                            'GROUP BY status'
+                        )
                     )
                 )
-            ).mappings().all()
-            counts = {
-                str(row.status): int(row.count) for row in producer_counts
-            }
+                .mappings()
+                .all()
+            )
+            counts = {str(row.status): int(row.count) for row in producer_counts}
             producer_outboxes.append(
                 ProducerOutboxProbe(
                     producer=producer,
@@ -275,15 +274,19 @@ async def collect_probe(
             )
     async with session_factory() as db:
         group_counts = (
-            await db.execute(
-                sa.text(
-                    'SELECT status, count(*) AS count '
-                    'FROM public.hasn_group_im_command_outbox '
-                    "WHERE status IN ('pending', 'processing', 'dead_letter') "
-                    'GROUP BY status'
+            (
+                await db.execute(
+                    sa.text(
+                        'SELECT status, count(*) AS count '
+                        'FROM public.hasn_group_im_command_outbox '
+                        "WHERE status IN ('pending', 'processing', 'dead_letter') "
+                        'GROUP BY status'
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         counts = {str(row.status): int(row.count) for row in group_counts}
         producer_outboxes.append(
             ProducerOutboxProbe(
@@ -293,9 +296,7 @@ async def collect_probe(
                 dead_letters=counts.get('dead_letter', 0),
             )
         )
-    healthy = healthy and not any(
-        item.dead_letters > 0 for item in producer_outboxes
-    )
+    healthy = healthy and not any(item.dead_letters > 0 for item in producer_outboxes)
     return WorkerProbe(
         healthy=healthy,
         database_role=database_role,
@@ -311,11 +312,11 @@ def _install_signal_handlers(stop_event: asyncio.Event) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(signum, stop_event.set)
-        except NotImplementedError:
+        except NotImplementedError:  # noqa: PERF203 两个平台的 signal API 只能逐项探测
             signal.signal(signum, lambda *_args: loop.call_soon_threadsafe(stop_event.set))
 
 
-async def run_forever(
+async def run_forever(  # noqa: C901 轮询循环集中保持服务停止与事务边界可读
     *,
     stop_event: asyncio.Event | None = None,
     poll_seconds: float = _POLL_SECONDS,
@@ -357,8 +358,7 @@ async def run_forever(
                     relay_stats = await relay.drain_once(now=int(time.time()))
                     if relay_stats.claimed:
                         log.info(
-                            '生产 outbox 轮询完成（producer=%s claimed=%d '
-                            'completed=%d retried=%d dlq=%d deduped=%d）',
+                            '生产 outbox 轮询完成（producer=%s claimed=%d completed=%d retried=%d dlq=%d deduped=%d）',
                             producer,
                             relay_stats.claimed,
                             relay_stats.completed,
@@ -424,6 +424,7 @@ def main() -> int:
     args = _parse_args()
     if args.command == 'probe':
         return asyncio.run(_run_probe(max_lag=args.max_lag))
+    init_worker_tracing()
     asyncio.run(run_forever())
     return 0
 
