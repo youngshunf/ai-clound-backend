@@ -449,8 +449,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA hasn_im TO astra_im
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA hasn_im TO astra_im_service;
 ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_im GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astra_im_service;
 GRANT SELECT ON public.hasn_agents, public.hasn_humans, public.hasn_assets,
-                public.hasn_nodes, public.hasn_node_bindings
-    TO astra_im_service;  -- 明确授权的身份/路由/通知只读投影
+                public.hasn_storage_objects, public.hasn_nodes,
+                public.hasn_node_bindings
+    TO astra_im_service;  -- 明确授权的身份/附件/路由/通知只读投影
 GRANT SELECT, INSERT, UPDATE ON public.hasn_group_im_command_outbox
     TO astra_im_service;
 GRANT USAGE, SELECT ON SEQUENCE public.hasn_group_im_command_outbox_id_seq

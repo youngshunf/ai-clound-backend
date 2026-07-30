@@ -135,6 +135,10 @@ BEGIN
 
         PERFORM 1 FROM public.hasn_agents LIMIT 1;
         PERFORM 1 FROM public.hasn_nodes LIMIT 1;
+        PERFORM 1 FROM public.hasn_storage_objects LIMIT 1;
+        PERFORM pg_temp.assert_denied(
+            'UPDATE public.hasn_storage_objects SET state = state WHERE false'
+        );
         PERFORM pg_temp.assert_denied(
             format(
                 'INSERT INTO public.astra_r3_permission_probe(marker) VALUES (%L)',

@@ -26,6 +26,9 @@ _SYNC_INBOX_WORKER_MIGRATION = (
 _SUPPRESSED_COMMAND_MIGRATION = (
     _MIGRATIONS / '2026-07-27-r3-suppressed-command.sql'
 )
+_IM_ASSET_OBJECT_READ_MIGRATION = (
+    _MIGRATIONS / '2026-07-30-im-service-asset-object-read.sql'
+)
 _REHEARSAL = _MIGRATIONS / 'r3_migration_rehearsal.py'
 
 
@@ -233,6 +236,39 @@ def test_sync_role_cannot_bypass_append_event() -> None:
     )
     assert 'SYNC 角色仍可绕过 APPEND_EVENT' in permission_test
     assert 'SYNC 角色 INBOX 状态更新结果' in permission_test
+
+
+def test_im_role_only_reads_asset_object_metadata() -> None:
+    """IM 附件校验可读取对象元数据，但不得获得对象表写权限。"""
+    forward = _FORWARD.read_text(encoding='utf-8').upper()
+    migration = _IM_ASSET_OBJECT_READ_MIGRATION.read_text(encoding='utf-8').upper()
+
+    assert re.search(
+        r'GRANT SELECT ON PUBLIC\.HASN_AGENTS,\s*PUBLIC\.HASN_HUMANS,\s*'
+        r'PUBLIC\.HASN_ASSETS,\s*PUBLIC\.HASN_STORAGE_OBJECTS,',
+        forward,
+    )
+    assert (
+        'GRANT SELECT ON PUBLIC.HASN_STORAGE_OBJECTS TO ASTRA_IM_SERVICE'
+        in migration
+    )
+    permission_test = _PERMISSION_TEST.read_text(encoding='utf-8').upper()
+    assert 'PERFORM 1 FROM PUBLIC.HASN_STORAGE_OBJECTS LIMIT 1' in permission_test
+    assert (
+        "'UPDATE PUBLIC.HASN_STORAGE_OBJECTS SET STATE = STATE WHERE FALSE'"
+        in permission_test
+    )
+    for sql in (forward, migration):
+        assert (
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON PUBLIC.HASN_STORAGE_OBJECTS '
+            'TO ASTRA_IM_SERVICE'
+            not in sql
+        )
+        assert (
+            'GRANT INSERT, UPDATE, DELETE ON PUBLIC.HASN_STORAGE_OBJECTS '
+            'TO ASTRA_IM_SERVICE'
+            not in sql
+        )
 
 
 def test_task_visibility_is_backfilled_before_sync_role_serves_pull() -> None:
