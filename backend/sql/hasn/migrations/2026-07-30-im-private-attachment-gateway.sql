@@ -74,3 +74,80 @@ REVOKE ALL ON FUNCTION public.hasn_bind_private_attachment(
 GRANT EXECUTE ON FUNCTION public.hasn_bind_private_attachment(
     varchar, uuid, varchar, varchar
 ) TO astra_im_service;
+
+-- Owner 资产解析只需要回答“请求者能否通过指定会话读取哪些附件”，不得因此给普通
+-- Python 角色开放 hasn_im 会话、成员或授权基表。该只读接缝把参与关系与附件 grant
+-- 在 IM 边界内一次性求交，只返回调用方原始请求中的资产 ID。
+CREATE OR REPLACE FUNCTION public.hasn_authorized_conversation_assets(
+    p_asset_ids varchar[],
+    p_conversation_id uuid,
+    p_requester_hasn_id varchar
+)
+RETURNS TABLE(asset_id varchar)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $function$
+DECLARE
+    v_im_schema text;
+BEGIN
+    IF to_regclass('hasn_im.hasn_conversations') IS NOT NULL THEN
+        v_im_schema := 'hasn_im';
+    ELSIF to_regclass('public.hasn_conversations') IS NOT NULL THEN
+        v_im_schema := 'public';
+    ELSE
+        RAISE EXCEPTION 'IM_CONVERSATIONS_TABLE_NOT_FOUND'
+            USING ERRCODE = '42P01';
+    END IF;
+
+    RETURN QUERY EXECUTE format(
+        $query$
+        WITH conversation_participants AS (
+            SELECT c.participant_a_id AS hasn_id
+            FROM %1$I.hasn_conversations AS c
+            WHERE c.id = $1
+            UNION
+            SELECT c.participant_b_id AS hasn_id
+            FROM %1$I.hasn_conversations AS c
+            WHERE c.id = $1
+              AND c.participant_b_id IS NOT NULL
+            UNION
+            SELECT m.member_hasn_id AS hasn_id
+            FROM %1$I.hasn_conversation_memberships AS m
+            WHERE m.conversation_id = $1
+              AND m.left_seq IS NULL
+              AND m.state = 'active'
+        ),
+        requester_is_participant AS (
+            SELECT EXISTS (
+                SELECT 1
+                FROM conversation_participants AS p
+                WHERE p.hasn_id = $2
+            ) OR EXISTS (
+                SELECT 1
+                FROM conversation_participants AS p
+                JOIN public.hasn_agents AS a
+                  ON a.hasn_id = p.hasn_id
+                WHERE a.owner_id = $2
+            ) AS allowed
+        )
+        SELECT g.asset_id
+        FROM %1$I.hasn_asset_grants AS g
+        CROSS JOIN requester_is_participant AS participant
+        WHERE participant.allowed
+          AND g.conversation_id = $1
+          AND g.asset_id = ANY($3)
+        $query$,
+        v_im_schema
+    )
+    USING p_conversation_id, p_requester_hasn_id, p_asset_ids;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.hasn_authorized_conversation_assets(
+    varchar[], uuid, varchar
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.hasn_authorized_conversation_assets(
+    varchar[], uuid, varchar
+) TO astra_python_backend;

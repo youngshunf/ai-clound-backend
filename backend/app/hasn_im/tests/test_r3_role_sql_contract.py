@@ -274,7 +274,7 @@ def test_im_role_only_reads_asset_object_metadata() -> None:
 
 
 def test_im_private_attachment_gateway_is_narrow_and_definer_secured() -> None:
-    """IM 只能执行窄化附件接缝，不能直接写 Owner 存储表。"""
+    """附件读写只能走窄化接缝，不能互相开放 Owner/IM 基表。"""
     sql = _IM_PRIVATE_ATTACHMENT_GATEWAY_MIGRATION.read_text(encoding='utf-8').upper()
 
     assert 'CREATE OR REPLACE FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT' in sql
@@ -295,6 +295,23 @@ def test_im_private_attachment_gateway_is_narrow_and_definer_secured() -> None:
             f'GRANT INSERT, UPDATE, DELETE ON PUBLIC.{table} TO ASTRA_IM_SERVICE'
             not in sql
         )
+    assert (
+        'CREATE OR REPLACE FUNCTION '
+        'PUBLIC.HASN_AUTHORIZED_CONVERSATION_ASSETS'
+        in sql
+    )
+    assert sql.count('SECURITY DEFINER') == 2
+    assert (
+        'GRANT EXECUTE ON FUNCTION '
+        'PUBLIC.HASN_AUTHORIZED_CONVERSATION_ASSETS'
+        in sql
+    )
+    assert 'TO ASTRA_PYTHON_BACKEND' in sql
+    assert "TO_REGCLASS('HASN_IM.HASN_CONVERSATIONS')" in sql
+    assert "TO_REGCLASS('PUBLIC.HASN_CONVERSATIONS')" in sql
+    assert 'HASN_CONVERSATION_MEMBERSHIPS' in sql
+    assert 'HASN_ASSET_GRANTS' in sql
+    assert 'G.ASSET_ID = ANY($3)' in sql
 
 
 def test_task_visibility_is_backfilled_before_sync_role_serves_pull() -> None:
