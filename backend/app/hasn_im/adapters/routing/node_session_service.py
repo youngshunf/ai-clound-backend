@@ -569,8 +569,8 @@ class NodeSessionService:
         self,
         entity_ids: list[str],
     ) -> tuple[list[dict], dict[str, list[str]]]:
-        """读取待补推消息但暂不删除，返回帧内容和用于成功确认的原始队列前缀。"""
-        if settings.HASN_OFFLINE_RECOVERY == 'sync':
+        """redis 模式读取待补推帧；dual/sync 均以 sync/history 为客户端恢复主路径。"""
+        if settings.HASN_OFFLINE_RECOVERY != 'redis':
             return [], {}
         all_msgs: list[dict] = []
         claims: dict[str, list[str]] = {}
@@ -585,8 +585,8 @@ class NodeSessionService:
         return all_msgs, claims
 
     async def ack_offline_messages(self, claims: dict[str, list[str]]) -> None:
-        """发送成功后仅删除领取时看到的相同前缀，保留并发新入队消息。"""
-        if settings.HASN_OFFLINE_RECOVERY == 'sync':
+        """redis 模式确认补推前缀；dual 的影子证据保留至 TTL，sync 不读写该键。"""
+        if settings.HASN_OFFLINE_RECOVERY != 'redis':
             return
         for key, raw_messages in claims.items():
             if not raw_messages:
@@ -602,8 +602,8 @@ class NodeSessionService:
         self,
         entity_ids: list[str],
     ) -> list[dict]:
-        """获取并清理离线消息（所有已上报实体）"""
-        if settings.HASN_OFFLINE_RECOVERY == 'sync':
+        """redis 模式获取并清理离线消息；dual/sync 不向客户端回放 Redis 影子。"""
+        if settings.HASN_OFFLINE_RECOVERY != 'redis':
             return []
         all_msgs: list[dict] = []
 

@@ -363,7 +363,9 @@ def test_offline_queue_choke_points_enforce_policy_and_sync_mode() -> None:
         'get_offline_messages',
     ):
         function_source = functions[name]
-        assert "settings.HASN_OFFLINE_RECOVERY == 'sync'" in function_source, f'{name} 未在 sync 模式短路 Redis offline'
+        assert "settings.HASN_OFFLINE_RECOVERY != 'redis'" in function_source, (
+            f'{name} 未将 dual/sync 的 Redis offline 限为影子'
+        )
 
     gateway_source = (_BACKEND_ROOT / 'app/hasn_im/adapters/routing/node_session_realtime_gateway.py').read_text(
         encoding='utf-8'

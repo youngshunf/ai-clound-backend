@@ -102,6 +102,13 @@ HASN_REALTIME_DELIVERY_TOTAL = Counter(
     labelnames=['result'],
 )
 
+# dual 模式离线恢复影子对账；稳定 ID 只在 Redis/PG 内比较，不进入标签。
+HASN_OFFLINE_SHADOW_MESSAGES = Gauge(
+    name='hasn_offline_shadow_messages',
+    documentation='Redis offline 与 PostgreSQL sync 七天影子对账数量·按低基数结果分类',
+    labelnames=['result'],
+)
+
 # realtime wake-up transport 迁移指标；event_id 只进日志和内存对账，不进入 label。
 HASN_REALTIME_WAKEUP_PUBLISH_TOTAL = Counter(
     name='hasn_realtime_wakeup_publish_total',
@@ -168,6 +175,7 @@ IM_METRICS = (
     HASN_SYNC_PULL_LAG_SECONDS,
     HASN_SYNC_CURSOR_EXPIRED_TOTAL,
     HASN_REALTIME_DELIVERY_TOTAL,
+    HASN_OFFLINE_SHADOW_MESSAGES,
     *REALTIME_WAKEUP_METRICS,
     HASN_PUSH_DELIVERY_TOTAL,
     HASN_PRODUCER_OUTBOX_OLDEST_AGE_SECONDS,

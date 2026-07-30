@@ -76,14 +76,27 @@ def test_typing_is_transient_and_never_requires_offline_storage() -> None:
     assert decision.identity is None
 
 
-def test_task_exec_remains_a_gap_until_durable_command_recovery_exists() -> None:
-    """业务 outbox 仅保证到实时端口，尚不能证明 daemon 离线后可恢复执行命令。"""
-    assert OFFLINE_FRAME_POLICIES['hasn.task.exec'].category is OfflineFrameCategory.GAP
+@pytest.mark.parametrize(
+    'method',
+    (
+        'hasn.message.invalidated',
+        'hasn.conversation.invalidated',
+        'hasn.task.exec',
+    ),
+)
+def test_critical_invalidations_and_task_frames_have_durable_recovery(method: str) -> None:
+    """增量 sync 已在 daemon 事务落地，关键帧不再依赖 Redis offline。"""
+    assert OFFLINE_FRAME_POLICIES[method].category is OfflineFrameCategory.DURABLE_SYNC
+
+
+def test_workspace_switched_is_unconsumed_transient_compatibility_notice() -> None:
+    """daemon 不消费历史 WorkspaceSwitched 帧，工作台读面始终回源权威接口。"""
+    assert OFFLINE_FRAME_POLICIES['WorkspaceSwitched'].category is OfflineFrameCategory.TRANSIENT
 
 
 @pytest.mark.parametrize('mode', ('redis', 'dual'))
-def test_redis_and_dual_keep_gap_frames_during_migration(mode: str) -> None:
-    """缺口补齐前，redis/dual 继续保留既有加速副本。"""
+def test_redis_and_dual_keep_durable_shadow_frame_during_migration(mode: str) -> None:
+    """redis/dual 继续保留持久帧加速副本，供迁移期真实对账。"""
     payload = json.dumps({
         'hasn': 'hasn/0.2',
         'method': 'hasn.task.exec',
@@ -103,22 +116,29 @@ def test_transient_frame_is_never_written_offline(mode: str) -> None:
     assert decide_offline_storage(payload, mode) is OfflineStorageAction.SKIP
 
 
-def test_sync_mode_skips_durable_frame_and_rejects_gap() -> None:
-    """sync 只允许已证明可恢复的帧停写 Redis，缺口必须阻断切换。"""
-    durable = json.dumps({
+@pytest.mark.parametrize(
+    'method,params',
+    (
+        ('hasn.message.new', {'message_id': 'msg-1'}),
+        (
+            'hasn.message.invalidated',
+            {'event_id': 'evt-1', 'message_id': 'msg-1'},
+        ),
+        (
+            'hasn.conversation.invalidated',
+            {'event_id': 'evt-2', 'conversation_id': 'conv-1'},
+        ),
+        ('hasn.task.exec', {'dispatch_id': 'task:run:1:exec'}),
+    ),
+)
+def test_sync_mode_skips_all_durable_frames(method: str, params: dict) -> None:
+    """全部关键帧具备持久恢复后，sync 模式必须停止写 Redis offline。"""
+    payload = json.dumps({
         'hasn': 'hasn/0.2',
-        'method': 'hasn.message.new',
-        'params': {'message_id': 'msg-1'},
+        'method': method,
+        'params': params,
     })
-    assert decide_offline_storage(durable, 'sync') is OfflineStorageAction.SKIP
-
-    gap = json.dumps({
-        'hasn': 'hasn/0.2',
-        'method': 'hasn.task.exec',
-        'params': {'dispatch_id': 'task:run:1:exec'},
-    })
-    with pytest.raises(OfflineFramePolicyError, match='尚有 durable 缺口'):
-        decide_offline_storage(gap, 'sync')
+    assert decide_offline_storage(payload, 'sync') is OfflineStorageAction.SKIP
 
 
 def test_unknown_offline_recovery_mode_fails_explicitly() -> None:
