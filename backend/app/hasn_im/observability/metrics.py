@@ -134,11 +134,31 @@ HASN_REALTIME_WAKEUP_LATENCY_SECONDS = Histogram(
     labelnames=['transport'],
 )
 
+HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL = Counter(
+    name='hasn_rabbitmq_publish_confirm_total',
+    documentation='RabbitMQ publisher confirm 结果计数·按低基数 result',
+    labelnames=['result'],
+)
+
+HASN_RABBITMQ_DELIVERY_ACK_TOTAL = Counter(
+    name='hasn_rabbitmq_delivery_ack_total',
+    documentation='RabbitMQ realtime delivery 最终 ACK 结果计数·按低基数 result',
+    labelnames=['result'],
+)
+
+HASN_RABBITMQ_REDELIVERY_TOTAL = Counter(
+    name='hasn_rabbitmq_redelivery_total',
+    documentation='RabbitMQ realtime redelivery 计数',
+)
+
 REALTIME_WAKEUP_METRICS = (
     HASN_REALTIME_WAKEUP_PUBLISH_TOTAL,
     HASN_REALTIME_WAKEUP_CONSUME_TOTAL,
     HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL,
     HASN_REALTIME_WAKEUP_LATENCY_SECONDS,
+    HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL,
+    HASN_RABBITMQ_DELIVERY_ACK_TOTAL,
+    HASN_RABBITMQ_REDELIVERY_TOTAL,
 )
 
 HASN_PUSH_DELIVERY_TOTAL = Counter(

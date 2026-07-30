@@ -213,6 +213,9 @@ def test_realtime_transport_metrics_use_only_low_cardinality_labels() -> None:
         metrics.HASN_REALTIME_WAKEUP_CONSUME_TOTAL: {'transport', 'result'},
         metrics.HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL: {'transport'},
         metrics.HASN_REALTIME_WAKEUP_LATENCY_SECONDS: {'transport'},
+        metrics.HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL: {'result'},
+        metrics.HASN_RABBITMQ_DELIVERY_ACK_TOTAL: {'result'},
+        metrics.HASN_RABBITMQ_REDELIVERY_TOTAL: set(),
     }
 
     for metric, labels in expected.items():

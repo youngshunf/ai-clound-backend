@@ -35,6 +35,7 @@ from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
 )
 from backend.app.hasn_im.ports.realtime_wakeup_bus import RealtimeWakeupBus
 from backend.common.log import log
+from backend.common.observability.otel import mark_messaging_span, websocket_send_span
 from backend.core.conf import settings
 from backend.database.redis import redis_client
 
@@ -127,13 +128,19 @@ class WsDeliveryBus:
     @staticmethod
     async def _safe_send(ws: WebSocket, payload_json: str) -> bool:
         """限时下发单帧，返回是否已交给 WebSocket transport。"""
-        try:
-            await asyncio.wait_for(ws.send_text(payload_json), timeout=DELIVERY_SEND_TIMEOUT_SECS)
-        except Exception as exc:
-            log.debug(f'[WsDeliveryBus] 单连接下发失败（保留待重试）: {exc!r}')
-            return False
-        else:
-            return True
+        with websocket_send_span() as span:
+            try:
+                await asyncio.wait_for(
+                    ws.send_text(payload_json),
+                    timeout=DELIVERY_SEND_TIMEOUT_SECS,
+                )
+            except Exception as exc:
+                mark_messaging_span(span, result='send_error', error=exc)
+                log.debug(f'[WsDeliveryBus] 单连接下发失败（保留待重试）: {exc!r}')
+                return False
+            else:
+                mark_messaging_span(span, result='sent')
+                return True
 
     @classmethod
     async def drain_node(cls, node_id: str) -> int:

@@ -9,6 +9,9 @@
 - 数据、日志、密钥和 definitions 备份统一落在 `/data2/huanxing-rabbitmq/`。
 - 仓库 definitions 不包含用户、密码、密码哈希或完整 DSN。三个角色密码只存在于服务器权限为 `600` 的密钥文件。
 - `guest` 仅在首次启动到 bootstrap 完成前存在且只能 loopback 登录；bootstrap 会删除它。
+- RabbitMQ Prometheus endpoint 仍只监听 `127.0.0.1:15692`。容器化 Prometheus 通过
+  systemd socket proxy 访问 `172.24.0.1:15693`；该地址只属于可观测 Docker 私网，
+  禁止改为 `0.0.0.0` 或公网地址。
 
 ## 首次部署
 
@@ -36,6 +39,13 @@ docker compose config --quiet
 docker compose pull
 docker compose up -d
 ./bootstrap.sh
+
+install -o root -g root -m 644 \
+  huanxing-rabbitmq-prometheus-proxy.socket \
+  huanxing-rabbitmq-prometheus-proxy.service \
+  /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now huanxing-rabbitmq-prometheus-proxy.socket
 ```
 
 不要把密钥值粘贴到命令行历史、工单、日志或 Git。应用 `.env` 只注入自身角色的账号和密码，禁止跨角色复用。
@@ -53,9 +63,14 @@ docker compose exec -T rabbitmq rabbitmqctl list_vhosts
 docker compose exec -T rabbitmq rabbitmqctl list_permissions -p huanxing
 docker compose exec -T rabbitmq rabbitmqctl list_queues \
   -p huanxing name durable messages_ready messages_unacknowledged consumers
+systemctl status --no-pager huanxing-rabbitmq-prometheus-proxy.socket
+curl --fail --silent --show-error http://172.24.0.1:15693/metrics >/dev/null
 ```
 
-宿主机 `ss -lntp` 必须只出现 `127.0.0.1:4369`、`127.0.0.1:5672`、`127.0.0.1:15672`、`127.0.0.1:15692` 和 `127.0.0.1:25672`。还必须从公网独立探测这五个端口不可达。管理界面只允许这样建立临时隧道：
+宿主机 RabbitMQ 原生 listener 必须只出现 `127.0.0.1:4369`、`127.0.0.1:5672`、
+`127.0.0.1:15672`、`127.0.0.1:15692` 和 `127.0.0.1:25672`；额外允许 systemd
+socket proxy 监听 `172.24.0.1:15693`。还必须从公网独立探测 RabbitMQ 原生端口与
+15693 均不可达。管理界面只允许这样建立临时隧道：
 
 ```bash
 ssh -N -L 15672:127.0.0.1:15672 huanxing-server2
