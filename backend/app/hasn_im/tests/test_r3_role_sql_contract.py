@@ -288,6 +288,8 @@ def test_im_private_attachment_gateway_is_narrow_and_definer_secured() -> None:
     assert "A.ACCESS = 'PRIVATE'" in sql
     assert "A.LIFECYCLE_STATUS = 'ACTIVE'" in sql
     assert 'FOR UPDATE' in sql
+    assert "TO_REGCLASS('HASN_IM.HASN_ASSET_GRANTS')" in sql
+    assert "TO_REGCLASS('PUBLIC.HASN_ASSET_GRANTS')" in sql
     for table in ('HASN_ASSETS', 'HASN_ASSET_GRANTS', 'HASN_ASSET_BINDINGS'):
         assert (
             f'GRANT INSERT, UPDATE, DELETE ON PUBLIC.{table} TO ASTRA_IM_SERVICE'

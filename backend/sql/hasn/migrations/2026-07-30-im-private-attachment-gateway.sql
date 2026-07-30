@@ -38,11 +38,22 @@ BEGIN
             USING ERRCODE = 'P0002';
     END IF;
 
-    INSERT INTO public.hasn_asset_grants
-        (asset_id, conversation_id, created_time)
-    VALUES
-        (p_asset_id, p_conversation_id, now())
-    ON CONFLICT (asset_id, conversation_id) DO NOTHING;
+    IF to_regclass('hasn_im.hasn_asset_grants') IS NOT NULL THEN
+        INSERT INTO hasn_im.hasn_asset_grants
+            (asset_id, conversation_id, created_time)
+        VALUES
+            (p_asset_id, p_conversation_id, now())
+        ON CONFLICT (asset_id, conversation_id) DO NOTHING;
+    ELSIF to_regclass('public.hasn_asset_grants') IS NOT NULL THEN
+        INSERT INTO public.hasn_asset_grants
+            (asset_id, conversation_id, created_time)
+        VALUES
+            (p_asset_id, p_conversation_id, now())
+        ON CONFLICT (asset_id, conversation_id) DO NOTHING;
+    ELSE
+        RAISE EXCEPTION 'STORAGE_ASSET_GRANTS_TABLE_NOT_FOUND'
+            USING ERRCODE = '42P01';
+    END IF;
 
     INSERT INTO public.hasn_asset_bindings
         (binding_id, owner_hasn_id, asset_id, resource_uri, role,
