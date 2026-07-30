@@ -217,6 +217,15 @@ def test_agent_asset_delivery_only_accesses_im_through_gateway() -> None:
     assert 'get_im_gateway()' in source
 
 
+def test_im_attachment_write_uses_narrow_storage_gateway() -> None:
+    """消息事务不得直接调用 Owner 存储表写方法。"""
+    path = _BACKEND_ROOT / 'app/hasn_im/application/message_service.py'
+    source = path.read_text(encoding='utf-8')
+    assert 'grant_to_conversation' not in source
+    assert 'bind_asset_in_transaction' not in source
+    assert 'bind_private_attachment_in_transaction' in source
+
+
 def test_contacts_presence_audience_query_uses_im_role() -> None:
     """联系人在线态受众查询必须使用 IM role，不能借普通 Python 会话跨域读表。"""
     path = _BACKEND_ROOT / 'app/hasn_im/api/ws_node.py'

@@ -587,13 +587,11 @@ async def _grant_private_attachments(
     assets = await hasn_asset_service.get_many(db, asset_ids)
     for asset in assets.values():
         if asset.access == 'private':
-            await hasn_asset_service.grant_to_conversation(db, asset_id=asset.asset_id, conversation_id=conversation_id)
-            await OwnerStorageService.bind_asset_in_transaction(
+            await OwnerStorageService.bind_private_attachment_in_transaction(
                 db,
-                owner_hasn_id=asset.owner_hasn_id,
                 asset_id=asset.asset_id,
-                resource_uri=f'hasn://messages/c/{conversation_id}#{message_id}',
-                role='attachment',
+                conversation_id=conversation_id,
+                message_id=message_id,
             )
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-
 _ROOT = Path(__file__).resolve().parents[4]
 _MIGRATIONS = _ROOT / 'backend/sql/hasn/migrations'
 _FORWARD = _MIGRATIONS / '2026-07-16-r2-11-schema-cutover.sql'
@@ -28,6 +27,9 @@ _SUPPRESSED_COMMAND_MIGRATION = (
 )
 _IM_ASSET_OBJECT_READ_MIGRATION = (
     _MIGRATIONS / '2026-07-30-im-service-asset-object-read.sql'
+)
+_IM_PRIVATE_ATTACHMENT_GATEWAY_MIGRATION = (
+    _MIGRATIONS / '2026-07-30-im-private-attachment-gateway.sql'
 )
 _REHEARSAL = _MIGRATIONS / 'r3_migration_rehearsal.py'
 
@@ -267,6 +269,28 @@ def test_im_role_only_reads_asset_object_metadata() -> None:
         assert (
             'GRANT INSERT, UPDATE, DELETE ON PUBLIC.HASN_STORAGE_OBJECTS '
             'TO ASTRA_IM_SERVICE'
+            not in sql
+        )
+
+
+def test_im_private_attachment_gateway_is_narrow_and_definer_secured() -> None:
+    """IM 只能执行窄化附件接缝，不能直接写 Owner 存储表。"""
+    sql = _IM_PRIVATE_ATTACHMENT_GATEWAY_MIGRATION.read_text(encoding='utf-8').upper()
+
+    assert 'CREATE OR REPLACE FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT' in sql
+    assert 'SECURITY DEFINER' in sql
+    assert 'SET SEARCH_PATH = PG_CATALOG, PUBLIC' in sql
+    assert 'REVOKE ALL ON FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT' in sql
+    assert (
+        'GRANT EXECUTE ON FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT'
+        in sql
+    )
+    assert "A.ACCESS = 'PRIVATE'" in sql
+    assert "A.LIFECYCLE_STATUS = 'ACTIVE'" in sql
+    assert 'FOR UPDATE' in sql
+    for table in ('HASN_ASSETS', 'HASN_ASSET_GRANTS', 'HASN_ASSET_BINDINGS'):
+        assert (
+            f'GRANT INSERT, UPDATE, DELETE ON PUBLIC.{table} TO ASTRA_IM_SERVICE'
             not in sql
         )
 
