@@ -24,10 +24,12 @@ from backend.app.hasn.schema.hasn_agents import (
 )
 from backend.app.hasn.service.owner_memory_service import owner_memory_service
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
+from backend.app.marketplace.service import skill_pack_service
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
     get_installed_skills_revision,
     get_skills_content_fingerprints,
+    get_skills_immutable_snapshots,
     merge_skill_ids,
 )
 from backend.common.dataclasses import AgentTokenPayload
@@ -96,7 +98,9 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
                 await db.execute(
                     sa.text(
                         f"""
-                    SELECT v.bundle_slug, v.command_key, v.hermes_yaml
+                    SELECT v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
+                           v.skill_dependencies_versioned,
+                           COALESCE(v.content_hash, v.file_hash) AS content_hash
                     FROM hasn_marketplace.marketplace_template_version v
                     JOIN hasn_marketplace.marketplace_template t ON t.template_id = v.template_id
                     WHERE v.template_id = :template_id
@@ -113,10 +117,26 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
         )
         if bundle_row is None or not bundle_row.get('hermes_yaml'):
             continue
+        hermes_yaml = str(bundle_row['hermes_yaml'])
+        member_ids = skill_pack_service.member_skill_ids(hermes_yaml)
+        try:
+            member_skills = await skill_pack_service.resolve_member_skill_snapshots(
+                db,
+                member_ids,
+                bundle_row.get('skill_dependencies_versioned'),
+            )
+        except Exception as exc:
+            log.warning(f'已安装技能包 {template_id} 成员不可冻结，本次不下发 Runtime: {exc}')
+            continue
         out.append({
+            'package_id': template_id,
+            'version': bundle_row['version'],
+            'content_hash': bundle_row['content_hash'],
             'bundle_slug': bundle_row['bundle_slug'],
             'command_key': bundle_row['command_key'],
-            'hermes_yaml': bundle_row['hermes_yaml'],
+            'hermes_yaml': hermes_yaml,
+            'member_skill_ids': member_ids,
+            'member_skills': member_skills,
         })
     return out
 
@@ -149,6 +169,7 @@ async def get_agent_profile(
     merged_skill_ids = merge_skill_ids(common_ids, agent_ids)
     # per-skill 指纹映射（doc14 §C4）：让 hermes 只重下指纹变化的技能，省全量重拉。
     skill_fingerprints = await get_skills_content_fingerprints(db, merged_skill_ids)
+    skill_versions = await get_skills_immutable_snapshots(db, merged_skill_ids)
 
     # PDC：把平台默认 agent 运行时四槽 coalesce 进 runtime_config（runtime-facing 拉取式兜底）。
     # agent 显式非空必胜，None → 平台默认；agent 无配置且平台四槽全空 → None（保持"全默认"）。
@@ -170,6 +191,7 @@ async def get_agent_profile(
             # 私有→per-profile 物化」；旧 runtime 不认识该字段则忽略，向后兼容。
             common_skill_ids=common_ids,
             skill_content_hashes=skill_fingerprints,
+            skill_versions=skill_versions,
             skill_bundles=skill_bundles,
             template_id=row.template_id,
             template_version=getattr(row, 'template_version', None),
