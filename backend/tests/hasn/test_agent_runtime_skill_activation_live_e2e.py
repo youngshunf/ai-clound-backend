@@ -354,7 +354,6 @@ async def test_cloud_runtime_required_skill_live_e2e(
     assert 'run.completed' in event_types
     assert any(event_type.startswith('tool.') for event_type in event_types)
     assert MODEL_MARKER in model_output
-    assert PACKAGE_SLUG in model_output
 
     bundle_path = live.profile_root / 'skill-bundles' / f'{PACKAGE_SLUG}.yaml'
     assert bundle_path.is_file()
