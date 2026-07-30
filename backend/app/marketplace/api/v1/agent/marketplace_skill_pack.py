@@ -35,7 +35,7 @@ async def get_runtime_skill_pack_authority(
                 sa.text(
                     """
                     SELECT t.template_id, v.version, v.bundle_slug, v.command_key,
-                           v.hermes_yaml,
+                           v.hermes_yaml, v.skill_dependencies_versioned,
                            COALESCE(v.content_hash, v.file_hash) AS content_hash
                     FROM hasn_marketplace.marketplace_template t
                     JOIN hasn_marketplace.marketplace_template_version v
@@ -69,6 +69,12 @@ async def get_runtime_skill_pack_authority(
         raise errors.NotFoundError(msg='runtime_skill_bundle_unavailable')
 
     hermes_yaml = str(row['hermes_yaml'])
+    member_ids = skill_pack_service.member_skill_ids(hermes_yaml)
+    member_skills = await skill_pack_service.resolve_member_skill_snapshots(
+        db,
+        member_ids,
+        row.get('skill_dependencies_versioned'),
+    )
     return response_base.success(
         data={
             'package_id': row['template_id'],
@@ -77,6 +83,7 @@ async def get_runtime_skill_pack_authority(
             'command_key': row['command_key'],
             'hermes_yaml': hermes_yaml,
             'content_hash': row['content_hash'],
-            'member_skill_ids': skill_pack_service.member_skill_ids(hermes_yaml),
+            'member_skill_ids': member_ids,
+            'member_skills': member_skills,
         }
     )

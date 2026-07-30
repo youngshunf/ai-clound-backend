@@ -12,6 +12,7 @@ ASGITransport 走完整 HTTP。事务末尾回滚不污染库。需要 export DA
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 from types import SimpleNamespace
@@ -28,7 +29,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.marketplace.api.v1.skill_pack import router as skill_pack_router
-from backend.app.marketplace.model import MarketplaceSkill
+from backend.app.marketplace.model import MarketplaceSkill, MarketplaceSkillVersion
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -69,6 +70,9 @@ def _tag() -> str:
 async def _seed_skill(session, namespace: str, slug: str, **cols) -> str:
     """落一条已发布公开技能（实施/92：技能包成员必须是已发布公开技能才能解析）。"""
     skill_id = f'{namespace}/{slug}'
+    await session.execute(
+        delete(MarketplaceSkillVersion).where(MarketplaceSkillVersion.skill_id == skill_id)
+    )
     await session.execute(delete(MarketplaceSkill).where(MarketplaceSkill.skill_id == skill_id))
     session.add(
         MarketplaceSkill(
@@ -79,6 +83,16 @@ async def _seed_skill(session, namespace: str, slug: str, **cols) -> str:
             status='published',
             visibility='public',
             **cols,
+        )
+    )
+    content_hash = hashlib.sha256(f'{skill_id}@1.0.0'.encode()).hexdigest()
+    session.add(
+        MarketplaceSkillVersion(
+            skill_id=skill_id,
+            version='1.0.0',
+            content_hash=content_hash,
+            file_hash=content_hash,
+            is_latest=True,
         )
     )
     await session.flush()
@@ -138,6 +152,13 @@ async def client():
                 {'authors': [_AUTHOR_ID, _AUTHOR_ID + 1]},
             )
             await conn.execute(
+                text(
+                    'DELETE FROM hasn_marketplace.marketplace_skill_version '
+                    'WHERE skill_id = ANY(:ids)'
+                ),
+                {'ids': _MEMBER_SKILL_IDS},
+            )
+            await conn.execute(
                 text('DELETE FROM hasn_marketplace.marketplace_skill WHERE skill_id = ANY(:ids)'),
                 {'ids': _MEMBER_SKILL_IDS},
             )
@@ -177,7 +198,8 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client) -> N
         await client.session.execute(
             text(
                 """
-                SELECT t.template_type, v.bundle_slug, v.command_key, v.hermes_yaml, v.content_hash
+                SELECT t.template_type, v.bundle_slug, v.command_key, v.hermes_yaml, v.content_hash,
+                       v.skill_dependencies_versioned
                 FROM hasn_marketplace.marketplace_template t
                 JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
                 WHERE t.template_id = :tid
@@ -190,6 +212,47 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client) -> N
     assert row['bundle_slug'] == slug
     assert row['command_key'] == f'/{slug}'
     assert row['content_hash'].startswith('sha256:')
+    assert row['skill_dependencies_versioned']['developer/code-review']['version'] == '1.0.0'
+    assert row['skill_dependencies_versioned']['productivity/tdd']['version'] == '1.0.0'
+
+    await client.session.execute(
+        text(
+            """
+            UPDATE hasn_marketplace.marketplace_skill_version
+            SET is_latest = false
+            WHERE skill_id = 'developer/code-review'
+            """
+        )
+    )
+    version_two_hash = hashlib.sha256(b'developer/code-review@2.0.0').hexdigest()
+    client.session.add(
+        MarketplaceSkillVersion(
+            skill_id='developer/code-review',
+            version='2.0.0',
+            content_hash=version_two_hash,
+            file_hash=version_two_hash,
+            is_latest=True,
+        )
+    )
+    await client.session.flush()
+
+    list_response = await client.http.get(
+        '/api/v1/marketplace/app/skill-packs',
+        params={'q': slug},
+    )
+    assert list_response.status_code == 200, list_response.text
+    listed = next(
+        item
+        for item in list_response.json()['data']['items']
+        if item['template_id'] == f'huanxing/{slug}'
+    )
+    frozen_member = next(
+        item
+        for item in listed['member_skills']
+        if item['skill_id'] == 'developer/code-review'
+    )
+    assert frozen_member['version'] == '1.0.0'
+    assert frozen_member['content_hash'] != version_two_hash
 
 
 async def test_create_rejects_invalid_hermes_yaml(client) -> None:

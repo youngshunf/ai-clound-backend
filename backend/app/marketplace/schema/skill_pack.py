@@ -37,6 +37,10 @@ class SkillPackResponse(SchemaBase):
     hermes_bundle_json: dict[str, Any] | None = None
     hermes_yaml: str
     content_hash: str
+    member_skills: list[dict[str, str]] = Field(
+        default_factory=list,
+        description='本次目录读取冻结的成员版本与内容指纹；为空表示该包不可用于 Runtime 派发',
+    )
     package_url: str | None = None
     file_hash: str | None = None
     published_at: datetime | None = None

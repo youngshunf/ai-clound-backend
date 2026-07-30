@@ -13,6 +13,7 @@ from backend.app.marketplace.schema.skill_pack import (
 )
 from backend.app.marketplace.service import skill_pack_service
 from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service
+from backend.common.log import log
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -41,6 +42,7 @@ _LIST_COLUMNS = """
     v.command_key,
     v.hermes_bundle_json,
     v.hermes_yaml,
+    v.skill_dependencies_versioned,
     COALESCE(v.content_hash, v.file_hash) AS content_hash,
     v.package_url,
     v.file_hash,
@@ -117,7 +119,20 @@ async def list_skill_packs(
         ),
         params,
     )
-    items = [_skill_pack_response(dict(row)) for row in result.mappings().all()]
+    items: list[SkillPackResponse] = []
+    for row in result.mappings().all():
+        item = dict(row)
+        member_ids = skill_pack_service.member_skill_ids(str(item.get('hermes_yaml') or ''))
+        try:
+            member_skills = await skill_pack_service.resolve_member_skill_snapshots(
+                db,
+                member_ids,
+                item.get('skill_dependencies_versioned'),
+            )
+        except Exception as exc:
+            log.warning(f'技能包 {item.get("template_id")} 成员不可冻结，本次目录标记为不可派发: {exc}')
+            member_skills = []
+        items.append(_skill_pack_response(item, member_skills=member_skills))
     return response_base.success(
         data=SkillPackPage(
             items=items,
@@ -186,7 +201,11 @@ async def delete_skill_pack(request: Request, db: CurrentSessionTransaction, tem
     return response_base.success()
 
 
-def _skill_pack_response(row: dict[str, Any]) -> SkillPackResponse:
+def _skill_pack_response(
+    row: dict[str, Any],
+    *,
+    member_skills: list[dict[str, str]] | None = None,
+) -> SkillPackResponse:
     return SkillPackResponse(
         template_id=row['template_id'],
         version=row['version'],
@@ -197,6 +216,7 @@ def _skill_pack_response(row: dict[str, Any]) -> SkillPackResponse:
         hermes_bundle_json=row.get('hermes_bundle_json'),
         hermes_yaml=row['hermes_yaml'],
         content_hash=row['content_hash'],
+        member_skills=member_skills or [],
         package_url=row.get('package_url'),
         file_hash=row.get('file_hash'),
         published_at=row.get('published_at'),
