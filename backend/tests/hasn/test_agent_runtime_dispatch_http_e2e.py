@@ -17,12 +17,11 @@ infra-gated，留阶段 F 活体验证。需要 export DATABASE_PORT=15432。
 
 from __future__ import annotations
 
-from typing import Any
-
 import uuid
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -92,7 +91,11 @@ async def e2e():
     owner2 = f'h_owner2_{tag}'
     owner2_uid = owner1_uid + 1
     agent_cloud = f'a_cloud_{tag}'
+    agent_cloud_peer = f'a_cloud_peer_{tag}'
     agent_local = f'a_local_{tag}'
+    cloud_profile = f's_{owner1_uid}-agent_{agent_cloud}'
+    cloud_peer_profile = f's_{owner1_uid}-agent_{agent_cloud_peer}'
+    other_owner_profile = f's_{owner2_uid}-agent_other_{tag}'
 
     session.add(HasnHumans(hasn_id=owner1, star_id=f's_{owner1_uid}', user_id=owner1_uid, nickname=f'O1_{tag}', status='active'))
     session.add(HasnHumans(hasn_id=owner2, star_id=f's_{owner2_uid}', user_id=owner2_uid, nickname=f'O2_{tag}', status='active'))
@@ -108,6 +111,14 @@ async def e2e():
             hasn_id=agent_local, star_id=f'{owner1_uid}#local', owner_id=owner1, display_name='Local Agent',
             agent_name=f'agent_{agent_local}', type='desktop', runtime_location='local', role='specialist',
             api_key_hash='hash', status='active', created_via='client', profile_revision=3,
+        )
+    )
+    session.add(
+        HasnAgents(
+            hasn_id=agent_cloud_peer, star_id=f'{owner1_uid}#cloud-peer', owner_id=owner1,
+            display_name='Cloud Peer', agent_name=f'agent_{agent_cloud_peer}', type='cloud',
+            runtime_location='cloud', role='specialist', api_key_hash='hash', status='active',
+            created_via='client', profile_revision=3,
         )
     )
     await session.flush()
@@ -136,7 +147,10 @@ async def e2e():
     try:
         yield SimpleNamespace(
             client=client, session=session, ident=ident,
-            owner1=owner1, owner2=owner2, agent_cloud=agent_cloud, agent_local=agent_local,
+            owner1=owner1, owner2=owner2, agent_cloud=agent_cloud,
+            agent_cloud_peer=agent_cloud_peer, agent_local=agent_local,
+            cloud_profile=cloud_profile, cloud_peer_profile=cloud_peer_profile,
+            other_owner_profile=other_owner_profile,
         )
     finally:
         await client.aclose()
@@ -206,6 +220,17 @@ async def test_relay_owner_mismatch_forbidden(e2e) -> None:
     assert r.status_code == 403, r.text
 
 
+@pytest.mark.parametrize('foreign_profile', ['cloud_peer_profile', 'other_owner_profile'])
+async def test_relay_foreign_profile_forbidden_before_runtime_access(e2e, foreign_profile: str) -> None:
+    e2e.ident.agent_hasn_id = e2e.agent_cloud
+    e2e.ident.owner_hasn_id = e2e.owner1
+    r = await e2e.client.post(
+        '/api/v1/hasn/agent/runtime/runs',
+        json={'runtime_profile_id': getattr(e2e, foreign_profile), 'payload': {'input': 'hi'}},
+    )
+    assert r.status_code == 403, r.text
+
+
 async def test_relay_cloud_unreachable_yields_sse_error_not_fake_success(e2e, monkeypatch) -> None:
     # cloud 分身 + 合法 profile_id，但上游 runtime 不可达（base_url 空）→ 200 SSE，
     # body 为 event: error + runtime_unavailable（零 fake：不伪造成功）。
@@ -214,7 +239,7 @@ async def test_relay_cloud_unreachable_yields_sse_error_not_fake_success(e2e, mo
     e2e.ident.owner_hasn_id = e2e.owner1
     r = await e2e.client.post(
         '/api/v1/hasn/agent/runtime/runs',
-        json={'runtime_profile_id': '100001-cloud', 'payload': {'input': 'hi'}},
+        json={'runtime_profile_id': e2e.cloud_profile, 'payload': {'input': 'hi'}},
     )
     assert r.status_code == 200, r.text
     assert 'event: error' in r.text
@@ -239,7 +264,7 @@ async def test_health_owner_mismatch_forbidden(e2e) -> None:
     e2e.ident.agent_hasn_id = e2e.agent_cloud
     e2e.ident.owner_hasn_id = e2e.owner2
     r = await e2e.client.get(
-        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': '100001-cloud'}
+        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': e2e.cloud_profile}
     )
     assert r.status_code == 403, r.text
 

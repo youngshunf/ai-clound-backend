@@ -613,7 +613,8 @@ class HasnAgentRuntimeDispatchService:
         - 身份恒取自 Agent JWT（agent_hasn_id/owner_hasn_id），不读 body 身份字段；
         - owner 隔离：JWT owner 必须等于分身 owner（防越权派发别 owner 的分身）；
         - 形态闸门：仅 runtime_location=cloud 走此面；local 分身经本地 sidecar 派发，此处拒绝；
-        - profile_id 由 daemon（其 binding metadata profile_ref）携带，云端不再二次派生。
+        - profile_id 由云端按权威 Owner star_id 与 Agent name 二次派生；请求值只作一致性断言，
+          禁止任意 Agent JWT 探测、改写或执行其他 profile。
         """
         row = (
             await db.execute(sa.select(HasnAgents).where(HasnAgents.hasn_id == agent_hasn_id).limit(1))
@@ -631,6 +632,15 @@ class HasnAgentRuntimeDispatchService:
         profile_id = (runtime_profile_id or '').strip()
         if not profile_id:
             raise errors.RequestError(msg='runtime_profile_id is required')
+        from backend.app.hasn.service.hasn_agent_runtime_provision_service import cloud_profile_id_for
+
+        expected_profile_id = await cloud_profile_id_for(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            agent_name=str(getattr(row, 'agent_name', '') or ''),
+        )
+        if profile_id != expected_profile_id:
+            raise errors.ForbiddenError(msg='runtime_profile_id 与当前分身不匹配')
         return profile_id
 
     async def cloud_runtime_health(
