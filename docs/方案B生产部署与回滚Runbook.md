@@ -210,10 +210,12 @@ pending/processing 是持久投递事实，回滚不得清空。
 
 RabbitMQ 原生 endpoint 继续只监听 `127.0.0.1:15692`；systemd socket proxy 只在
 可观测 Docker 私网监听 `172.24.0.1:15693` 并转发到原生 endpoint。生产 Prometheus
-增加 `job_name: rabbitmq`，目标为该私网 proxy。修改前备份
+固定地址为 `172.24.0.250`，UFW 只放行该单一源到 `172.24.0.1:15693`。生产
+Prometheus 增加 `job_name: rabbitmq`，目标为该私网 proxy。修改前备份
 `/data2/huanxing-observability/config/production`，使用 `promtool check config` 和
-`promtool check rules` 验证后，只 reload/recreate Prometheus；RabbitMQ、Celery 和 API
-不因此重启。Grafana file provider 加载 dashboard 后，以 UID
+`promtool check rules` 验证，并只读挂载 `./prometheus/rules:/etc/prometheus/rules:ro`
+后，只 reload/recreate Prometheus；RabbitMQ、Celery 和 API 不因此重启。Grafana file
+provider 加载 dashboard 后，以 UID
 `huanxing-scheme-b-rabbitmq` 检查。
 
 ### 7.2 Trace 验证

@@ -46,6 +46,8 @@ install -o root -g root -m 644 \
   /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now huanxing-rabbitmq-prometheus-proxy.socket
+ufw allow from 172.24.0.250 to 172.24.0.1 port 15693 proto tcp \
+  comment 'huanxing prometheus rabbitmq scrape'
 ```
 
 不要把密钥值粘贴到命令行历史、工单、日志或 Git。应用 `.env` 只注入自身角色的账号和密码，禁止跨角色复用。
