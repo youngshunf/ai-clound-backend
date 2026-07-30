@@ -56,6 +56,11 @@ LOCAL_BEAT_SCHEDULE = {
         # 提交后即时唤醒失败时，每分钟扫描一次持久命令，保证控制边最终落入 IM 关系域。
         'schedule': TzAwareCrontab('*'),
     },
+    'HASN 离线恢复影子对账': {
+        'task': 'hasn_offline_shadow_reconcile',
+        # 仅 dual 模式执行真实 Redis/PG 集合对账；其余模式任务显式 no-op。
+        'schedule': TzAwareCrontab('*/5'),
+    },
     '履约对账': {
         'task': 'credit_outbox_reconcile',
         # 每 15 分钟核对死信事件在 NewAPI 侧的真实结果，收敛「其实成功了只是回执丢了」的事件。

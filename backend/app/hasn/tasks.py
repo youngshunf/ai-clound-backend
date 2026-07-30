@@ -1,6 +1,7 @@
 """HASN workbench background tasks."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from backend.app.task.celery import celery_app
 
@@ -25,8 +26,29 @@ async def hasn_relation_outbox_dispatch() -> str:
     )
 
 
+@celery_app.task(name='hasn_offline_shadow_reconcile')
+async def hasn_offline_shadow_reconcile() -> str:
+    """dual 模式周期核对 Redis offline 影子与 PostgreSQL sync 七天窗口。"""
+    from backend.app.hasn_im.observability.offline_shadow_reconciler import (
+        collect_offline_shadow_report,
+    )
+    from backend.core.conf import settings
+    from backend.database.db import async_db_session
+
+    if settings.HASN_OFFLINE_RECOVERY != 'dual':
+        return f'skipped: offline recovery mode is {settings.HASN_OFFLINE_RECOVERY}'
+    async with async_db_session() as db:
+        report = await collect_offline_shadow_report(db)
+    return (
+        f'both={report.both} redis_only={report.redis_only} '
+        f'sync_only={report.sync_only} snapshot_backed={report.snapshot_backed} '
+        f'malformed={report.malformed} '
+        f'redis_only_unrecoverable={report.redis_only_unrecoverable}'
+    )
+
+
 @celery_app.task(name='hasn_check_agent_heartbeat_timeout', bind=True)
-async def hasn_check_agent_heartbeat_timeout(self) -> str:
+async def hasn_check_agent_heartbeat_timeout(self: Any) -> str:
     """检查 agent 心跳超时，将超过 1 小时未上报的 agent 标记为离线。
 
     定时执行：每 5 分钟一次
@@ -37,12 +59,13 @@ async def hasn_check_agent_heartbeat_timeout(self) -> str:
     from backend.app.hasn.model import HasnAgents
     from backend.database.db import async_db_session
 
-    timeout_threshold = datetime.utcnow() - timedelta(hours=1)
+    timeout_threshold = datetime.now(UTC) - timedelta(hours=1)
 
     async with async_db_session() as session:
         # 查找超时的 agent：在线状态为 online 且最后心跳时间超过 1 小时
         result = await session.execute(
-            sa.update(HasnAgents)
+            sa
+            .update(HasnAgents)
             .where(
                 HasnAgents.online_status == 'online',
                 HasnAgents.last_heartbeat_at < timeout_threshold,

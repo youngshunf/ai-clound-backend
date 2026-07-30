@@ -122,4 +122,5 @@ def test_production_task_discovery_and_beat_schedule_exclude_demo_tasks() -> Non
     scheduled_tasks = {str(entry['task']) for entry in LOCAL_BEAT_SCHEDULE.values()}
 
     assert scheduled_tasks.isdisjoint(retired_tasks)
+    assert 'hasn_offline_shadow_reconcile' in scheduled_tasks
     assert 'backend.app.task.tasks' not in celery_module.find_task_packages()

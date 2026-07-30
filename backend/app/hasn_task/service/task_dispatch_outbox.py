@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.hasn_im.application.outbox_relay import RelayStats
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame, RealtimeGateway
+from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
+from backend.app.hasn_sync.ports.dto import SyncEnvelope
 
 log = logging.getLogger(__name__)
 
@@ -55,20 +57,21 @@ async def enqueue_task_exec(
     if not target_owner_id.startswith('h_'):
         raise ValueError('任务派发目标必须是主人 HASN ID')
     if not isinstance(payload, dict):
-        raise ValueError('任务派发 payload 必须是对象')
+        raise TypeError('任务派发 payload 必须是对象')
+    agent_id = payload.get('agent_id')
+    if not isinstance(agent_id, str) or not agent_id.startswith('a_'):
+        raise ValueError('任务派发 payload.agent_id 必须是分身 HASN ID')
 
     idempotency_key = f'task:run:{run_id}:exec'
     if payload.get('dispatch_id') != idempotency_key:
         raise ValueError('任务派发 payload.dispatch_id 必须等于 run 派生幂等键')
     canonical_payload = _canonical_json(payload)
-    payload_hash = hashlib.sha256(
-        f'{target_owner_id}\n{_METHOD}\n{canonical_payload}'.encode()
-    ).hexdigest()
+    payload_hash = hashlib.sha256(f'{target_owner_id}\n{_METHOD}\n{canonical_payload}'.encode()).hexdigest()
     command_id = str(uuid.uuid4())
     inserted = (
         await db.execute(
             sa.text(
-                f'INSERT INTO {_TABLE} ('  # noqa: S608 代码内固定表名
+                f'INSERT INTO {_TABLE} ('
                 'command_id, run_id, task_id, target_owner_id, method, payload, '
                 'payload_hash, idempotency_key, status, attempt_count, next_attempt_at'
                 ') VALUES ('
@@ -91,22 +94,35 @@ async def enqueue_task_exec(
         )
     ).scalar_one_or_none()
     if inserted is not None:
-        return str(inserted)
+        persisted_command_id = str(inserted)
+    else:
+        existing = (
+            await db.execute(
+                sa.text(f'SELECT command_id, payload_hash FROM {_TABLE} WHERE idempotency_key = :idempotency_key'),
+                {'idempotency_key': idempotency_key},
+            )
+        ).one_or_none()
+        if existing is None:
+            raise RuntimeError('任务派发幂等写入后无法读取命令')
+        if str(existing.payload_hash).strip() != payload_hash:
+            raise ValueError(f'任务派发幂等键冲突：{idempotency_key}')
+        persisted_command_id = str(existing.command_id)
 
-    existing = (
-        await db.execute(
-            sa.text(
-                f'SELECT command_id, payload_hash FROM {_TABLE} '  # noqa: S608
-                'WHERE idempotency_key = :idempotency_key'
-            ),
-            {'idempotency_key': idempotency_key},
-        )
-    ).one_or_none()
-    if existing is None:
-        raise RuntimeError('任务派发幂等写入后无法读取命令')
-    if str(existing.payload_hash).strip() != payload_hash:
-        raise ValueError(f'任务派发幂等键冲突：{idempotency_key}')
-    return str(existing.command_id)
+    # 与任务 run/outbox 共用调用方事务：实时帧丢失时，节点仍能从 Owner 同步流恢复命令。
+    await SqlAlchemySyncAppender().append(
+        db,
+        SyncEnvelope(
+            owner_id=target_owner_id,
+            hasn_id=agent_id,
+            event_type='task.exec',
+            aggregate_type='task_run',
+            aggregate_id=str(run_id),
+            payload=payload,
+            producer='hasn_task',
+            source_event_id=idempotency_key,
+        ),
+    )
+    return persisted_command_id
 
 
 class TaskDispatchOutboxStore:
@@ -134,7 +150,7 @@ class TaskDispatchOutboxStore:
                 await db.execute(
                     sa.text(
                         'WITH candidates AS ('
-                        f' SELECT id FROM {_TABLE}'  # noqa: S608
+                        f' SELECT id FROM {_TABLE}'
                         ' WHERE ('
                         "   (status = 'pending' AND next_attempt_at <= to_timestamp(:now))"
                         '   OR '
@@ -144,7 +160,7 @@ class TaskDispatchOutboxStore:
                         ' LIMIT :limit'
                         ' FOR UPDATE SKIP LOCKED'
                         ') '
-                        f'UPDATE {_TABLE} AS outbox '  # noqa: S608
+                        f'UPDATE {_TABLE} AS outbox '
                         "SET status = 'processing', "
                         'lease_until = to_timestamp(:now) + make_interval(secs => :lease_seconds), '
                         'locked_by = :instance_id, updated_time = now() '
@@ -177,7 +193,7 @@ class TaskDispatchOutboxStore:
         async with self._session_factory.begin() as db:
             await db.execute(
                 sa.text(
-                    f'UPDATE {_TABLE} '  # noqa: S608
+                    f'UPDATE {_TABLE} '
                     "SET status = 'completed', "
                     'completed_at = COALESCE(completed_at, now()), '
                     'lease_until = NULL, locked_by = NULL, last_error = NULL, '
@@ -202,7 +218,7 @@ class TaskDispatchOutboxStore:
         async with self._session_factory.begin() as db:
             await db.execute(
                 sa.text(
-                    f'UPDATE {_TABLE} '  # noqa: S608
+                    f'UPDATE {_TABLE} '
                     "SET status = 'pending', attempt_count = :attempts, "
                     'next_attempt_at = to_timestamp(:next_attempt_at), '
                     'lease_until = NULL, locked_by = NULL, last_error = :error, '
@@ -230,7 +246,7 @@ class TaskDispatchOutboxStore:
         async with self._session_factory.begin() as db:
             await db.execute(
                 sa.text(
-                    f'UPDATE {_TABLE} '  # noqa: S608
+                    f'UPDATE {_TABLE} '
                     "SET status = 'dead_letter', attempt_count = :attempts, "
                     'lease_until = NULL, locked_by = NULL, last_error = :error, '
                     'updated_time = now() '
@@ -273,7 +289,7 @@ class TaskDispatchRelay:
                     record.target_owner_id,
                     RealtimeFrame(method=record.method, params=record.payload),
                 )
-            except Exception as exc:  # noqa: BLE001 relay 必须持久化任意投递故障
+            except Exception as exc:
                 await self._handle_failure(record, exc, now=now, stats=stats)
                 continue
             await self._store.mark_completed(record.command_id)
