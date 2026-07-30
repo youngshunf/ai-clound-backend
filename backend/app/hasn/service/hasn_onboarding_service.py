@@ -10,6 +10,8 @@ Scope guard:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import random
 import secrets
 import string
@@ -163,8 +165,8 @@ class SqlAlchemyPlatformUserGateway:
             salt=None,
         )
         # 默认昵称不能只用首三位/末四位掩码：不同手机号会高概率映射到同一值并触发
-        # nickname 唯一约束。使用独立的 128-bit 随机后缀，不暴露内部用户 UUID，也不引入
-        # 可枚举的手机号摘要。
+        # nickname 唯一约束。使用独立的 128-bit 随机盐派生高熵别名，不暴露手机号或内部
+        # 用户 UUID，并满足 NewAPI DisplayName 最长 20 字符的跨服务契约。
         user.nickname = _default_phone_nickname(phone, secrets.token_hex(16))
         db.add(user)
         await db.flush()
@@ -646,9 +648,10 @@ def _generate_code(length: int = 6) -> str:
 
 
 def _default_phone_nickname(phone: str, random_suffix: str) -> str:
-    """生成不泄露手机号且不会因相同掩码碰撞的系统默认昵称。"""
-    compact_suffix = random_suffix.replace('-', '')
-    return f'{phone[:3]}****{phone[-4:]}·{compact_suffix}'
+    """生成不泄露手机号、满足 NewAPI 长度上限且具备高熵的系统默认昵称。"""
+    digest = hashlib.sha256(f'{phone}:{random_suffix}'.encode()).digest()
+    opaque_suffix = base64.urlsafe_b64encode(digest).decode().rstrip('=')[:17]
+    return f'用户·{opaque_suffix}'
 
 
 def _decode_redis_value(value: Any) -> str | None:

@@ -121,7 +121,7 @@ class FakeAgentTokenIssuer:
         )
 
 
-def test_default_phone_nickname_is_masked_and_unique_for_colliding_phone_masks() -> None:
+def test_default_phone_nickname_is_private_unique_and_compatible_with_newapi() -> None:
     first_phone = '19920848900'
     second_phone = '19977888900'
 
@@ -134,13 +134,14 @@ def test_default_phone_nickname_is_masked_and_unique_for_colliding_phone_masks()
         '609c3420-c26a-4548-9e53-838565b93642',
     )
 
-    assert first.startswith('199****8900·')
-    assert second.startswith('199****8900·')
+    assert first.startswith('用户·')
+    assert second.startswith('用户·')
     assert first_phone not in first
     assert second_phone not in second
     assert first != second
-    assert len(first) <= 64
-    assert len(second) <= 64
+    # NewAPI `User.DisplayName` 的正式校验上限是 20；Cloud 默认昵称必须满足跨服务契约。
+    assert len(first) <= 20
+    assert len(second) <= 20
 
 
 @pytest.mark.asyncio
