@@ -271,13 +271,11 @@ async def test_health_owner_mismatch_forbidden(e2e) -> None:
 
 async def test_health_cloud_unreachable_reports_offline_not_fake(e2e, monkeypatch) -> None:
     # 控制面不可达（base_url 空）→ online=False, health=offline（零 fake：如实报离线，不伪造在线）。
-    monkeypatch.setattr(
-        hasn_agent_runtime_dispatch_service, 'runtime_client', HermesRuntimeClient(base_url='')
-    )
+    monkeypatch.setattr(hasn_agent_runtime_dispatch_service, 'runtime_client', _offline_client())
     e2e.ident.agent_hasn_id = e2e.agent_cloud
     e2e.ident.owner_hasn_id = e2e.owner1
     r = await e2e.client.get(
-        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': '100001-cloud'}
+        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': e2e.cloud_profile}
     )
     assert r.status_code == 200, r.text
     data = r.json()['data']
