@@ -527,14 +527,14 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] 每种离线帧都归类为“durable sync”“瞬时无需离线”或“缺口待补”。
-- [ ] `hasn.message.new`、撤回、会话失效、任务卡片等关键帧有稳定 `event_id/message_id`。
-- [ ] 对缺口只补 PostgreSQL sync event 或业务 outbox，不新增 RabbitMQ per-user queue。
+- [x] 每种离线帧都归类为“durable sync”“瞬时无需离线”或“缺口待补”。
+- [x] `hasn.message.new`、撤回、会话失效、任务卡片等关键帧有稳定 `event_id/message_id`。
+- [x] 对缺口只补 PostgreSQL sync event 或业务 outbox，不新增 RabbitMQ per-user queue。
 
 **验证：**
 
-- [ ] 静态守卫覆盖所有 `_enqueue_offline` 调用点，新增调用未登记即失败。
-- [ ] 用真实 PostgreSQL 验证同一业务事务失败/重试不会产生不可恢复消息。
+- [x] 静态守卫覆盖所有 `_enqueue_offline` 调用点，新增调用未登记即失败。
+- [x] 用真实 PostgreSQL 验证同一业务事务失败/重试不会产生不可恢复消息。
 
 **依赖：** B5-03。
 
@@ -757,7 +757,7 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B5-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0e323c25` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-02 | 实现已合入，生产四 consumer 与原位重连、隔离 broker 真实重启恢复已通过；真实 Redis pending 完整组合拓扑待验 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`8696e9b6` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-03 | 实现已合入，10 万条真实 shadow 对账通过；生产 24h 观察待 B3 门禁解除 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`559a6bca` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B6-01 | 覆盖矩阵、静态守卫和后端事务实现已合入；生产真实 PostgreSQL/双设备验收待部署 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B6-01 | 已完成并合入；生产真实 PostgreSQL 事务回滚、提交后 relay 与 Redis 恢复 E2E 已通过，零测试残留 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735`、`f1067daa` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-02 | daemon 常驻补拉、历史快照、SQLite 命令收件箱与幂等提交已合入 hasn-node `main`；真实云端 E2E 待部署 | `fix/doc03-message-history-bootstrap` | `hasn-node/.worktrees/doc03-message-history-bootstrap` | `c972720ac`–`ac637fbe2` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-03 | offline dual、低基数对账和定时任务实现已合入；生产 7 天 shadow 待 B2/B3 门禁通过后启动 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-04 | `sync` 停写/停读 Redis offline 的实现门禁已具备；正式切换等待生产 7 天 shadow 与客户端 E2E | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |

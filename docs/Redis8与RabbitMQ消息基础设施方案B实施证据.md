@@ -866,7 +866,44 @@ uv run pytest \
 
 两项 error 都来自真实 PostgreSQL fixture 连接 `127.0.0.1:5432` 被拒绝；没有改成
 mock、skip 或假数据。它们是 B6 生产部署后必须补跑的真实事务与 Redis 恢复门槛，
-因此 B6-01 尚不能标记生产验收完成。
+因此当时 B6-01 尚不能标记生产验收完成。
+
+2026-07-30 12:03 CST 已用生产 PostgreSQL 与 Redis 补齐该门槛。首次从精确提交归档
+启动隔离测试时，发现 `.env.example` 的 `REDIS_PROTOCOL=2` 会以文本形式进入
+`Literal[2, 3]` 并触发配置校验失败；没有绕开、删除或覆盖该配置，而是按 TDD 增加
+`"2"`/`"3"` 环境文本归一化，用例先红后绿，提交并推送：
+
+```text
+f1067daa fix: 归一化Redis协议环境配置
+backend/tests/test_rabbitmq_settings.py => 19 passed
+backend/tests/test_redis8_integration.py + test_redis_observability.py
+  => 4 passed，8 skipped（8 个真实 Redis 8.8 用例需 REDIS8_E2E=1）
+mypy backend/core/conf.py => 通过
+prek（精确两个变更文件）=> 通过
+```
+
+生产验证使用 `f1067daa` 的 Git archive，sha256 为
+`818444f78d349abc54be3c320fd559d2d5f1686a4e9d11377c483b011780af51`，只解压到
+`/data2/backups/scheme-b-b6-pg-e2e-f1067daa-src`，复用生产虚拟环境和真实配置，
+没有覆盖线上源码、部署代码或重启服务。安全连接探针确认
+`PostgreSQL:5432`、`Redis 127.0.0.1:9396/DB3`、RESP2 后执行：
+
+```text
+test_task_run_and_dispatch_command_share_one_transaction
+test_committed_task_dispatch_recovers_via_real_redis
+=> 2 passed
+```
+
+测试完成后的独立残留审计：
+
+```text
+PostgreSQL(task,run,outbox,bundle,sync_event)=0,0,0,0,0
+Redis离线键=0
+```
+
+由此 B6-01 的真实业务事务回滚、提交后 relay 与 Redis 恢复门槛已完成。B6 整体仍未
+完成：daemon 生产部署、双设备真实 E2E、`dual` 连续七天 shadow 和最终 `sync`
+切换仍受后续门槛约束。
 
 ### 10.2 B6-02 daemon durable 命令与同步补拉
 
