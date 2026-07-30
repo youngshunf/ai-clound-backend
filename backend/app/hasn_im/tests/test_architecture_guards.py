@@ -208,6 +208,15 @@ def test_relation_gateway_never_falls_back_to_python_session() -> None:
     assert 'im_service_db_session' in source
 
 
+def test_agent_asset_delivery_only_accesses_im_through_gateway() -> None:
+    """资产投递不得用通用业务会话直读或直写 R3 IM schema。"""
+    path = _BACKEND_ROOT / 'app/hasn/api/v1/agent/hasn_assets.py'
+    source = path.read_text(encoding='utf-8')
+    assert 'from backend.app.hasn_im.application import local_gateway' not in source
+    assert 'local_gateway.' not in source
+    assert 'get_im_gateway()' in source
+
+
 def test_contacts_presence_audience_query_uses_im_role() -> None:
     """联系人在线态受众查询必须使用 IM role，不能借普通 Python 会话跨域读表。"""
     path = _BACKEND_ROOT / 'app/hasn_im/api/ws_node.py'
