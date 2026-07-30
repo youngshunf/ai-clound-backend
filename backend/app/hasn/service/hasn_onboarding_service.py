@@ -11,6 +11,7 @@ Scope guard:
 from __future__ import annotations
 
 import random
+import secrets
 import string
 
 from dataclasses import dataclass, field
@@ -151,17 +152,20 @@ class SqlAlchemyPlatformUserGateway:
             return user, False
 
         username = phone
-        nickname = f'{phone[:3]}****{phone[-4:]}'
         if await user_dao.get_by_username(db, username):
             username = f'{phone}_{_generate_code(4)}'
 
         user = User(
             username=username,
-            nickname=nickname,
+            nickname='',
             phone=phone,
             password=None,
             salt=None,
         )
+        # 默认昵称不能只用首三位/末四位掩码：不同手机号会高概率映射到同一值并触发
+        # nickname 唯一约束。使用独立的 128-bit 随机后缀，不暴露内部用户 UUID，也不引入
+        # 可枚举的手机号摘要。
+        user.nickname = _default_phone_nickname(phone, secrets.token_hex(16))
         db.add(user)
         await db.flush()
         await db.refresh(user)
@@ -639,6 +643,12 @@ class HasnOnboardingService:
 
 def _generate_code(length: int = 6) -> str:
     return ''.join(random.choices(string.digits, k=length))
+
+
+def _default_phone_nickname(phone: str, random_suffix: str) -> str:
+    """生成不泄露手机号且不会因相同掩码碰撞的系统默认昵称。"""
+    compact_suffix = random_suffix.replace('-', '')
+    return f'{phone[:3]}****{phone[-4:]}·{compact_suffix}'
 
 
 def _decode_redis_value(value: Any) -> str | None:

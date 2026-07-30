@@ -21,6 +21,7 @@ from backend.app.hasn.service.hasn_onboarding_service import (
     SMS_CODE_PREFIX,
     HasnOnboardingService,
     HasnPhoneAuthService,
+    _default_phone_nickname,
 )
 
 
@@ -118,6 +119,28 @@ class FakeAgentTokenIssuer:
             access_token_expire_time=SimpleNamespace(isoformat=lambda: '2026-05-18T00:00:00+00:00'),
             expires_at_unix=1779062400,
         )
+
+
+def test_default_phone_nickname_is_masked_and_unique_for_colliding_phone_masks() -> None:
+    first_phone = '19920848900'
+    second_phone = '19977888900'
+
+    first = _default_phone_nickname(
+        first_phone,
+        '70657fa6-cdb4-4ae7-8f41-9932f7f3069a',
+    )
+    second = _default_phone_nickname(
+        second_phone,
+        '609c3420-c26a-4548-9e53-838565b93642',
+    )
+
+    assert first.startswith('199****8900·')
+    assert second.startswith('199****8900·')
+    assert first_phone not in first
+    assert second_phone not in second
+    assert first != second
+    assert len(first) <= 64
+    assert len(second) <= 64
 
 
 @pytest.mark.asyncio
