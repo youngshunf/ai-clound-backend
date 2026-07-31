@@ -17,14 +17,19 @@
 9. 合并待办去重 → ``test_merge_request_dedup_keeps_latest``
 10. contribute 不再内联合并 → ``test_contribute_no_longer_merges_inline``
 11. 云端语义处理退役回归 → ``test_cloud_memory_semantic_processing_retired``
+12. 退化输入（`owner_memory` 缺键 / 三数组皆空）→ ``test_missing_owner_memory_key_*`` /
+    ``test_fully_degenerate_round_applies_cleanly`` / ``test_empty_owner_memory_content_*``
+13. 跨仓提交体字段名钉子 → ``test_merge_request_body_field_names_match_local_rust_builder``
 
 需本地 PostgreSQL :15432（不可达则跳过）。
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -32,6 +37,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -40,6 +46,7 @@ from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContri
 from backend.app.hasn_memory.model.peer_portrait import PeerPortrait
 from backend.app.hasn_memory.schema.merge_gate import (
     MergeApplyRequest,
+    MergeApplyResponse,
     MergeDerivedFactItem,
     MergeOwnerMemoryPayload,
     MergePeerPortraitItem,
@@ -56,6 +63,7 @@ from backend.app.hasn_memory.service.merge_gate_service import (
 from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 from backend.database.schema_names import SCHEMA_NAMES
+from backend.tests.hasn_memory.local_rust_source import find_local_rust_source
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -679,3 +687,275 @@ async def test_cloud_memory_semantic_processing_retired(env: tuple[AsyncSession,
     assert (
         await db.execute(select(sa.func.count()).select_from(PeerPortrait).where(PeerPortrait.owner_id == fx.owner_id))
     ).scalar_one() == 1
+
+
+# --------------------------------------------------------------------------------------
+# 12 · 退化输入：`owner_memory` 缺键 / 三个数组为空（合并闸必须原样接住）
+# --------------------------------------------------------------------------------------
+#
+# 本地 `hasn.memory.merge` 在**未重算画像**时会**整个省略** `owner_memory` 键——绝不把上一版
+# 正文再交一遍冒充「重算过了」，这是零 fake 的正确做法（构造点：hasn-mcp/src/memory.rs 的
+# `merge_apply_request`「画像没重算就不带这个键」）。云端若因此报错或把旧正文当新版本入库，
+# 合并就会在「本轮没什么可改」的最常见情形下整轮失败，而症状只表现为「主脑很久没整理了」。
+
+
+async def test_missing_owner_memory_key_keeps_content_and_advances_version(
+    env: tuple[AsyncSession, Fixture],
+) -> None:
+    """缺键 = 本轮没重算画像：跳过画像更新、**不覆盖已有正文**、`version` 照常推进。"""
+    db, fx = env
+    # 先跑一轮带正文的，把库里种上一版真实正文与 owner_edited 复位状态
+    first = _request(fx, owner_memory=MergeOwnerMemoryPayload(content='健康: 主人注重抗衰老'))
+    await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=first)
+    seeded = (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one()
+    assert seeded.version == 1
+    content_before = seeded.content
+    token_count_before = seeded.token_count
+    assert content_before
+
+    # 第二轮：请求体里**根本没有** owner_memory 这个键（与真实线上载荷同形）
+    raw: dict[str, Any] = {
+        'run_id': f'mrun_{uuid.uuid4().hex[:24]}',
+        'node_id': fx.node_a,
+        'base_owner_memory_version': 1,
+        'verdicts': [],
+        'derived_facts': [],
+        'peer_portraits': [],
+        'summary': '本轮没有需要改的画像',
+        'stats': {'facts_judged': 3, 'facts_merged': 0, 'facts_disputed': 0},
+    }
+    body = MergeApplyRequest.model_validate(raw)
+    assert body.owner_memory is None, '缺键必须解析成 None，而不是 422'
+
+    result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
+    assert result.applied is True
+    assert result.new_owner_memory_version == 2
+
+    # 合并闸走裸 SQL 写库，ORM identity map 里那份仍是旧值——不 expire 就会读到自己种下的旧行。
+    db.expire_all()
+    after = (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one()
+    assert after.version == 2, 'version 是轮次水位，正文没变也必须 +1（否则下轮 CAS 恒冲突）'
+    assert after.content == content_before, '缺键绝不覆盖已有正文'
+    assert after.token_count == token_count_before
+    assert after.last_merge_run_id == body.run_id
+    assert after.last_merge_summary == '本轮没有需要改的画像'
+
+
+async def test_missing_owner_memory_key_does_not_reset_owner_edited(
+    env: tuple[AsyncSession, Fixture],
+) -> None:
+    """§4.6：`owner_edited` 只在本轮**真的重算并消费了**主人手工版本时才复位。
+
+    缺键轮把它一起复位，等于宣称「主人的手工改动已被本轮重算吸收」——那是纯粹的谎报，
+    下一轮重算的 prompt 就不会再携带主人版本，手工编辑被静默冲掉。
+    """
+    db, fx = env
+    await db.execute(
+        pg_insert(HasnOwnerMemory)
+        .values(owner_id=fx.owner_id, content='主人手改的正文', version=3, owner_edited=True)
+        .on_conflict_do_nothing(index_elements=['owner_id'])
+    )
+    await db.flush()
+
+    body = MergeApplyRequest.model_validate({
+        'run_id': f'mrun_{uuid.uuid4().hex[:24]}',
+        'node_id': fx.node_a,
+        'base_owner_memory_version': 3,
+    })
+    result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
+    assert result.new_owner_memory_version == 4
+
+    db.expire_all()
+    row = (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one()
+    assert row.owner_edited is True, '本轮没重算画像，主人手工标位不得被复位'
+    assert row.content == '主人手改的正文'
+
+
+async def test_fully_degenerate_round_applies_cleanly(env: tuple[AsyncSession, Fixture]) -> None:
+    """全退化输入（缺 owner_memory + 三个数组皆空 + 无 summary）仍是一轮**成功**的合并。
+
+    「本轮读了 N 条事实、一条都不用改」是最常见的结果，它必须能推进 `version` 并留痕，
+    否则主脑下一轮拿着旧基线永远 version_conflict，记忆页永远显示「很久没整理了」。
+    """
+    db, fx = env
+    body = MergeApplyRequest.model_validate({
+        'run_id': f'mrun_{uuid.uuid4().hex[:24]}',
+        'node_id': fx.node_a,
+        'base_owner_memory_version': 0,
+    })
+    assert body.verdicts == []
+    assert body.derived_facts == []
+    assert body.peer_portraits == []
+    assert body.owner_memory is None
+    assert body.summary is None
+    assert (body.stats.facts_judged, body.stats.facts_merged, body.stats.facts_disputed) == (0, 0, 0)
+
+    result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
+    assert result.applied is True
+    assert result.replayed is False
+    assert result.new_owner_memory_version == 1
+    assert result.skipped_verdicts == []
+    assert result.derived_created == 0
+    assert result.portraits_updated == 0
+
+    memory = (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one()
+    assert memory.version == 1
+    assert memory.content is None, '从未有过正文的 owner 首轮空跑不该凭空造出正文'
+    assert memory.last_merge_run_id == body.run_id
+
+    run_row = (await db.execute(select(MergeRun).where(MergeRun.run_id == body.run_id))).scalar_one()
+    assert run_row.status == 'applied'
+    assert run_row.reject_reason is None
+    assert (
+        await db.execute(select(sa.func.count()).select_from(PeerPortrait).where(PeerPortrait.owner_id == fx.owner_id))
+    ).scalar_one() == 0
+
+
+async def test_empty_owner_memory_content_is_treated_as_no_recompute(
+    env: tuple[AsyncSession, Fixture],
+) -> None:
+    """`owner_memory={'content': None}` / 空白串与缺键同档：都不覆盖已有正文。
+
+    本地真到了「重算出空正文」这一步也不该覆盖——空正文不是画像，是失败的重算。
+    """
+    db, fx = env
+    await merge_gate_service.apply(
+        db,
+        owner_id=fx.owner_id,
+        agent_id=fx.master_agent_id,
+        body=_request(fx, owner_memory=MergeOwnerMemoryPayload(content='工作: 主人主攻 Rust')),
+    )
+    seeded = (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one()
+    content_before = seeded.content
+
+    for index, payload in enumerate((MergeOwnerMemoryPayload(content=None), MergeOwnerMemoryPayload(content='   '))):
+        body = _request(fx, base_owner_memory_version=1 + index, owner_memory=payload)
+        result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
+        assert result.new_owner_memory_version == 2 + index
+        db.expire_all()
+        row = (
+            await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+        ).scalar_one()
+        assert row.content == content_before, f'第 {index} 种空正文形态覆盖了已有正文'
+        assert row.version == 2 + index
+
+
+# --------------------------------------------------------------------------------------
+# 13 · 跨仓契约钉子：合并提交体字段名（本地 Rust 构造点 ↔ 云端 Pydantic）
+# --------------------------------------------------------------------------------------
+#
+# S5 已有「云端事件白名单 vs 本地 Rust 常量」的钉子，合并闸的**提交体字段名**此前没有同类
+# 保护。字段名单边漂移不会报错也不会 5xx——云端 Pydantic 直接忽略未知键、必填键缺失则 422，
+# 两种结局在 §5.5 的可见性面上都只显示成「主脑很久没整理了」，排查成本极高。
+
+#: 本地合并提交体的构造点（`hasn.memory.merge` 工具组请求体）。
+_LOCAL_MERGE_TOOL_RS = Path('crates/hasn-mcp/src/memory.rs')
+#: 本地合并闸传输层（应答结构体在这里）。
+_LOCAL_MERGE_TRANSPORT_RS = Path('crates/hasn-node/src/backend/modules/huanxing_agent/memory.rs')
+
+
+def _strip_line_comments(body: str) -> str:
+    """去掉 ``//`` 行注释，避免注释里的引号被当成 JSON 键扫进来。"""
+    return re.sub(r'//[^\n]*', '', body)
+
+
+def _rust_fn_body(source: str, name: str) -> str:
+    """按花括号配平截出一个 Rust 函数体（正则截不准嵌套 ``json!`` 块）。"""
+    start = source.find(f'fn {name}(')
+    assert start != -1, f'找不到 fn {name}，两侧对照点已漂移'
+    brace = source.find('{', start)
+    assert brace != -1, f'fn {name} 没有函数体'
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == '{':
+            depth += 1
+        elif source[index] == '}':
+            depth -= 1
+            if depth == 0:
+                return source[brace : index + 1]
+    raise AssertionError(f'fn {name} 花括号不配平')
+
+
+def _rust_struct_fields(source: str, name: str) -> set[str]:
+    """取一个 ``pub struct`` 的 pub 字段名（serde 默认按字段名序列化，本仓两侧无 rename）。"""
+    start = source.find(f'pub struct {name} ')
+    assert start != -1, f'找不到 pub struct {name}，两侧对照点已漂移'
+    brace = source.find('{', start)
+    end = source.find('\n}', brace)
+    assert end != -1, f'struct {name} 没有结束花括号'
+    block = _strip_line_comments(source[brace:end])
+    return set(re.findall(r'pub\s+([a-z_][a-z0-9_]*)\s*:', block))
+
+
+def _json_keys(block: str) -> set[str]:
+    """扫一段 Rust 代码里出现的 JSON 键：``"key":`` 与 ``request["key"] =`` 两种写法都算。"""
+    clean = _strip_line_comments(block)
+    return set(re.findall(r'"([a-z_][a-z0-9_]*)"\s*:', clean)) | set(
+        re.findall(r'\[\s*"([a-z_][a-z0-9_]*)"\s*\]\s*=', clean)
+    )
+
+
+#: 云端提交体涉及的全部 DTO（合并提交体是嵌套结构，字段名要按并集比）。
+_MERGE_REQUEST_SCHEMAS = (
+    MergeApplyRequest,
+    MergeVerdictItem,
+    MergeDerivedFactItem,
+    MergeOwnerMemoryPayload,
+    MergePeerPortraitItem,
+    MergeStats,
+)
+
+
+async def test_merge_request_body_field_names_match_local_rust_builder() -> None:  # noqa: RUF029 纯契约钉子无需 await
+    """合并提交体字段名两侧必须**完全一致**（多一个少一个都要显式改这条）。
+
+    对照点：``hasn-mcp/src/memory.rs::merge_apply_request`` + ``stats_json``（本地唯一构造点，
+    注释原文就写着「字段名与云端切片同一份，不得擅改」）↔ ``schema/merge_gate.py`` 的六个 DTO。
+    """
+    source_path = find_local_rust_source(_LOCAL_MERGE_TOOL_RS)
+    if source_path is None:
+        pytest.skip(
+            '本机没有并排的 hasn-node 检出（云端 CI 不检出该仓），跳过跨仓字段名比对；'
+            '本条只在两仓并排的开发机上有意义，那正是引入不对称的现场'
+        )
+    source = source_path.read_text(encoding='utf-8')
+    local_keys = _json_keys(_rust_fn_body(source, 'merge_apply_request')) | _json_keys(
+        _rust_fn_body(source, 'stats_json')
+    )
+    cloud_fields = {field for schema in _MERGE_REQUEST_SCHEMAS for field in schema.model_fields}
+
+    assert local_keys == cloud_fields, (
+        f'合并提交体字段名两侧漂移（症状只会表现成「主脑很久没整理了」）：'
+        f'本地多出={sorted(local_keys - cloud_fields)} 云端多出={sorted(cloud_fields - local_keys)}；'
+        f'本地源文件={source_path}'
+    )
+
+
+async def test_merge_response_field_names_are_a_subset_of_cloud_schema() -> None:  # noqa: RUF029 纯契约钉子无需 await
+    """本地应答结构体的字段名必须是云端应答 DTO 的子集（本地少读几个字段是允许的）。
+
+    对照点：``huanxing_agent/memory.rs::MergeApplyResponse`` ↔ ``schema/merge_gate.py`` 同名 DTO。
+    本地多出的字段名恒为 ``None`` / 零值，主脑据此汇报的「云端建了几条派生事实」会全是 0——
+    比字段名对不上更难发现。
+    """
+    source_path = find_local_rust_source(_LOCAL_MERGE_TRANSPORT_RS)
+    if source_path is None:
+        pytest.skip('本机没有并排的 hasn-node 检出（云端 CI 不检出该仓），跳过跨仓应答字段名比对')
+    source = source_path.read_text(encoding='utf-8')
+    local_fields = _rust_struct_fields(source, 'MergeApplyResponse')
+    cloud_fields = set(MergeApplyResponse.model_fields)
+    assert local_fields, f'{source_path} 里没解析出 MergeApplyResponse 字段，对照点已漂移'
+    assert local_fields <= cloud_fields, (
+        f'本地读了云端不发的应答字段（恒为默认值，主脑汇报会静默失真）：'
+        f'{sorted(local_fields - cloud_fields)}；本地源文件={source_path}'
+    )

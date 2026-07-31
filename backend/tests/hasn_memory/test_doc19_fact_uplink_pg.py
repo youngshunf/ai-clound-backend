@@ -17,6 +17,9 @@
 5. 上行事件类型必须两侧白名单对称 → ``test_uplink_whitelist_matches_local_rust_constants``
 6. purge 墓碑防复活 + 回令来源节点清理 → ``test_tombstone_hit_*`` / ``test_purge_cascades_*``
 
+另有一组 §4.6 / D-20 **主人第三类写者**：载荷带 ``owner_write`` 时豁免 origin 守卫、改判归属主人
+→ ``test_owner_write_*``（十一节）。
+
 需本地 PostgreSQL :15432（不可达则跳过）。
 """
 
@@ -42,14 +45,17 @@ from backend.app.hasn_memory.service.fact_uplink_service import (
     MEMORY_FACT_PERMANENT_CODES,
     MEMORY_FACT_UPLINK_ERROR_CODES,
     MEMORY_FACT_UPLINK_EVENTS,
+    OWNER_WRITE_MARKER,
     FactUplinkConflictError,
     FactUplinkPermanentError,
+    _parse_fact,
     fact_uplink_service,
     reset_warn_once_cache,
 )
 from backend.common.log import log
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 from backend.database.schema_names import SCHEMA_NAMES
+from backend.tests.hasn_memory.local_rust_source import find_local_rust_source
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -1106,46 +1112,9 @@ _EXPECTED_UPLINK_EVENTS = frozenset(
 _LOCAL_AUTHORITY_RS = Path('crates/hasn-memory/src/storage/authority.rs')
 
 
-def _paired_worktree_name() -> str | None:
-    """本测试文件所在的 worktree 名（不在 worktree 里则 ``None``）。
-
-    跨仓任务按约定在两仓开**同名** worktree（分支名从文档号确定性派生），
-    因此「与本仓同名的 hasn-node worktree」才是本轮真正配对的那份检出。
-    """
-    parts = Path(__file__).resolve().parts
-    if '.worktrees' not in parts:
-        return None
-    index = parts.index('.worktrees')
-    return parts[index + 1] if index + 1 < len(parts) else None
-
-
-def _find_local_source(relative: Path) -> Path | None:
-    """在同机 side-by-side 的 hasn-node 检出里找一个源文件。
-
-    云端仓的 CI 不会检出 hasn-node，硬依赖会让这些断言变成永久 skip / 永久红；而**引入不对称
-    的现场恰恰是开发机**（两仓并排、改了一侧忘了另一侧）。故：找得到就逐条比真源文件，找不到
-    就退化为显式期望集合钉子——两类断言都在，不留空档。
-
-    ⚠️ **配对 worktree 优先**：本仓在 worktree 里跑时，比对对象必须是**同名的** hasn-node
-    worktree，而不是主 clone。否则跨仓改动做在两仓 worktree 里、这条测试却拿主 clone 的旧
-    源文件去比——一路绿灯，等合并回主分支才炸，正好错过它该守住的那一刻。
-    """
-    # 本仓可能是主 clone（<project>/huanxing-cloud-backend）也可能是 worktree
-    # （<project>/huanxing-cloud-backend/.worktrees/<name>），故逐级上溯找兄弟目录 hasn-node。
-    for ancestor in Path(__file__).resolve().parents:
-        node_repo = ancestor / 'hasn-node'
-        if not node_repo.is_dir():
-            continue
-        worktrees = node_repo / '.worktrees'
-        candidates: list[Path] = []
-        paired = _paired_worktree_name()
-        if paired and worktrees.is_dir():
-            candidates.append(worktrees / paired / relative)
-        candidates.append(node_repo / relative)
-        if worktrees.is_dir():
-            candidates.extend(sorted(path / relative for path in worktrees.iterdir() if path.is_dir()))
-        return next((path for path in candidates if path.is_file()), None)
-    return None
+#: 取源规则（配对 worktree 优先 + 找不到就 skip）由公共 helper 唯一实现，两个测试文件共用；
+#: 复制粘贴过一次就必然只修一处、漏另一处，正是这条规则原本要防的那类漂移。
+_find_local_source = find_local_rust_source
 
 
 def _find_local_authority_source() -> Path | None:
@@ -1200,6 +1169,8 @@ async def test_error_code_allocation_is_pinned() -> None:  # noqa: RUF029 模块
 
 #: 本地上行 drain 所在的 Rust 源文件（事件白名单 + 拒绝分类都在这里）。
 _LOCAL_MEMORY_PUSH_RS = Path('crates/hasn-node/src/runtime/memory_push.rs')
+#: 本地主人事件标记与快照构造所在的 Rust 源文件（§4.6 / D-20）。
+_LOCAL_FACTS_RS = Path('crates/hasn-memory/src/storage/facts.rs')
 #: 本地错误码分类所在的 Rust 源文件。
 _LOCAL_SYNC_TYPES_RS = Path('crates/hasn-node/src/backend/types/sync.rs')
 
@@ -1354,5 +1325,422 @@ async def test_supersedes_hint_over_column_width_is_permanently_rejected(session
             )
         assert excinfo.value.error.code == 8043
         assert 'supersedes_hint' in excinfo.value.reason
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+# --------------------------------------------------------------------------------------
+# 十一、主人第三类写者（§4.6 / D-20）——`owner_write` 标记豁免 origin 守卫
+# --------------------------------------------------------------------------------------
+#
+# 这一组守的是一个**永久性**缺陷：没有豁免时，主人从设备 X 改一条 origin=设备 Y 的事实会吃
+# 8044 永久拒绝——本地已经生效（记忆页立即可见、disputed 立即失效），却永远传播不到其余节点，
+# 跨设备记忆就此分叉，而且分叉是静默的（daemon 丢弃 op + 一次性 warn，UI 上什么都看不到）。
+
+
+def _owner_write(payload: dict[str, Any]) -> dict[str, Any]:
+    """给一份事实快照加上主人事件标记（本地 ``owner_fact_snapshot_json`` 的等价构造）。"""
+    return {**payload, OWNER_WRITE_MARKER: True}
+
+
+async def _seed_from(session: AsyncSession, ids: _Ids, *, node_id: str) -> None:
+    """在 ``node_id`` 上落一条自产片事实（后续用另一个节点冒充「主人的另一台设备」）。"""
+    await _apply(
+        session,
+        owner_id=ids.owner,
+        node_id=node_id,
+        event_type='memory.fact.saved',
+        payload=_snapshot(owner_id=ids.owner, node_id=node_id, agent_id=ids.agent, fact_id=ids.fact),
+    )
+
+
+async def test_owner_write_marker_key_matches_local_rust_constant() -> None:  # noqa: RUF029 纯契约钉子无需 await
+    """标记键名必须与本地 ``facts.rs::OWNER_WRITE_MARKER`` 逐字一致。
+
+    键名单边改掉不会报任何错——云端只会把主人事件当分身整理，8044 永久拒绝照旧，
+    症状与「压根没实现豁免」一模一样。
+    """
+    source = find_local_rust_source(_LOCAL_FACTS_RS)
+    if source is None:
+        pytest.skip('本机没有并排的 hasn-node 检出，已由本模块常量的显式取值兜底')
+    body = source.read_text(encoding='utf-8')
+    match = re.search(r'pub const OWNER_WRITE_MARKER:\s*&str\s*=\s*"([a-z_]+)"', body)
+    assert match is not None, f'{source} 里找不到 OWNER_WRITE_MARKER，两侧对照点已漂移'
+    assert match.group(1) == OWNER_WRITE_MARKER, (
+        f'主人事件标记键两侧不一致：本地={match.group(1)} 云端={OWNER_WRITE_MARKER}；本地源文件={source}'
+    )
+
+
+async def test_owner_write_can_edit_another_nodes_fact(session: AsyncSession) -> None:
+    """§4.6 / D-20 核心：主人从设备 B 改一条 origin=设备 A 的事实必须成立。
+
+    同时钉住溯源不被改写——归属若随一次主人写易主，「谁有权整理它」就悄悄变了（§3.2 / §4.2）。
+    """
+    ids = _Ids()
+    try:
+        await _seed_from(session, ids, node_id=ids.node)
+
+        out = await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,  # 主人此刻坐在**另一台设备**前
+            event_type='memory.fact.updated',
+            payload=_owner_write(
+                _snapshot(
+                    owner_id=ids.owner,
+                    node_id=ids.other_node,
+                    agent_id=ids.agent,
+                    fact_id=ids.fact,
+                    revision=2,
+                    obj='改成了手冲',
+                    origin_node_id=ids.node,  # 快照仍如实带原 origin（本地不改溯源）
+                    confidence=0.95,
+                )
+            ),
+        )
+        assert out['outcome'] == 'applied'
+
+        row = await _row(session, ids.fact)
+        assert row is not None
+        assert row['revision'] == 2, '主人写必须让 revision 前进'
+        assert row['object_json'] == '"改成了手冲"'
+        assert float(row['confidence']) == pytest.approx(0.95)
+        # 溯源四列不随主人写易主（`_apply_business` 的 DO UPDATE 故意不含它们）
+        assert row['origin_kind'] == 'node'
+        assert row['origin_node_id'] == ids.node
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_invalidates_existing_merge_overlay(session: AsyncSession) -> None:
+    """§3.4 / §4.6：主人确认使 revision 前进 → 既有 overlay 因 judged_revision 不匹配自动失效。
+
+    「主人确认一条 disputed 事实后**立即**恢复可见，无需等下轮合并」的落点就在这里。overlay
+    三列本身**不被清空**（那是合并的字段组），失效靠 ``merge_judged_revision IS DISTINCT FROM
+    revision`` 判定。
+    """
+    ids = _Ids()
+    try:
+        await _seed_from(session, ids, node_id=ids.node)
+        # 主脑把它裁成 disputed（依据 revision=1）
+        await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.node,
+            event_type='memory.fact.merge_verdict',
+            payload={
+                'fact_id': ids.fact,
+                'merge_verdict': 'disputed',
+                'merge_verdict_run': 'run_disputed',
+                'merge_judged_revision': 1,
+            },
+        )
+        before = await _row(session, ids.fact)
+        assert before is not None
+        assert before['merge_judged_revision'] == before['revision'], '裁决此刻是生效的'
+
+        # 主人在另一台设备上确认（提档到 0.95），revision 前进
+        await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.updated',
+            payload=_owner_write(
+                _snapshot(
+                    owner_id=ids.owner,
+                    node_id=ids.other_node,
+                    agent_id=ids.agent,
+                    fact_id=ids.fact,
+                    revision=2,
+                    origin_node_id=ids.node,
+                    confidence=0.95,
+                )
+            ),
+        )
+        after = await _row(session, ids.fact)
+        assert after is not None
+        assert after['revision'] == 2
+        assert after['merge_verdict'] == 'disputed', 'overlay 三列由合并维护，主人写不碰它们'
+        assert after['merge_judged_revision'] == 1
+        assert after['merge_judged_revision'] != after['revision'], '裁决已自动失效 → 事实恢复可见'
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_agent_write_on_foreign_node_still_rejected_marker_is_the_only_difference(
+    session: AsyncSession,
+) -> None:
+    """同一份载荷：不带标记 → 8044 永久拒；带标记 → 接受。判据只有这一个标记。
+
+    §8.3-3 的自产片判据对**分身整理**一寸没松：分身伪造不了主人身份也就改不动他节点事实。
+    """
+    ids = _Ids()
+    try:
+        await _seed_from(session, ids, node_id=ids.node)
+        payload = _snapshot(
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            agent_id=ids.agent,
+            fact_id=ids.fact,
+            revision=2,
+            status='withdrawn',
+            origin_node_id=ids.node,
+        )
+
+        agent_decision = await fact_uplink_service.classify(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.withdrawn',
+            payload=payload,
+        )
+        assert agent_decision.outcome == 'reject_permanent'
+        assert agent_decision.error is not None
+        assert agent_decision.error.code == 8044
+
+        owner_decision = await fact_uplink_service.classify(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.withdrawn',
+            payload=_owner_write(payload),
+        )
+        assert owner_decision.outcome == 'apply'
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_marker_must_be_boolean_true(session: AsyncSession) -> None:
+    """标记只认布尔 ``true``：``'true'`` / ``1`` / ``None`` 一律不算，照旧走分身判据。
+
+    宽松解析换不来兼容性（本地写的就是 JSON ``true``），只会给伪造多留活口。
+    """
+    ids = _Ids()
+    try:
+        await _seed_from(session, ids, node_id=ids.node)
+        base = _snapshot(
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            agent_id=ids.agent,
+            fact_id=ids.fact,
+            revision=2,
+            origin_node_id=ids.node,
+        )
+        for bogus in ('true', 1, 'yes', None):
+            decision = await fact_uplink_service.classify(
+                session,
+                owner_id=ids.owner,
+                node_id=ids.other_node,
+                event_type='memory.fact.updated',
+                payload={**base, OWNER_WRITE_MARKER: bogus},
+            )
+            assert decision.outcome == 'reject_permanent', f'{bogus!r} 不该被当成主人事件'
+            assert decision.error is not None
+            assert decision.error.code == 8044
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_cannot_touch_another_owners_fact(session: AsyncSession) -> None:
+    """owner 边界**不随节点边界一起松**：带标记也只能改自己名下的事实。
+
+    走真实链路时越权者连行都读不到（``_read_fact`` 按 owner 过滤），故表现为可退避冲突而不是
+    落库；行必须分毫未动。
+    """
+    ids = _Ids()
+    victim = _Ids()
+    try:
+        await _seed_from(session, victim, node_id=victim.node)
+        before = await _row(session, victim.fact)
+        assert before is not None
+
+        with pytest.raises(FactUplinkConflictError):
+            await fact_uplink_service.apply_fact_event(
+                session,
+                owner_id=ids.owner,  # 攻击者自己的 owner 凭据（认证信封给的，改不了）
+                node_id=ids.node,
+                event_type='memory.fact.withdrawn',
+                payload=_owner_write(
+                    _snapshot(
+                        owner_id=ids.owner,
+                        node_id=ids.node,
+                        agent_id=ids.agent,
+                        fact_id=victim.fact,
+                        revision=99,
+                        status='withdrawn',
+                    )
+                ),
+            )
+        after = await _row(session, victim.fact)
+        assert after is not None
+        assert after['status'] == before['status']
+        assert after['revision'] == before['revision']
+        assert after['owner_id'] == victim.owner
+    finally:
+        await _cleanup(session, victim.owner, victim.agent)
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_owner_guard_is_structurally_redundant() -> None:  # noqa: RUF029 纯守卫断言不碰库
+    """结构性冗余断言：即便读侧漏掉 owner 过滤，主人写也必须在这里当场炸。
+
+    直接喂一行 owner 不符的 ``current``——将来谁把 ``_read_fact`` 改成不带 owner 过滤，
+    这条会立刻变红，而不是悄悄放行一次跨主人写。
+    """
+    ids = _Ids()
+    foreign_row: dict[str, Any] = {
+        'fact_id': ids.fact,
+        'owner_id': f'h_other{uuid.uuid4().hex[:14]}',
+        'origin_kind': 'node',
+        'origin_node_id': ids.node,
+        'revision': 1,
+    }
+    parsed = _parse_fact(
+        _snapshot(owner_id=ids.owner, node_id=ids.node, agent_id=ids.agent, fact_id=ids.fact, revision=2),
+        owner_id=ids.owner,
+    )
+    with pytest.raises(FactUplinkPermanentError) as excinfo:
+        # 私有守卫本身就是被测对象：这条断言的价值正在于「绕过读侧也炸」。
+        fact_uplink_service._assert_editable_own_slice(
+            foreign_row, parsed, node_id=ids.node, owner_id=ids.owner, owner_write=True
+        )
+    assert excinfo.value.error.code == 8044
+    assert '本人' in excinfo.value.reason
+
+
+async def test_owner_write_is_still_blocked_by_tombstone(session: AsyncSession) -> None:
+    """§8.3-6 墓碑防复活对主人事件同样适用：改一条已被硬删的事实是无意义的复活。"""
+    ids = _Ids()
+    try:
+        await _seed_from(session, ids, node_id=ids.node)
+        await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.node,
+            event_type='memory.fact.purged',
+            payload={'fact_id': ids.fact, 'owner_id': ids.owner, 'purged_by': ids.owner},
+        )
+        decision = await fact_uplink_service.classify(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.updated',
+            payload=_owner_write(
+                _snapshot(
+                    owner_id=ids.owner,
+                    node_id=ids.other_node,
+                    agent_id=ids.agent,
+                    fact_id=ids.fact,
+                    revision=2,
+                    origin_node_id=ids.node,
+                )
+            ),
+        )
+        assert decision.outcome == 'reject_permanent'
+        assert decision.error is not None
+        assert decision.error.code == 8045
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_is_still_subject_to_revision_monotonic_guard(session: AsyncSession) -> None:
+    """幂等键仍是 ``(owner, fact_id, revision)``：主人事件绕过 origin 判据，绝不绕过重放判据。"""
+    ids = _Ids()
+    try:
+        await _seed_from(session, ids, node_id=ids.node)
+        payload = _owner_write(
+            _snapshot(
+                owner_id=ids.owner,
+                node_id=ids.other_node,
+                agent_id=ids.agent,
+                fact_id=ids.fact,
+                revision=2,
+                obj='第一次改',
+                origin_node_id=ids.node,
+            )
+        )
+        first = await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.updated',
+            payload=payload,
+        )
+        assert first['outcome'] == 'applied'
+        revision_after_first = await _namespace_revision(
+            session, scope_kind='agent', scope_id=ids.agent, namespace='agent_facts'
+        )
+
+        replay = await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.updated',
+            payload={**payload, 'object_json': '重推时被人改过的内容'},
+        )
+        assert replay['outcome'] == 'replay'
+        row = await _row(session, ids.fact)
+        assert row is not None
+        assert row['object_json'] == '"第一次改"', '重放不得改库'
+        assert (
+            await _namespace_revision(session, scope_kind='agent', scope_id=ids.agent, namespace='agent_facts')
+            == revision_after_first
+        ), '重放不得推进游标（否则给各节点造无意义回灌）'
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_marker_does_not_relax_saved_origin_guard(session: AsyncSession) -> None:
+    """``saved`` 不认豁免：§4.6 放开的是「整理」，不是「替别人铸造自产片」。
+
+    放开这里等于允许一个节点替另一个节点新建自产片，溯源从第一天就是假的。
+    """
+    ids = _Ids()
+    try:
+        decision = await fact_uplink_service.classify(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.other_node,
+            event_type='memory.fact.saved',
+            payload=_owner_write(
+                _snapshot(
+                    owner_id=ids.owner,
+                    node_id=ids.other_node,
+                    agent_id=ids.agent,
+                    fact_id=ids.fact,
+                    origin_node_id=ids.node,
+                )
+            ),
+        )
+        assert decision.outcome == 'reject_permanent'
+        assert decision.error is not None
+        assert decision.error.code == 8044
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_owner_write_on_missing_fact_is_retryable_conflict(session: AsyncSession) -> None:
+    """事实还没汇聚时的主人写是**冲突**（可退避），不是永久拒绝——判成永久就是永久丢一次编辑。"""
+    ids = _Ids()
+    try:
+        with pytest.raises(FactUplinkConflictError) as excinfo:
+            await fact_uplink_service.apply_fact_event(
+                session,
+                owner_id=ids.owner,
+                node_id=ids.other_node,
+                event_type='memory.fact.updated',
+                payload=_owner_write(
+                    _snapshot(
+                        owner_id=ids.owner,
+                        node_id=ids.other_node,
+                        agent_id=ids.agent,
+                        fact_id=ids.fact,
+                        revision=2,
+                        origin_node_id=ids.node,
+                    )
+                ),
+            )
+        assert excinfo.value.error.code == 8041
+        assert excinfo.value.error.code not in MEMORY_FACT_PERMANENT_CODES
     finally:
         await _cleanup(session, ids.owner, ids.agent)

@@ -451,6 +451,13 @@ class MergeGateService:
         `version` **每轮成功 apply 都 +1**（§5.6「apply 成功后 owner_memory.version + 1」），
         正文没变也一样——它是轮次水位，下一轮的 CAS 基线就取它；用「正文变了才 +1」会让主脑
         在无变化轮之后拿着旧基线反复被判 version_conflict。
+
+        ⚠️ **必须容忍 `owner_memory` 整个键缺失**：本地 `hasn.memory.merge` 在**未重算画像**时
+        会**整个省略**这个键（构造点 `hasn-mcp/src/memory.rs::merge_apply_request` 里那句
+        「画像没重算就不带这个键」），而不是把上一版正文再交一遍冒充「重算过了」——那才是零
+        fake 的正确做法。故三种退化输入必须走同一条路：键缺失、`owner_memory=None`、
+        `content` 为空/空白。处置一律是「跳过画像更新、不覆盖已有正文、其余照常应用、
+        `version` 仍推进」。报错或把旧正文当新版本入库都是错的。
         """
         new_version = base_version + 1
         content = (body.owner_memory.content or '').strip() if body.owner_memory else ''

@@ -26,6 +26,11 @@ authority.rs::MemoryOp::fact_event_type``）
 ``memory.fact.purged``                物理删除 + 沿 ``merged_from`` 递归级联 + 墓碑 + 画像重算待办
 ===================================  ==========================================================
 
+三个整理事件（``updated`` / ``superseded`` / ``withdrawn``）的 origin 守卫**按写者分档**：载荷
+带 [`OWNER_WRITE_MARKER`] 的是**主人整理**（§4.6 / D-20 第三类写者，凌驾节点边界），跳过 origin
+守卫、只判归属主人；不带标记的是**分身整理**，只能改本节点自产片。详见
+``FactUplinkService._assert_editable_own_slice``（含该标记的越权风险评估）。
+
 拒绝三分类（§8.3-4，照实施/98 契约；``禁止让本地无退避重推``）：
 
 - **永久拒绝**——墓碑命中（8045，回令 ``purge_local``）、origin 不符（8044）、schema 非法（8043）。
@@ -85,6 +90,18 @@ MEMORY_FACT_UPLINK_EVENTS = frozenset(
 _BUSINESS_UPDATE_EVENTS = frozenset(
     {'memory.fact.updated', 'memory.fact.superseded', 'memory.fact.withdrawn'}
 )
+
+#: 主人事件标记键（doc19 §4.6 / D-20）。
+#:
+#: 主人是**凌驾节点边界的第三类写者**：他从设备 X 的记忆页确认一条 origin=设备 Y 的事实必须
+#: 成立。事件名沿用上面的六件套（§8.3-5 明令两侧白名单不许单边新增），载荷信封多带这一个布尔
+#: 标记区分「主人写」与「分身整理」。
+#:
+#: 本地对照点（逐字一致，改一侧必须同步另一侧）：
+#: ``hasn-node/crates/hasn-memory/src/storage/facts.rs::OWNER_WRITE_MARKER``，写入点是同文件的
+#: ``owner_fact_snapshot_json``——标记只加在**信封层**，与 ``object_json`` 等内容子树无关，故
+#: push 端点的私有元数据扫描（``_contains_private_runtime_key_for_event``）不会误伤。
+OWNER_WRITE_MARKER = 'owner_write'
 
 #: 受墓碑防复活约束的事件（§8.3-6）。``purged`` 不在其中——墓碑已在即「已应用」，不是拒绝。
 _TOMBSTONE_GUARDED_EVENTS = MEMORY_FACT_UPLINK_EVENTS - {'memory.fact.purged'}
@@ -381,6 +398,15 @@ def _enum(payload: Mapping[str, Any], key: str, allowed: frozenset[str], default
     return value
 
 
+def _is_owner_write(payload: Mapping[str, Any]) -> bool:
+    """载荷是否被本地标成「主人整理」（§4.6 第三类写者）。
+
+    **只认布尔真**：字符串 ``'true'``、数字 ``1`` 一律不算。本地构造点写的就是 JSON ``true``，
+    宽松解析换不来任何兼容性，只会给伪造多留一条活口。
+    """
+    return payload.get(OWNER_WRITE_MARKER) is True
+
+
 def _assert_table_checks(subject_kind: str, scope_kind: str, agent_id: str | None) -> None:
     """预校验表上的两条 CHECK，把 IntegrityError（5xx）提前成明确的永久拒绝（4xx 语义）。"""
     # ck_semantic_fact_agent_id：agent_self 必带 agent_id，其余主体必须为空。
@@ -599,7 +625,13 @@ class FactUplinkService:
         if event_type == 'memory.fact.saved':
             self._assert_saved_origin(parsed, node_id=node_id, owner_id=owner_id)
         elif event_type in _BUSINESS_UPDATE_EVENTS:
-            current = self._assert_editable_own_slice(current, parsed, node_id=node_id, owner_id=owner_id)
+            current = self._assert_editable_own_slice(
+                current,
+                parsed,
+                node_id=node_id,
+                owner_id=owner_id,
+                owner_write=_is_owner_write(payload),
+            )
         else:  # pragma: no cover - 白名单已在入口收口
             raise _permanent(_PAYLOAD_INVALID_ERROR, f'未处理的上行事件：{event_type}')
 
@@ -633,7 +665,14 @@ class FactUplinkService:
         return FactUplinkDecision(outcome='apply', current=current)
 
     def _assert_saved_origin(self, parsed: ParsedFact, *, node_id: str, owner_id: str) -> None:
-        """§3.3 / §8.3-3 origin 守卫：节点只能上行**自己的**自产片。"""
+        """§3.3 / §8.3-3 origin 守卫：节点只能上行**自己的**自产片。
+
+        ⚠️ ``saved`` **不认** ``owner_write`` 豁免（§4.6 只放开「整理」，不放开「铸造」）：主人
+        整理走的是 ``update`` / ``supersede`` / ``withdraw``（本地
+        ``daemon/domains/memory/facts.rs::build_owner_update`` 只产这三个 op），``saved`` 恒由
+        写下它的那个节点发。放开这里等于允许一个节点替另一个节点**新建**自产片，溯源从第一天
+        就是假的，后续所有判权都建立在假归属上。
+        """
         if parsed.origin_kind != 'node':
             # merged / retired 片只由合并维护（§3.2），任何节点都不得当作自产片上行。
             raise _permanent(_ORIGIN_MISMATCH_ERROR, f'{parsed.origin_kind} 片不允许经节点上行')
@@ -652,11 +691,58 @@ class FactUplinkService:
         *,
         node_id: str,
         owner_id: str,
+        owner_write: bool = False,
     ) -> Mapping[str, Any]:
-        """§4.1 权限矩阵：整理只对本节点自产片生效；他节点 / 派生 / 退役片一律拒绝。"""
+        """判权维度按**写者**划分（§4.1 权限矩阵 + §4.6 主人第三类写者），不是一刀切。
+
+        - **分身整理**（无 ``owner_write`` 标记）：只对本节点自产片生效；他节点 / 派生 / 退役片
+          一律 8044 永久拒绝；
+        - **主人整理**（载荷带 ``owner_write``，§4.6 / D-20）：主人凌驾节点边界——他从设备 X 改
+          一条 origin=设备 Y 的事实必须成立，故**跳过 origin 守卫**，改判「这条事实归不归推送方
+          主人」。少了这条豁免，主人写他节点事实的上行会吃 8044 永久拒绝：本地已经生效（记忆页
+          立即可见、disputed 立即失效），却永远传播不到其余节点，跨设备记忆就此分叉。
+
+        幂等键仍是 ``(owner, fact_id, revision)``，revision 单调守卫（``_revision_decision``）
+        对两类写者一视同仁——主人事件不绕过任何幂等/重放判据，只绕过 origin 判据。
+
+        ------------------------------------------------------------------------------
+        ``owner_write`` 标记的越权风险评估（结论随代码走，别只写在提交说明里）
+        ------------------------------------------------------------------------------
+
+        1. **跨主人：不可能**。``owner_id`` 取自 push 端点的认证信封
+           （``sync.py::require_owner_identity``，不读载荷），``_read_fact`` 按 ``owner_id``
+           过滤，``_parse_fact`` 另要求载荷 ``owner_id`` 与信封一致。带上标记也只能改到**自己
+           名下**的事实。这是云端唯一能强制的边界，下面那条断言把它显式钉住。
+        2. **同主人跨节点：确实被放开**——这正是 §4.6 要的语义。一个被攻陷或有 bug 的本地进程
+           可以带着标记去改同一主人另一台设备产的事实。云端**分不出**「主人点的」与「进程伪造
+           的」：两者都是同一份 owner 凭据下 daemon 发出的同一种事件，上行面没有区分主人与分身
+           的第二重凭据（分身自己走的是 MCP 工具面、本地有自产片守卫，但上行统一由 daemon 代
+           主人发）。
+        3. **残余风险的量级有限**：能伪造这个标记的前提是已经攻陷该主人的某台节点——那时它本
+           就能读写该主人本机整片记忆镜像、并以自己的 ``node_id`` 上行任意**新**事实。标记只多
+           给出「改同主人他设备事实的业务字段组」这一档，且它：改不动溯源四列
+           （``_apply_business`` 的 ``DO UPDATE`` 故意不含 ``origin_*`` / ``merged_from``）、
+           绕不过墓碑（§8.3-6）、绕不过 revision 单调守卫，每次改动都会 emit 下行事件而在主人
+           记忆页与各节点可见——是可审计的，不是静默的。
+        4. **要再收紧只能靠凭据分层**（主人写另发一枚只有 webui 会话拿得到的短票据，云端据票据
+           而非载荷判定写者）。那属于认证面的独立议题，不在本切片；在它落地前，云端强制的边界
+           就是 owner，本方法只保证 owner 边界不可越。
+        """
         if current is None:
             # save 还在路上（同一批次乱序或前一条推送失败），退避重试即可自愈——不是永久错误。
             raise FactUplinkConflictError(_CONFLICT_ERROR, '待整理的事实尚未汇聚到云端')
+        if owner_write:
+            # 主人只能改自己的记忆——这条**不随节点边界一起松**。`_read_fact` 已按 owner 过滤，
+            # 这里再断言一次是结构性冗余：将来谁把读改成不带 owner 过滤，会在这里当场炸，
+            # 而不是悄悄变成一条跨主人写。
+            if current['owner_id'] != owner_id:
+                _warn_once(
+                    f'owner_write_foreign:{owner_id}:{node_id}:{parsed.fact_id}',
+                    f'主人事件试图整理不属于本人的事实，永久拒绝：owner={owner_id} node={node_id} '
+                    f'fact={parsed.fact_id} fact_owner={current["owner_id"]}',
+                )
+                raise _permanent(_ORIGIN_MISMATCH_ERROR, '主人事件只能整理归属本人的事实（§4.6）')
+            return current
         if current['origin_kind'] != 'node' or current['origin_node_id'] != node_id:
             _warn_once(
                 f'origin:{owner_id}:{node_id}:{parsed.fact_id}',

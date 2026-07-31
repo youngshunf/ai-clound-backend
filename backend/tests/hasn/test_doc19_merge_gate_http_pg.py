@@ -39,6 +39,8 @@ from backend.app.admin.model.user import User
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.api.v1.agent.merge_gate import router as agent_merge_gate_router
 from backend.app.hasn_memory.api.v1.app.merge_status import router as app_merge_status_router
+from backend.app.hasn_memory.api.v1.app.owner_memory import router as app_owner_memory_router
+from backend.app.hasn_memory.api.v1.app.owner_profile_coverage import router as app_owner_profile_coverage_router
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.agent_jwt import create_agent_access_token, revoke_agent_token
 from backend.common.security.jwt import create_access_token, revoke_token
@@ -54,10 +56,16 @@ pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _build_app() -> FastAPI:
-    """只挂本切片两个 router，其余中间件与异常处理全用生产件（认证真跑）。"""
+    """只挂本切片相关 router，其余中间件与异常处理全用生产件（认证真跑）。
+
+    prefix 与 `app/hasn/api/router.py` 的真实挂载点逐字一致，否则这里绿了线上仍是错路径。
+    """
     app = FastAPI()
     app.include_router(agent_merge_gate_router, prefix='/api/v1/hasn/memory/agent')
     app.include_router(app_merge_status_router, prefix='/api/v1/hasn/app/memory')
+    # 另外两个 app scope 面同样要被 Agent JWT 打一遍（它们与 merge/status 是同一类隐患）
+    app.include_router(app_owner_memory_router, prefix='/api/v1/hasn/app/owner')
+    app.include_router(app_owner_profile_coverage_router, prefix='/api/v1/hasn/app/owner')
     register_exception(app)
     app.add_middleware(
         AuthenticationMiddleware,
@@ -267,12 +275,42 @@ async def test_owner_jwt_cannot_call_agent_scope_endpoints(gate: SimpleNamespace
     assert request_resp.status_code == 401, request_resp.text
 
 
-async def test_agent_jwt_cannot_call_app_scope_status(gate: SimpleNamespace) -> None:
-    """Agent JWT 打 app scope（Owner JWT）端点 → 401。主人可见性面只对主人开。"""
-    response = await gate.client.get(
-        '/api/v1/hasn/app/memory/merge/status', headers=_bearer(gate.master_token.access_token)
-    )
+#: 本模块全部 app scope（Owner JWT）端点。Agent JWT 打进来必须**逐个**是 401，不是 500。
+#:
+#: 中间件对 Agent JWT 是放行的（`is_agent_token` 分流），到了 handler 里 `request.user` 是
+#: `UnauthenticatedUser`——直接取 `.id` 会抛 AttributeError 变成 500。500 会被 daemon 当成
+#: 「服务器故障」按可重试处置反复重打，而这条请求无论重试多少次都不会成功；主人那边看到的
+#: 也是一个查不出原因的服务器错误，而不是「你用错了凭据」。
+_APP_SCOPE_ENDPOINTS = (
+    ('GET', '/api/v1/hasn/app/memory/merge/status'),
+    ('GET', '/api/v1/hasn/app/owner/memory'),
+    ('GET', '/api/v1/hasn/app/owner/memory/contributions'),
+    ('GET', '/api/v1/hasn/app/owner/profile-coverage'),
+    ('POST', '/api/v1/hasn/app/owner/proactive-planning/claim'),
+)
+
+
+@pytest.mark.parametrize(['method', 'path'], [list(item) for item in _APP_SCOPE_ENDPOINTS])
+async def test_agent_jwt_on_app_scope_endpoint_is_401_not_500(
+    gate: SimpleNamespace, method: str, path: str
+) -> None:
+    """Agent JWT 打任一 app scope（Owner JWT）端点 → **401**，且绝不是 500。
+
+    主人可见性面只对主人开；scope 越界必须 fail-closed 成明确的 401。
+    """
+    response = await gate.client.request(method, path, headers=_bearer(gate.master_token.access_token))
     assert response.status_code == 401, response.text
+
+
+async def test_owner_jwt_still_reads_app_scope_owner_memory(gate: SimpleNamespace) -> None:
+    """反向钉子：fail-closed 不能把主人自己一起挡在门外（正路必须仍是 200 + 信封）。"""
+    response = await gate.client.get(
+        '/api/v1/hasn/app/owner/memory', headers=_bearer(gate.owner_token.access_token)
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) >= {'code', 'msg', 'data'}
+    assert 'version' in body['data']
 
 
 async def test_agent_scope_requires_bearer(gate: SimpleNamespace) -> None:
