@@ -223,7 +223,13 @@ BEGIN
         'hasn_messages', 'hasn_conversations', 'hasn_conversation_memberships',
         'hasn_unread_projection', 'hasn_group_agent_invites', 'hasn_suppressed_messages',
         'hasn_asset_grants', 'hasn_contacts', 'hasn_contact_requests',
-        'agent_communication_settings'
+        'agent_communication_settings',
+        -- doc03 跨设备消息历史恢复的物化快照（2026-07-29 新增）。模型按 IM_SCHEMA 解析，
+        -- 切换后代码找 hasn_im.*；漏搬会让 /sync/im/bootstrap/start 直接 500，
+        -- daemon 换设备/离线后的历史补拉全部失败。
+        'hasn_im_history_snapshots',
+        'hasn_im_history_snapshot_conversations',
+        'hasn_im_history_snapshot_messages'
     ]
     LOOP
         IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN

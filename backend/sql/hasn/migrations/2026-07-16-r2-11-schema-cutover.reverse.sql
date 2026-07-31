@@ -181,7 +181,12 @@ BEGIN
         'hasn_messages', 'hasn_conversations', 'hasn_conversation_memberships',
         'hasn_unread_projection', 'hasn_group_agent_invites', 'hasn_suppressed_messages',
         'hasn_asset_grants', 'hasn_contacts', 'hasn_contact_requests',
-        'agent_communication_settings'
+        'agent_communication_settings',
+        -- 与正向 §4a 对称：doc03 历史快照三表回落 public，否则回滚后
+        -- 非切换模式的代码找 public.* 又会缺表。
+        'hasn_im_history_snapshots',
+        'hasn_im_history_snapshot_conversations',
+        'hasn_im_history_snapshot_messages'
     ]
     LOOP
         IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'hasn_im' AND tablename = t) THEN
