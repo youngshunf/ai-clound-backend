@@ -65,6 +65,26 @@ redis.call('LTRIM', KEYS[1], #ARGV, -1)
 return #ARGV
 """
 
+# 单个实体的离线队列上限。离线帧全部是 durable_sync（PostgreSQL sync/history 可恢复），
+# 因此超出上限时丢最旧的一条比让 Redis 无界增长安全；被裁剪的条目会显式告警。
+OFFLINE_MAX_LENGTH = 1000
+
+# 入队、裁剪与续期必须原子完成：先前实现是 RPUSH + EXPIRE 两条命令且每次写入都续期，
+# 对「长期离线但持续收帧」的实体等于永不过期且无长度上限。
+# KEYS[1]=离线队列 ARGV[1]=帧 ARGV[2]=TTL 秒 ARGV[3]=最大长度
+# 返回被裁剪掉的条目数。
+_ENQUEUE_OFFLINE_SCRIPT = """
+local length = redis.call('RPUSH', KEYS[1], ARGV[1])
+local max_length = tonumber(ARGV[3])
+local trimmed = 0
+if max_length > 0 and length > max_length then
+    trimmed = length - max_length
+    redis.call('LTRIM', KEYS[1], trimmed, -1)
+end
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return trimmed
+"""
+
 
 def node_entities_key(node_id: str) -> str:
     return f'{NODE_ENTITIES_PREFIX}:{node_id}'

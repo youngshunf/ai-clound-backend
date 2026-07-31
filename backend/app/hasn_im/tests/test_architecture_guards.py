@@ -374,6 +374,12 @@ def test_offline_queue_choke_points_enforce_policy_and_sync_mode() -> None:
     assert 'decide_offline_storage(' in enqueue
     assert 'settings.HASN_OFFLINE_RECOVERY' in enqueue
     assert 'OfflineStorageAction.SKIP' in enqueue
+    # best-effort 推送路径不得把策略异常冒泡成业务写的 5xx
+    assert 'except OfflineFramePolicyError' in enqueue
+    # 入队必须原子裁剪 + 续期，禁止退回 rpush + expire 两条命令的无界写法
+    assert '_ENQUEUE_OFFLINE_SCRIPT' in enqueue
+    assert 'OFFLINE_MAX_LENGTH' in enqueue
+    assert 'redis_client.rpush(' not in enqueue
 
     for name in (
         'claim_offline_messages',
@@ -381,8 +387,8 @@ def test_offline_queue_choke_points_enforce_policy_and_sync_mode() -> None:
         'get_offline_messages',
     ):
         function_source = functions[name]
-        assert "settings.HASN_OFFLINE_RECOVERY != 'redis'" in function_source, (
-            f'{name} 未将 dual/sync 的 Redis offline 限为影子'
+        assert "settings.HASN_OFFLINE_RECOVERY == 'sync'" in function_source, (
+            f'{name} 必须只在 sync 模式短路；dual 是观测窗，仍要从 Redis 保护用户'
         )
 
     gateway_source = (_BACKEND_ROOT / 'app/hasn_im/adapters/routing/node_session_realtime_gateway.py').read_text(

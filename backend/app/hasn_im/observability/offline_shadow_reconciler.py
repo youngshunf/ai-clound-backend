@@ -15,6 +15,8 @@ import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests
+from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_im.adapters.routing.offline_frame_policy import (
     OfflineFrameCategory,
@@ -40,6 +42,9 @@ _METHOD_TO_SYNC_EVENT = MappingProxyType({
     'hasn.conversation.invalidated': 'conversation.updated',
     'hasn.task.exec': 'task.exec',
 })
+# 走权威快照（而非 sync event）恢复的联系人帧
+_CONTACT_REQUEST_METHODS = frozenset({'hasn.contact.request_received', 'hasn.contact.connected'})
+_CONTACT_REMOVED_METHOD = 'hasn.contact.removed'
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,20 +65,34 @@ class OfflineShadowReport:
     both: int
     redis_only: int
     sync_only: int
-    snapshot_backed: int
+    snapshot_verified: int
+    snapshot_unverified: int
+    transient: int
     malformed: int
 
     @property
+    def snapshot_backed(self) -> int:
+        """由权威快照解释的 Redis 影子总数（已核验 + 未核验）。"""
+        return self.snapshot_verified + self.snapshot_unverified
+
+    @property
     def redis_only_unrecoverable(self) -> int:
-        """缺少直接 sync event 且不能由权威快照解释的 Redis 独有数量。"""
-        return self.redis_only
+        """缺少直接 sync event、且未能核验权威快照的 Redis 独有数量。
+
+        `snapshot_unverified` 必须计入：否则任何「映射不到 sync event」的帧都会被
+        无条件当成快照可恢复，`redis_only_unrecoverable=0` 这条切换门槛对它们恒真、
+        形同虚设。
+        """
+        return self.redis_only + self.snapshot_unverified
 
 
 def compare_shadow_identities(
     *,
     redis_identities: set[ShadowIdentity],
     sync_identities: set[ShadowIdentity],
-    snapshot_backed: int,
+    snapshot_verified: int,
+    snapshot_unverified: int,
+    transient: int,
     malformed: int,
 ) -> OfflineShadowReport:
     """比较两个稳定身份集合，不在返回值或指标中暴露具体 owner/事件 ID。"""
@@ -83,7 +102,9 @@ def compare_shadow_identities(
         both=len(redis_identities & sync_identities),
         redis_only=len(redis_identities - sync_identities),
         sync_only=len(sync_identities - redis_identities),
-        snapshot_backed=snapshot_backed,
+        snapshot_verified=snapshot_verified,
+        snapshot_unverified=snapshot_unverified,
+        transient=transient,
         malformed=malformed,
     )
 
@@ -106,6 +127,83 @@ def shadow_event_type(decision: OfflineFrameDecision) -> str | None:
     if decision.category is OfflineFrameCategory.GAP:
         return f'gap:{decision.method}'
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotCandidate:
+    """一条走权威快照恢复（而非 sync event）的离线影子帧。"""
+
+    target_id: str
+    method: str
+    identity: str
+
+
+async def verify_snapshot_candidates(
+    db: AsyncSession,
+    candidates: Sequence[SnapshotCandidate],
+) -> tuple[int, int]:
+    """真实核验「权威快照可恢复」，返回 `(已核验, 未核验)`。
+
+    联系人类帧不进 `hasn_sync_events`，恢复依赖 daemon 拉取权威快照。能否恢复
+    是可以查证的事实，不能靠「映射不到 sync 类型就算快照兜底」的假设：
+
+    - `request_received` / `connected`：`hasn_contact_requests` 里仍有该请求行；
+    - `removed`：`hasn_contacts` 里确实已无该关系（删除已在权威侧生效）。
+
+    其余方法一律计为未核验，并由 `redis_only_unrecoverable` 承担。
+    """
+    if not candidates:
+        return 0, 0
+
+    request_ids: set[int] = set()
+    for candidate in candidates:
+        if candidate.method in _CONTACT_REQUEST_METHODS:
+            try:
+                request_ids.add(int(candidate.identity))
+            except ValueError:
+                continue
+    existing_requests: set[int] = set()
+    if request_ids:
+        request_rows = (
+            await db.execute(
+                select(HasnContactRequests.id).where(HasnContactRequests.id.in_(sorted(request_ids)))
+            )
+        ).scalars()
+        existing_requests = {int(value) for value in request_rows}
+
+    removal_pairs = {
+        (candidate.target_id, candidate.identity)
+        for candidate in candidates
+        if candidate.method == _CONTACT_REMOVED_METHOD
+    }
+    surviving_relations: set[tuple[str, str]] = set()
+    if removal_pairs:
+        relation_rows = (
+            await db.execute(
+                select(HasnContacts.owner_id, HasnContacts.peer_id).where(
+                    sa.tuple_(HasnContacts.owner_id, HasnContacts.peer_id).in_(sorted(removal_pairs))
+                )
+            )
+        ).all()
+        surviving_relations = {(str(owner_id), str(peer_id)) for owner_id, peer_id in relation_rows}
+
+    verified = 0
+    unverified = 0
+    for candidate in candidates:
+        if candidate.method in _CONTACT_REQUEST_METHODS:
+            try:
+                recoverable = int(candidate.identity) in existing_requests
+            except ValueError:
+                recoverable = False
+        elif candidate.method == _CONTACT_REMOVED_METHOD:
+            recoverable = (candidate.target_id, candidate.identity) not in surviving_relations
+        else:
+            recoverable = False
+        if recoverable:
+            verified += 1
+        else:
+            unverified += 1
+    return verified, unverified
 
 
 def _text(value: str | bytes) -> str:
@@ -225,7 +323,9 @@ def _publish_report(report: OfflineShadowReport) -> None:
         'both': report.both,
         'redis_only': report.redis_only,
         'sync_only': report.sync_only,
-        'snapshot_backed': report.snapshot_backed,
+        'snapshot_verified': report.snapshot_verified,
+        'snapshot_unverified': report.snapshot_unverified,
+        'transient': report.transient,
         'malformed': report.malformed,
         'redis_only_unrecoverable': report.redis_only_unrecoverable,
     }
@@ -242,14 +342,16 @@ async def collect_offline_shadow_report(
 ) -> OfflineShadowReport:
     """核对七天 Redis 影子与同 owner 的 PostgreSQL sync event。
 
-    直接 sync 覆盖的帧进入三集合对账；联系人等权威快照恢复帧单列
-    `snapshot_backed`，不能误报为 `redis_only_unrecoverable`。Redis 只保存现有离线帧，
-    本函数不写用户 ID 标签，也不删除任何影子证据。
+    直接 sync 覆盖的帧进入三集合对账；联系人等权威快照恢复帧走
+    `verify_snapshot_candidates` 真实核验，核验不过的计入 `snapshot_unverified`
+    并汇入 `redis_only_unrecoverable`。Redis 只保存现有离线帧，本函数不写用户 ID
+    标签，也不删除任何影子证据。
     """
     current = now or timezone.now()
     since = current - timedelta(seconds=OFFLINE_TTL)
     parsed: list[tuple[str, str, str]] = []
-    snapshot_backed = 0
+    snapshot_candidates: list[SnapshotCandidate] = []
+    transient = 0
     malformed = 0
     for key in await _offline_keys(offline_keys):
         target_id = key.removeprefix(f'{OFFLINE_PREFIX}:')
@@ -263,11 +365,22 @@ async def collect_offline_shadow_report(
                 malformed += 1
                 continue
             if decision.category is OfflineFrameCategory.TRANSIENT:
-                malformed += 1
+                # 存量脏数据（现行写点已跳过 transient），单列计数，
+                # 不能和「真的解析不了」混成同一个 malformed。
+                transient += 1
                 continue
             event_type = shadow_event_type(decision)
             if event_type is None:
-                snapshot_backed += 1
+                if decision.identity is None:
+                    malformed += 1
+                    continue
+                snapshot_candidates.append(
+                    SnapshotCandidate(
+                        target_id=target_id,
+                        method=decision.method,
+                        identity=decision.identity,
+                    )
+                )
                 continue
             if decision.identity is None:
                 malformed += 1
@@ -300,10 +413,13 @@ async def collect_offline_shadow_report(
         recent_sync_identities=recent_sync_identities,
         historical_sync_identities=historical_sync_identities,
     )
+    snapshot_verified, snapshot_unverified = await verify_snapshot_candidates(db, snapshot_candidates)
     report = compare_shadow_identities(
         redis_identities=redis_identities,
         sync_identities=sync_identities,
-        snapshot_backed=snapshot_backed,
+        snapshot_verified=snapshot_verified,
+        snapshot_unverified=snapshot_unverified,
+        transient=transient,
         malformed=malformed,
     )
     if publish_metrics:
@@ -319,8 +435,10 @@ async def collect_offline_shadow_report(
 __all__ = [
     'OfflineShadowReport',
     'ShadowIdentity',
+    'SnapshotCandidate',
     'collect_offline_shadow_report',
     'compare_shadow_identities',
     'merge_recent_and_historical_matches',
     'shadow_event_type',
+    'verify_snapshot_candidates',
 ]

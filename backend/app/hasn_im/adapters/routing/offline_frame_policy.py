@@ -179,6 +179,26 @@ def classify_offline_frame(payload_json: str) -> OfflineFrameDecision:
     )
 
 
+def assert_offline_recovery_mode_supported(recovery_mode: str) -> None:
+    """启动期门禁：`sync` 模式不得带着未补齐的 durable 缺口上线。
+
+    缺口原先只在「帧真的要入队」时才抛错，等于把配置错误推迟到某个离线用户的
+    请求路径上炸；这里改为进程启动即失败，配置错误在部署窗口内就暴露。
+
+    # Raises
+    `OfflineFramePolicyError`：模式非法，或 `sync` 模式仍存在 `gap` 分类帧。
+    """
+    if recovery_mode not in {'redis', 'dual', 'sync'}:
+        raise OfflineFramePolicyError(f'离线恢复模式非法：{recovery_mode}')
+    if recovery_mode != 'sync':
+        return
+    gaps = sorted(
+        policy.method for policy in OFFLINE_FRAME_POLICIES.values() if policy.category is OfflineFrameCategory.GAP
+    )
+    if gaps:
+        raise OfflineFramePolicyError('sync 模式尚有 durable 缺口，禁止启动：' + ', '.join(gaps))
+
+
 def decide_offline_storage(
     payload_json: str,
     recovery_mode: str,
@@ -206,6 +226,7 @@ __all__ = [
     'OfflineFramePolicy',
     'OfflineFramePolicyError',
     'OfflineStorageAction',
+    'assert_offline_recovery_mode_supported',
     'classify_offline_frame',
     'decide_offline_storage',
     'require_registered_offline_method',

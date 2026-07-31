@@ -41,8 +41,9 @@ async def hasn_offline_shadow_reconcile() -> str:
         report = await collect_offline_shadow_report(db)
     return (
         f'both={report.both} redis_only={report.redis_only} '
-        f'sync_only={report.sync_only} snapshot_backed={report.snapshot_backed} '
-        f'malformed={report.malformed} '
+        f'sync_only={report.sync_only} snapshot_verified={report.snapshot_verified} '
+        f'snapshot_unverified={report.snapshot_unverified} '
+        f'transient={report.transient} malformed={report.malformed} '
         f'redis_only_unrecoverable={report.redis_only_unrecoverable}'
     )
 
