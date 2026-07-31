@@ -122,13 +122,13 @@ _REGISTRY: dict[str, ServiceSpec] = {
         ),
         # hosting：无头 hasn-node 托管宿主代理（hasn-node-hosting agent，doc「云端节点托管」实施契约 §1/§4）。
         # 自研、两端受控 → 派生令牌；池化（云端 broker 经 service_http 连接池调用）。
-        # ⚠️ 约定端口 8003 由实施契约 §1 指定，与上面的 lead-crawler 在 dev 本机回落上撞车——
-        # 两者同机同时起时必须给其中一个显式配 URL（env/services.toml），否则会连错服务。
+        # 约定端口 8004：契约初稿写的 8003 与上面的 lead-crawler 撞车，2026-07-31 改判为 8004
+        # （已占：finance/publish 8000、quant 8001、montage 8002、lead-crawler 8003；edge 反代占 8005）。
         # default_timeout=120：建容器要拉镜像 + 建网络/卷，是可能耗时的同步编排调用。
         ServiceSpec(
             name='hosting',
             title='无头节点托管宿主',
-            default_port=8003,
+            default_port=8004,
             url_attr='HOSTING_AGENT_URL',
             token_attr='HOSTING_AGENT_TOKEN',
             timeout_attr='HOSTING_AGENT_TIMEOUT',
