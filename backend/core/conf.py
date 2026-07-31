@@ -277,6 +277,29 @@ class Settings(BaseSettings):
     )
     QUANT_ENGINE_TIMEOUT: int = 30  # HTTP 超时（秒）
 
+    # 无头 hasn-node 托管（hasn-node-hosting agent，独立部署，doc「云端节点托管」实施契约 §1/§4）：
+    # 主云端经 hosting_agent_provider（httpx）中转建/起停/删容器与卷。为空时 provider 归一
+    # service_unconfigured（prod 未配诚实报错·零 fake）。Bearer 令牌由 services.toml master_secret 派生。
+    HOSTING_AGENT_URL: str = (
+        ''  # 托管宿主代理地址，如 http://hosting-agent.internal:8003（为空时 provider 归一 service_unconfigured）
+    )
+    HOSTING_AGENT_TOKEN: str = ''  # 内部 svc-token（Bearer，空则从 master_secret 派生）
+    HOSTING_AGENT_TIMEOUT: int = 120  # HTTP 超时（秒，建容器要拉镜像）
+    # 托管宿主标识：写进 hasn_cloud_nodes.host（§6.2 自始就有；MVP 单宿主也必须落值）
+    HOSTING_DEFAULT_HOST: str = 'hosting-01'
+    # edge 反代对外基址（§3.4①返回给客户端的 edge_url；为空时 access-ticket 端点如实返回空）
+    HOSTING_EDGE_BASE_URL: str = ''
+    # 容器内 daemon 回连主云端用的地址（注入容器；为空回落本进程 http/ws 地址由 provider 调用方组装）
+    HOSTING_NODE_BACKEND_HTTP_BASE: str = ''
+    HOSTING_NODE_BACKEND_WS_URL: str = ''
+    # 单容器资源上限（hosting-agent 建容器时的硬限）
+    HOSTING_NODE_MEMORY_MB: int = 2048
+    HOSTING_NODE_CPUS: float = 1.0
+    # 无头镜像平台目标（hasn_release 里的 platform_target；宿主 CPU 架构决定）
+    HOSTING_NODE_IMAGE_PLATFORM: str = 'headless-linux-amd64'
+    # 每订阅默认云端节点配额（订阅档位未显式给出上限时用；§3.1）
+    HOSTING_MAX_NODES_PER_OWNER: int = 1
+
     # 获客采集引擎（firecrawl，独立部署，模块 07 doc）：唯一接触 firecrawl 的地方，hasn_growth
     # 采集 provider 经 FirecrawlClient（httpx）搜索/抓取/抽取线索。为空时回落
     # DEFAULT_FIRECRAWL_BASE_URL；api_key 为空则不带 Authorization（自托管 USE_DB_AUTHENTICATION=false）。
@@ -392,6 +415,12 @@ class Settings(BaseSettings):
             rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',
             # 通用语音签名目录 CI 发布面自带 Bearer CI 密钥鉴权。
             rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',
+            # 无头节点托管节点面：授权码兑换无任何既有身份；session-grant 校验用容器设备 token，
+            # 由 handler 自己调 jwt_authentication 验。不放行的话中间件会先按平台 JWT 解析并 401。
+            rf'^{FASTAPI_API_V1_PATH}/hasn/node/cloud/.*$',
+            # 无头节点托管内部面：edge / hosting-agent 带的是 derive_service_token 派生的服务令牌，
+            # 不是平台 JWT——中间件按 JWT 解析必 401，须整面放行交给 require_hosting_internal_bearer。
+            rf'^{FASTAPI_API_V1_PATH}/hasn/internal/cloud-nodes/.*$',
             rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$',  # HASN WebSocket
             rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
             rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
