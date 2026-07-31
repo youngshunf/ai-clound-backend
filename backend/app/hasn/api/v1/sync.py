@@ -79,6 +79,11 @@ _CONFLICT_ERROR = ErrorObject(
 )
 
 
+def _rejected_for(template: ErrorObject, client_event_id: str) -> ErrorObject:
+    """把拒绝模板绑定到具体事件——`detail.client_event_id` 是客户端逐事件定位的唯一锚点。"""
+    return template.model_copy(update={'detail': {'client_event_id': client_event_id}})
+
+
 async def _resolve_owner_human_hasn_id(request: Request, db: AsyncSession) -> str:
     """从登录态解析主人 human hasn_id（缓存缺失回落库查），对齐 app/hasn_conversations。"""
     caller_hasn_id = request.user.hasn_id
@@ -224,11 +229,13 @@ async def push_sync_events(
     envelopes: list[InboxEnvelope] = []
     rejected: list[ErrorObject] = []
     for event in request_body.events:
+        # 每条拒绝都带上 client_event_id（hasn-node 实施/98）：daemon 据此逐事件处置——
+        # 永久拒绝丢弃、冲突退避——不再因「拒绝结果无法定位」而整批扣留重推。
         if _contains_private_runtime_key(event.payload):
-            rejected.append(_PRIVATE_METADATA_ERROR)
+            rejected.append(_rejected_for(_PRIVATE_METADATA_ERROR, event.client_event_id))
             continue
         if event.event_type not in _GENERAL_PUSH_EVENTS:
-            rejected.append(_UNSUPPORTED_EVENT_ERROR)
+            rejected.append(_rejected_for(_UNSUPPORTED_EVENT_ERROR, event.client_event_id))
             continue
         subject_hasn_id = event.hasn_id
         if not subject_hasn_id and event.event_type == SESSION_SYNC_EVENT:
@@ -248,7 +255,7 @@ async def push_sync_events(
         )
     result = await accept_envelopes(db, envelopes)
     rejected.extend(
-        _CONFLICT_ERROR.model_copy(update={'detail': {'client_event_id': item.client_event_id}})
+        _rejected_for(_CONFLICT_ERROR, item.client_event_id)
         for item in result.items
         if item.status == 'conflict'
     )

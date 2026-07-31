@@ -70,6 +70,11 @@ _TASK_CONFLICT_ERROR = ErrorObject(
 )
 
 
+def _rejected_for(template: ErrorObject, client_event_id: str) -> ErrorObject:
+    """把拒绝模板绑定到具体事件——`detail.client_event_id` 是客户端逐事件定位的唯一锚点。"""
+    return template.model_copy(update={'detail': {'client_event_id': client_event_id}})
+
+
 @router.post(
     '/sync/pull',
     summary='拉取任务同步事件（task cursor 之后）',
@@ -102,11 +107,12 @@ async def push_task_sync_events(
     envelopes: list[InboxEnvelope] = []
     rejected: list[ErrorObject] = []
     for event in request_body.events:
+        # 每条拒绝都带上 client_event_id（hasn-node 实施/98），供 daemon 逐事件处置。
         if event.event_type not in TASK_SYNC_EVENTS:
-            rejected.append(_TASK_EVENT_UNSUPPORTED_ERROR)
+            rejected.append(_rejected_for(_TASK_EVENT_UNSUPPORTED_ERROR, event.client_event_id))
             continue
         if _contains_private_runtime_key(event.payload):
-            rejected.append(_PRIVATE_METADATA_ERROR)
+            rejected.append(_rejected_for(_PRIVATE_METADATA_ERROR, event.client_event_id))
             continue
         payload_agent_id = event.payload.get('agent_id')
         subject_hasn_id = event.hasn_id
@@ -126,11 +132,7 @@ async def push_task_sync_events(
     result = await accept_envelopes(db, envelopes)
     for item in result.items:
         if item.status == 'conflict':
-            rejected.append(
-                _TASK_CONFLICT_ERROR.model_copy(
-                    update={'detail': {'client_event_id': item.client_event_id}}
-                )
-            )
+            rejected.append(_rejected_for(_TASK_CONFLICT_ERROR, item.client_event_id))
     return SyncPushResponse(
         accepted=result.accepted,
         rejected=rejected,
