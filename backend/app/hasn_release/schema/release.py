@@ -56,6 +56,12 @@ class HeadlessImageDetail(SchemaBase):
     image_ref: str
     image_digest: str
     min_cloud_contract_version: str | None = None
+    release_notes_written: bool = Field(
+        default=False,
+        description='本次是否真的写入了发布说明。'
+        '写入语义是「只填空缺不覆盖」，该版本已有正文时本次会被跳过——'
+        '回显这一位，调用方才能如实报告结果而不是声称「已登记」',
+    )
 
 
 class ReleaseAssetInput(SchemaBase):

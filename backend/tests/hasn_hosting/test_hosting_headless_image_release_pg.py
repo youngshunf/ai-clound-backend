@@ -163,6 +163,7 @@ async def test_release_notes_are_written_when_absent(sess) -> None:
     detail = await release_service.register_headless_image(sess, _req(release_notes_md='## 1.2.0\n- 无头镜像首版'))
     await sess.commit()
 
+    assert detail.release_notes_written is True
     release = (await sess.execute(select(AppRelease).where(AppRelease.id == detail.release_id))).scalar_one()
     await sess.refresh(release)
     assert release.release_notes_md == '## 1.2.0\n- 无头镜像首版'
@@ -180,6 +181,8 @@ async def test_release_notes_never_overwrite_existing(sess) -> None:
     )
     await sess.commit()
 
+    # 回显必须如实说「本次没写」——否则脚本会声称「已登记」，那是没有证据的声明。
+    assert detail.release_notes_written is False
     release = (await sess.execute(select(AppRelease).where(AppRelease.id == detail.release_id))).scalar_one()
     await sess.refresh(release)
     assert release.release_notes_md == '桌面端先写的正文'

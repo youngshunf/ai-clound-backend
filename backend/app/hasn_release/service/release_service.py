@@ -1064,7 +1064,9 @@ class ReleaseService:
             release = AppRelease(
                 version=req.version,
                 channel=channel,
-                release_notes_md=req.release_notes_md or None,
+                # 发布说明统一由下方「只填空缺」那一段写入，这里恒 None——
+                # 否则新建分支先把值填上，那段判定会看到非空、把 release_notes_written 误报成 False。
+                release_notes_md=None,
                 release_notes_en_md=None,
                 status='published' if req.publish else 'draft',
                 is_latest=False,  # 镜像登记不抢桌面端 latest 指针
@@ -1079,7 +1081,10 @@ class ReleaseService:
             release.published_time = release.published_time or now
         # 发布说明只填空缺、绝不覆盖：同版本号的桌面端发布链路可能已经维护了正文，
         # 无头镜像登记晚到时把它冲掉就是数据丢失。
-        if req.release_notes_md and not release.release_notes_md:
+        # `release_notes_written` 回显本次是否真写入——否则调用方只能声称「已提交」，
+        # 无法区分「真写进去了」与「该版本已有正文被跳过」，那就是没有证据的声明。
+        release_notes_written = bool(req.release_notes_md) and not release.release_notes_md
+        if release_notes_written:
             release.release_notes_md = req.release_notes_md
         if req.min_cloud_contract_version is not None:
             release.min_cloud_contract_version = req.min_cloud_contract_version
@@ -1123,6 +1128,7 @@ class ReleaseService:
             image_ref=image_ref,
             image_digest=digest,
             min_cloud_contract_version=release.min_cloud_contract_version,
+            release_notes_written=release_notes_written,
         )
 
 
