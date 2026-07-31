@@ -38,10 +38,14 @@ _CONFIG_KEY = 'global'
 DEFAULT_PLATFORM_CONFIG: dict = {
     'node': {
         'media': {
-            'image_models': ['gpt-image-2', 'dall-e-3'],
-            # 图像编辑端点能力与文生图不同，必须独立选择；真实网关已验证 gpt-image-2
-            # 支持 /images/edits，不能回落到只支持 /images/generations 的模型。
-            'image_edit_models': ['gpt-image-2'],
+            # 唤星网关由通义/阿里渠道承载，OpenAI 的 dall-e-3 在此无渠道；下列均为对
+            # llm.dcfuture.cn 实测 200 且真出图的模型。
+            'image_models': ['agnes-image-2.1-flash', 'qwen-image-2.0', 'wan2.7-image'],
+            # 图像编辑端点能力与文生图不同，必须独立选择，不能回落到只支持
+            # /images/generations 的模型——agnes-image-2.1-flash 打 /images/edits 上游直接 404，
+            # 因此不得出现在本列表。旧默认 gpt-image-2 虽能出图但耗时约 57 秒（qwen-image-2.0
+            # 的十倍以上）且曾因渠道欠费 403，已移除。wan2.7-image 要求输入不小于 240×240。
+            'image_edit_models': ['qwen-image-2.0', 'wan2.7-image', 'qwen-image-2.0-pro'],
             'tts_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
             'stt_models': ['qwen3-asr-flash'],
             # 视频默认空：视频渠道尚需运营在 new-api 开通后，经 Admin 平台默认配置下发，

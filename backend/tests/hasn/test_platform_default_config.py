@@ -96,7 +96,10 @@ async def test_legacy_media_gateway_defaults_are_normalized_without_mutating_sou
 
     normalized = normalize_legacy_media_gateway_defaults(raw)
 
-    assert normalized['node']['media']['image_edit_models'] == ['gpt-image-2']
+    assert (
+        normalized['node']['media']['image_edit_models']
+        == DEFAULT_PLATFORM_CONFIG['node']['media']['image_edit_models']
+    )
     assert normalized['node']['media']['tts_models'] == ['qwen3-tts-flash', 'qwen3-tts-instruct-flash']
     assert normalized['node']['media']['stt_models'] == ['qwen3-asr-flash']
     assert raw['node']['media']['tts_models'] == ['tts-1', 'tts-1-hd']
@@ -127,8 +130,9 @@ async def test_factory_default_when_no_row() -> None:
         assert (
             cfg.node.media.image_edit_models
             == DEFAULT_PLATFORM_CONFIG['node']['media']['image_edit_models']
-            == ['gpt-image-2']
         )
+        # agnes-image-2.1-flash 只承载 /images/generations，打 /images/edits 上游 404。
+        assert 'agnes-image-2.1-flash' not in cfg.node.media.image_edit_models
         # 视频默认空：视频渠道需运营在 new-api 开通后再经 Admin 下发（PV4）。
         assert cfg.node.media.video_models == DEFAULT_PLATFORM_CONFIG['node']['media']['video_models'] == []
         _cfg2, rev2 = await svc.get_effective_config(db)
