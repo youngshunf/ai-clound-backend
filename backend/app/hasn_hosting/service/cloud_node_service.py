@@ -172,6 +172,34 @@ class CloudNodeService:
                 data={'error': ERR_QUOTA_EXCEEDED, 'used': used, 'quota': quota},
             )
 
+    async def is_entitled(self, db: AsyncSession, *, user_id: int, owner_hasn_id: str) -> bool:
+        """该主人当前是否仍有资格持有云端节点（生命周期 sweep 判「订阅到期」/「续订恢复」用）。
+
+        判据与 `_assert_can_create` 的前两道闸**逐条对齐**：统一准入闸放行 **且** 有未过期的
+        active 订阅。配额闸不参与——存量节点不该因为档位下调而被停机销毁，那属于运营决策，
+        不是「订阅到期」。
+
+        本方法不抛错、只回布尔：sweep 是批处理，单个主人判定失败不该炸掉整轮。
+        """
+        decision = await resolve_access(
+            db, feature_key=CLOUD_NODE_FEATURE_KEY, subject_type='owner', subject_id=owner_hasn_id
+        )
+        if not decision.allowed:
+            return False
+        subscription = await self._active_subscription(db, user_id=user_id)
+        return subscription is not None
+
+    async def active_subscription_end(self, db: AsyncSession, *, user_id: int) -> datetime | None:
+        """当前有效订阅的到期时刻（到期前提醒用）。
+
+        免费版 `subscription_end_date` 为 NULL = 永不过期，返回 None 表示「不参与到期提醒」，
+        绝不臆造一个到期日去吓唬用户。
+        """
+        subscription = await self._active_subscription(db, user_id=user_id)
+        if subscription is None:
+            return None
+        return subscription.subscription_end_date or subscription.contract_end_at
+
     # ─── 镜像解析（对接 hasn_release，H8） ───
 
     @staticmethod
@@ -619,23 +647,35 @@ class CloudNodeService:
         await db.flush()
         return await self._render_one(db, row)
 
-    async def delete_node(
+    async def purge_node(
         self,
         db: AsyncSession,
         *,
-        user_id: int,
-        owner_hasn_id: str,
-        node_id: str,
+        cloud_node: HasnCloudNodes,
+        reason: str,
     ) -> dict[str, Any]:
-        """删除（§3.1 / 设计 §7）：先吊销设备凭据，再销毁容器与卷，最后把 `hasn_nodes` 标记退役。
+        """销毁一个云端节点的**唯一**实现（设计 §7「删除」行）——顺序不可颠倒：
 
-        顺序不可颠倒：凭据先失效，容器即便还活着也够不到云端；反过来会留下「容器已删、凭据仍有效」的窗口。
+        1. 置 `deleting`（中断态可见，不假装还在服务）
+        2. **吊销设备凭据**：JWT session + owner 绑定 + presence 断链
+        3. 调 hosting-agent `DELETE /v1/nodes/{node_id}?purge_volume=true` 销毁容器与卷
+        4. `hasn_nodes` 标记退役
+        5. 托管行落 `deleted` + `deleted` 事件
+
+        第 2 步必须在第 3 步之前：凭据先失效，容器即便还活着也够不到云端；反过来会留下
+        「容器已删、凭据仍有效」的窗口。
+
+        `reason` 进事件 detail，用于区分主人主动删除 / 保留期逾期 / 账号注销三条来路。
+        第 3 步失败**不阻断退役**：凭据已吊销、节点已不可用，容器残留交宿主侧巡检回收，
+        但真实错误必须留在 `failure_detail` 与事件里（零 fake：不谎称干净删除）。
         """
-        row = await self._get_owned(db, owner_hasn_id=owner_hasn_id, node_id=node_id)
-        row.status = NODE_STATUS_DELETING
+        node_id = cloud_node.node_id
+        cloud_node.status = NODE_STATUS_DELETING
         await db.flush()
 
-        await self.revoke_node_credentials(db, cloud_node=row, user_id=user_id, owner_hasn_id=owner_hasn_id)
+        await self.revoke_node_credentials(
+            db, cloud_node=cloud_node, user_id=cloud_node.user_id, owner_hasn_id=cloud_node.owner_hasn_id
+        )
 
         purge_failed: str | None = None
         try:
@@ -651,19 +691,85 @@ class CloudNodeService:
         if hasn_node is not None:
             hasn_node.status = 'deleted'
 
-        row.status = NODE_STATUS_DELETED
-        row.container_ref = None
-        row.online_since = None
+        cloud_node.status = NODE_STATUS_DELETED
+        cloud_node.container_ref = None
+        cloud_node.online_since = None
+        cloud_node.retain_until = None
         if purge_failed:
-            row.failure_detail = purge_failed
+            cloud_node.failure_detail = purge_failed
         await self.record_event(
             db,
-            cloud_node=row,
+            cloud_node=cloud_node,
             event_type=EVENT_DELETED,
-            detail={'purge_volume': True, 'agent_error': purge_failed},
+            detail={'purge_volume': True, 'reason': reason, 'agent_error': purge_failed},
         )
         await db.flush()
         return {'node_id': node_id, 'deleted': True, 'agent_error': purge_failed}
+
+    async def delete_node(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int,
+        owner_hasn_id: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        """主人主动删除（§3.1 / 设计 §7）。归属校验在这里做，销毁顺序全交 `purge_node`。
+
+        `user_id` 保留在签名里是为了让路由层的调用形态不变；真正吊销凭据用的是托管行上的
+        `user_id`（权威在行上，避免调用方传错导致吊销到别人的 session）。
+        """
+        del user_id
+        row = await self._get_owned(db, owner_hasn_id=owner_hasn_id, node_id=node_id)
+        return await self.purge_node(db, cloud_node=row, reason='owner_requested')
+
+    async def _purge_node_isolated(
+        self,
+        db: AsyncSession,
+        *,
+        cloud_node: HasnCloudNodes,
+        reason: str,
+    ) -> str | None:
+        """`purge_node` 的错误隔离包装：成功回 None，失败回人可读原因。
+
+        错误隔离收在本 helper 内（而非循环体里的 try/except），既满足 ruff PERF203，
+        也保证「一个节点炸掉」不会让同一主人的其余节点停在「凭据已吊销、容器还在跑」的半路。
+        """
+        try:
+            await self.purge_node(db, cloud_node=cloud_node, reason=reason)
+        except Exception as exc:
+            log.error(f'[hosting] 销毁节点失败: node_id={cloud_node.node_id}, reason={reason}, err={exc}')
+            return str(exc)
+        return None
+
+    async def purge_for_account_deletion(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
+        """主人账号注销：立即销毁其全部云端节点，**不留保留期**（设计 §7 末行 / D-14）。
+
+        与「订阅到期」路径的唯一区别就是没有 30 天缓冲——账号都没了，再留数据既无人可续订、
+        也无处授权访问。逐节点独立处理：单个节点销毁抛错不该让其余节点留在半路（凭据已吊销、
+        容器却还在跑）；错误如实计入返回值与日志。
+
+        调用方负责在账号注销的同一事务里调用（本方法只 flush，不 commit）。
+        """
+        rows = (
+            await db.execute(
+                select(HasnCloudNodes).where(
+                    HasnCloudNodes.user_id == user_id,
+                    HasnCloudNodes.status != NODE_STATUS_DELETED,
+                )
+            )
+        ).scalars().all()
+        purged: list[str] = []
+        failed: list[dict[str, str]] = []
+        for row in rows:
+            error = await self._purge_node_isolated(db, cloud_node=row, reason='account_deletion')
+            if error is None:
+                purged.append(row.node_id)
+            else:
+                failed.append({'node_id': row.node_id, 'error': error})
+        if rows:
+            log.info(f'[hosting] 账号注销销毁云端节点: user_id={user_id}, purged={len(purged)}, failed={len(failed)}')
+        return {'purged': purged, 'failed': failed}
 
     @staticmethod
     async def revoke_node_credentials(
@@ -831,16 +937,23 @@ class CloudNodeService:
     # ─── 订阅到期保留（设计 §7） ───
 
     @staticmethod
-    async def mark_retention(db: AsyncSession, *, node_id: str, days: int = 30) -> None:
-        """订阅到期：置 `stopped` 并落 30 天保留期截止（逾期由运维流程销毁卷）。"""
+    async def mark_retention(db: AsyncSession, *, node_id: str, days: int = 30) -> datetime | None:
+        """订阅到期：置 `stopped` 并落 30 天保留期截止（D-14）。返回保留期截止时刻。
+
+        调用方是 `cloud_node_retention_sweep`（`backend/app/hasn_hosting/tasks.py`）：**必须先把容器
+        真停掉再调本方法**，否则库里写着 stopped、容器还在跑，就是零 fake 铁律禁止的伪状态。
+        逾期销毁由同一支 sweep 的第二个动作接手，不依赖人工运维。
+        """
         row = (
             await db.execute(select(HasnCloudNodes).where(HasnCloudNodes.node_id == node_id))
         ).scalar_one_or_none()
         if row is None:
-            return
+            return None
         row.status = NODE_STATUS_STOPPED
+        row.online_since = None
         row.retain_until = timezone.now() + timedelta(days=days)
         await db.flush()
+        return row.retain_until
 
 
 cloud_node_service = CloudNodeService()

@@ -106,6 +106,13 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天 3:30 以数据库对象行逐 Owner 核实真实对象与计数器，不依赖桶前缀遍历。
         'schedule': TzAwareCrontab('30', '3'),
     },
+    '云端节点生命周期 sweep': {
+        'task': 'cloud_node_retention_sweep',
+        # 每天 04:20（低峰，且排在 2:05 商业化 sweep 之后——订阅 status 先收敛成 expired，
+        # 本任务再据此判「订阅到期」）：进 30 天保留期 → 续订恢复 → 逾期销毁 → 到期前 7/3/1 天提醒。
+        # 托管设计 §7 生命周期表 / D-14。
+        'schedule': TzAwareCrontab('20', '4'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
         # 每 3 天增量同步一次（真 72h 间隔）。只读取元数据与文件清单，技能 ZIP 由 ClawHub 分发。
