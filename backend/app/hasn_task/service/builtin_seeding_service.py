@@ -280,6 +280,9 @@ async def seed_builtin_tasks(db: AsyncSession, owner_id: str) -> list[str]:
             'created_by_kind': 'builtin',
             'builtin_key': item.builtin_key,
             'builtin_synced_revision': int(item.revision or 0),
+            # 广播语义透传（doc19 §9 / D-24）：云端受 uq_task_owner_builtin_key 唯一索引约束只播一行，
+            # all_agents 的扇出由本地 task_scheduler 按此字段完成——漏带即退化成只派绑定分身。
+            'target_scope': item.target_scope or 'master_brain',
             'created_at': now.isoformat(),
             'updated_at': now.isoformat(),
         }
@@ -369,6 +372,8 @@ async def update_builtin_task_from_catalog(db: AsyncSession, owner_id: str, task
         'created_by_kind': 'builtin',
         'builtin_key': task.builtin_key,
         'builtin_synced_revision': int(item.revision or 0),  # 追平官方
+        # 广播语义属官方定义（非用户偏好）：手动更新时随 catalog 一并应用（doc19 §9 / D-24）
+        'target_scope': item.target_scope or 'master_brain',
         'created_at': task.created_time.isoformat() if task.created_time else now.isoformat(),
         'updated_at': now.isoformat(),
     }
