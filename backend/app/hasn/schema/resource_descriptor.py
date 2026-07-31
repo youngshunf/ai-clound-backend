@@ -37,8 +37,10 @@ class ArtifactRegistration:
 #   native_window   独立原生窗口应用（deck/design）
 #   entry_query     单入口 / tab、无 /:id 段的应用（imagelab ?project= / quant ?backtest= 等）
 ResourceOpenMode = Literal['internal_route', 'native_window', 'entry_query']
-# native_window 目前仅两类独立窗口应用
-ResourceWindow = Literal['deck', 'design']
+
+# 表面（doc09 §2）：同一个页面可以显示在哪。`surfaces` 只表达**显式排除**，不表达默认——
+# 缺省即三者全允许（webui 已把「详情页必须自适应宽度」定成硬约束，不该再逐个声明）。
+ResourceSurface = Literal['main', 'window', 'side']
 
 
 class ResourceOpen(SchemaBase):
@@ -47,11 +49,23 @@ class ResourceOpen(SchemaBase):
     mode: ResourceOpenMode = Field(description='打开模式：internal_route | native_window | entry_query')
     # internal_route 必填：含 :id 或 {id} 占位（如 /apps/reel/projects/:id）
     route_template: str | None = Field(None, description='internal_route 内部路由模板（含 :id/{id} 占位）')
-    # native_window 必填：deck | design
-    window: ResourceWindow | None = Field(None, description='native_window 独立窗口类型')
+    # native_window 可选：**业务视图注册表 id**（doc09 §5.4，如 deck / design / media-preview）。
+    #
+    # 由封闭 Literal['deck','design'] 放开为自由字符串：云端只存 id、不认识具体窗，合法性由
+    # **前端注册表**校验——未注册的 id 一律按「无 window」处理并 warn，绝不开一扇空窗（零 fake）。
+    # 这样新增一类业务视图**不需要动云端 schema**。
+    window: str | None = Field(None, description='native_window 业务视图注册表 id（如 deck/design/media-preview）')
     # entry_query 必填：单入口路由 + query key（id 经 ?query_key=id 透传）
     entry_route: str | None = Field(None, description='entry_query 单入口路由（如 /apps/imagelab）')
     query_key: str | None = Field(None, description='entry_query 透传 id 的 query 键（如 item）')
+    # 可选·回溯边界（doc09 §3 回落链第 2 级）：独立窗/侧窗里「最多退回到哪一层」。
+    # 不声明时 webui 回落到该路由所属应用的 entry_route——「独立窗开社区帖子最多退回社区首页」
+    # 因此零配置成立，绝大多数应用不需要填这个字段。
+    root_route: str | None = Field(None, description='独立窗/侧窗的回溯边界路由（缺省取应用 entry_route）')
+    # 可选·显式排除某些表面（如超宽仪表盘排除 side）。缺省 None = 三者全允许。
+    surfaces: list[ResourceSurface] | None = Field(
+        None, description='允许的表面（缺省全允许）：main | window | side'
+    )
 
     @model_validator(mode='after')
     def _check_by_mode(self) -> ResourceOpen:
@@ -61,11 +75,16 @@ class ResourceOpen(SchemaBase):
             if ':id' not in self.route_template and '{id}' not in self.route_template:
                 raise ValueError('internal_route 的 route_template 必须含 :id 或 {id} 占位')
         elif self.mode == 'native_window':
-            if self.window not in ('deck', 'design'):
-                raise ValueError('native_window 必须声明 window ∈ {deck, design}')
+            # 只校验「非空」——具体 id 是否已注册由前端注册表判定（云端不该知道有哪些业务视图）。
+            if not (self.window or '').strip():
+                raise ValueError('native_window 必须声明 window（业务视图注册表 id）')
         elif self.mode == 'entry_query':
             if not self.entry_route or not self.query_key:
                 raise ValueError('entry_query 必须声明 entry_route 与 query_key')
+        if self.root_route is not None and not self.root_route.startswith('/'):
+            raise ValueError('root_route 必须是以 / 开头的应用内路由')
+        if self.surfaces is not None and not self.surfaces:
+            raise ValueError('surfaces 声明了就不能为空列表（不填即表示全允许）')
         return self
 
 
@@ -174,9 +193,11 @@ class ResourceRoute(SchemaBase):
     uri_domain: str = Field(description='hasn:// host+path 前缀（如 reel/projects）')
     open_mode: ResourceOpenMode = Field(description='打开模式')
     route_template: str | None = Field(None, description='internal_route 内部路由模板')
-    window: ResourceWindow | None = Field(None, description='native_window 独立窗口类型')
+    window: str | None = Field(None, description='native_window 业务视图注册表 id')
     entry_route: str | None = Field(None, description='entry_query 单入口路由')
     query_key: str | None = Field(None, description='entry_query 透传 id 的 query 键')
+    root_route: str | None = Field(None, description='独立窗/侧窗回溯边界（缺省取应用 entry_route）')
+    surfaces: list[ResourceSurface] | None = Field(None, description='允许的表面（缺省全允许）')
 
     @classmethod
     def from_descriptor(cls, app_id: str, descriptor: ResourceDescriptor) -> ResourceRoute:
@@ -188,4 +209,6 @@ class ResourceRoute(SchemaBase):
             window=descriptor.open.window,
             entry_route=descriptor.open.entry_route,
             query_key=descriptor.open.query_key,
+            root_route=descriptor.open.root_route,
+            surfaces=descriptor.open.surfaces,
         )
