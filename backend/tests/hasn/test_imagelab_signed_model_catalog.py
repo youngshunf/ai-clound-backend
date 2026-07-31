@@ -337,3 +337,157 @@ async def test_publish_rejects_catalog_belonging_to_another_app(monkeypatch: pyt
     _patch_catalog_row(monkeypatch, _FakeCatalogRow('film', {}))
     with pytest.raises(errors.RequestError, match='仅接受 imagelab'):
         await app_catalog_service.publish_signed_model_catalog(_FakeSession(), pk=7, document=_catalog())
+
+
+# ---- 与 daemon 校验器的逐字段对齐（云端放宽即让整份目录在端上被 TrustRejected）----
+
+
+def _with_model(**overrides: object) -> dict:
+    document = _catalog()
+    document['payload']['models']['model.rembg.u2netp'].update(overrides)
+    return document
+
+
+def _with_package(**overrides: object) -> dict:
+    document = _catalog()
+    document['payload']['models']['model.rembg.u2netp']['package'].update(overrides)
+    return document
+
+
+@pytest.mark.parametrize(
+    'bad_key',
+    [
+        'runtime-model/imagelab/u2netp/2024.07/../../../secret/pkg.zip',
+        'runtime-model/imagelab/u2netp/2024.07/pkg with space.zip',
+        'runtime-model/imagelab/u2netp/2024.07/pkg\nnewline.zip',
+    ],
+)
+def test_package_key_rejects_traversal_and_whitespace(bad_key: str) -> None:
+    """daemon `validate_package` 拒绝 `..` 与控制字符；带空白的 key 还会让签出的 URL 404。"""
+    with pytest.raises(errors.RequestError, match='包 key'):
+        app_catalog_service.merge_signed_model_catalog(
+            None, app_id='imagelab', document=_with_package(key=bad_key)
+        )
+
+
+@pytest.mark.parametrize(
+    'bad_url',
+    [
+        'http://cdn.example.com/runtime-model/imagelab/u2netp/pkg.zip',
+        'ftp://cdn.example.com/pkg.zip',
+        'http://attacker.example/pkg.zip',
+    ],
+)
+def test_package_url_requires_https_or_loopback(bad_url: str) -> None:
+    """明文 http 会被 macOS 桌面端 ATS 掐断，造成随平台分叉的安装故障。"""
+    with pytest.raises(errors.RequestError, match='HTTPS 或 loopback HTTP'):
+        app_catalog_service.merge_signed_model_catalog(
+            None, app_id='imagelab', document=_with_package(url=bad_url)
+        )
+
+
+def test_package_url_allows_loopback_http_for_local_dev() -> None:
+    """契约测试与本地 dev 需要 loopback http，不能一刀切只留 https。"""
+    merged = app_catalog_service.merge_signed_model_catalog(
+        None, app_id='imagelab', document=_with_package(url='http://127.0.0.1:9000/pkg.zip')
+    )
+    assert merged['models']['signed_catalog']['payload']['models']['model.rembg.u2netp']['package']['url'].startswith(
+        'http://127.0.0.1'
+    )
+
+
+@pytest.mark.parametrize('field', ['compressed_size', 'installed_size'])
+def test_package_sizes_reject_values_beyond_four_gib(field: str) -> None:
+    """daemon 判 MAX_PACKAGE_BYTES / MAX_MODEL_BYTES，云端只判正整数会放行多打一位的目录。"""
+    oversized = app_catalog_service.MAX_SIGNED_MODEL_PACKAGE_BYTES + 1
+    with pytest.raises(errors.RequestError, match='超过上限'):
+        app_catalog_service.merge_signed_model_catalog(
+            None, app_id='imagelab', document=_with_package(**{field: oversized})
+        )
+
+
+def test_model_size_rejects_values_beyond_four_gib() -> None:
+    oversized = app_catalog_service.MAX_SIGNED_MODEL_PACKAGE_BYTES + 1
+    document = _with_model(size=oversized)
+    document['payload']['models']['model.rembg.u2netp']['package']['installed_size'] = oversized
+    with pytest.raises(errors.RequestError, match='超过上限'):
+        app_catalog_service.merge_signed_model_catalog(None, app_id='imagelab', document=document)
+
+
+@pytest.mark.parametrize('bogus_version', [True, 1.0])
+def test_schema_version_rejects_bool_and_float_impostors(bogus_version: object) -> None:
+    """Python 里 True == 1 且 1.0 == 1，裸相等判断会放行 JSON 的 true / 1.0。"""
+    document = _catalog()
+    document['payload']['schema_version'] = bogus_version
+    with pytest.raises(errors.RequestError, match='schema_version'):
+        app_catalog_service.merge_signed_model_catalog(None, app_id='imagelab', document=document)
+
+
+@pytest.mark.parametrize('bad_token', ['.', '..'])
+def test_runtime_name_rejects_dot_tokens(bad_token: str) -> None:
+    """`.`/`..` 能通过 token 正则，但会被拼进 object key 造成路径逃逸。"""
+    document = _with_model(runtime_name=bad_token, artifact_id=f'app.model.imagelab.{bad_token}')
+    with pytest.raises(errors.RequestError, match='runtime_name'):
+        app_catalog_service.merge_signed_model_catalog(None, app_id='imagelab', document=document)
+
+
+def test_display_name_length_is_measured_in_utf8_bytes() -> None:
+    """daemon 的 `String::len()` 是字节数：50 个汉字 = 150 字节，按字符计会放行而端上拒。"""
+    with pytest.raises(errors.RequestError, match='display_name'):
+        app_catalog_service.merge_signed_model_catalog(
+            None, app_id='imagelab', document=_with_model(display_name='模' * 50)
+        )
+    # 128 字节以内的中文名仍须放行。
+    app_catalog_service.merge_signed_model_catalog(
+        None, app_id='imagelab', document=_with_model(display_name='模' * 42)
+    )
+
+
+def test_filename_total_length_stays_within_daemon_limit() -> None:
+    """daemon 判的是含扩展名的总长 128；词干放到 128 会让总长达到 133。"""
+    with pytest.raises(errors.RequestError, match='filename'):
+        app_catalog_service.merge_signed_model_catalog(
+            None, app_id='imagelab', document=_with_model(filename='u' * 124 + '.onnx')
+        )
+    app_catalog_service.merge_signed_model_catalog(
+        None, app_id='imagelab', document=_with_model(filename='u' * 123 + '.onnx')
+    )
+
+
+@pytest.mark.parametrize('bad_license', ['Apache 2.0', '商用授权', 'MIT OR', ''])
+def test_license_must_be_an_spdx_expression(bad_license: str) -> None:
+    """daemon 用 `spdx::Expression::parse` 全量解析；云端至少要挡住带空格 / 中文的误填。"""
+    with pytest.raises(errors.RequestError, match='license'):
+        app_catalog_service.merge_signed_model_catalog(
+            None, app_id='imagelab', document=_with_model(license=bad_license)
+        )
+
+
+@pytest.mark.parametrize(
+    'good_license',
+    ['Apache-2.0', 'MIT', 'Apache-2.0 OR MIT', 'GPL-2.0-only WITH Classpath-exception-2.0'],
+)
+def test_license_accepts_real_spdx_expressions(good_license: str) -> None:
+    """现役取值与常见组合表达式不得被误伤。"""
+    app_catalog_service.merge_signed_model_catalog(
+        None, app_id='imagelab', document=_with_model(license=good_license)
+    )
+
+
+@pytest.mark.parametrize('bad_token', ['.', '..'])
+@pytest.mark.asyncio
+async def test_stage_rejects_dot_runtime_name_before_reading_the_upload(
+    monkeypatch: pytest.MonkeyPatch, bad_token: str
+) -> None:
+    """stage 在签名之前，runtime_name 是裸表单字段；`..` 必须在读上传体之前就被拒。"""
+    _patch_catalog_row(monkeypatch, _FakeCatalogRow('imagelab'))
+    upload = _FakeUpload()
+    with pytest.raises(errors.RequestError, match='runtime_name'):
+        await app_catalog_service.stage_signed_model_package(
+            _FakeSession(),
+            pk=7,
+            runtime_name=bad_token,
+            version='2024.07',
+            upload=upload,
+        )
+    assert upload.read_calls == 0

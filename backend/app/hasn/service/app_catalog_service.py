@@ -1068,7 +1068,16 @@ _SIGNED_MODEL_CATALOG_ID = 'imagelab-models'
 # 归属闸缺位时选错 pk 会把 GB 级包写进别的应用命名空间且无回收路径。
 _SIGNED_MODEL_APP_ID = 'imagelab'
 _SIGNED_MODEL_DEPENDENCY_RE = re.compile(r'^model\.[A-Za-z0-9._-]{1,120}$')
-_SIGNED_MODEL_FILENAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}\.onnx$')
+# 含扩展名总长不得超过 128：daemon `is_safe_model_filename` 判的是整个 filename 的长度，
+# 词干放到 128 会让总长达到 133，云端放行而 daemon 拒。
+_SIGNED_MODEL_FILENAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,123}\.onnx$')
+# SPDX 表达式语法：许可证 id + 可选的 AND/OR/WITH 与括号。不校验 id 是否在 SPDX 清单内。
+_SPDX_EXPRESSION_RE = re.compile(
+    r'^\(?[A-Za-z0-9.+-]+\)?(?:\s+(?:AND|OR|WITH)\s+\(?[A-Za-z0-9.+-]+\)?)*$',
+)
+# display_name 长度按 UTF-8 字节计，与 daemon 的 `String::len()` 一致（Python len() 是字符数，
+# 50 个汉字 = 150 字节，按字符计会放行而 daemon 拒）。
+_SIGNED_MODEL_DISPLAY_NAME_MAX_BYTES = 128
 # 模型 zip 上限 4 GiB，与 daemon `model_artifact.rs` 的 MAX_PACKAGE_BYTES 对齐。
 MAX_SIGNED_MODEL_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
 # 签名目录 json 上限 8 MiB；供 api 层做有界读，避免误传模型包时全量读进内存。
@@ -1080,6 +1089,42 @@ def _require_exact_model_fields(value: object, fields: set[str], label: str) -> 
     if not isinstance(value, dict) or set(value) != fields:
         raise errors.RequestError(msg=f'图坊模型目录 {label}字段不符合 schema v1')
     return value
+
+
+def _require_model_byte_size(value: object, *, label: str) -> None:
+    """字节数必须是正整数且不超过 4 GiB。
+
+    daemon `validate_model`/`validate_package` 对 size、compressed_size、installed_size
+    都判上界，云端只判「正整数」会让多打一位的目录被放行、再被 daemon 整份 TrustRejected。
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise errors.RequestError(msg=f'{label} 必须是正整数')
+    if value > MAX_SIGNED_MODEL_PACKAGE_BYTES:
+        raise errors.RequestError(msg=f'{label} 超过上限 {MAX_SIGNED_MODEL_PACKAGE_BYTES} 字节')
+
+
+def _require_safe_model_token(value: object, *, label: str) -> str:
+    """与 daemon `is_safe_token` 对齐：允许的字符集之外，还须排除 `.` 与 `..`。
+
+    `.`/`..` 能通过 `_SIGNED_ENGINE_TOKEN_RE`，但会被拼进 object key 造成路径逃逸。
+    """
+    if not isinstance(value, str) or value in {'.', '..'} or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(value):
+        raise errors.RequestError(msg=f'{label} 无效')
+    return value
+
+
+def _require_spdx_like_license(value: object, *, label: str) -> None:
+    """校验 license 的 SPDX 表达式**语法**。
+
+    daemon 侧是 `spdx::Expression::parse` 全量解析；云端不引入 SPDX 依赖，只做语法形状校验：
+    许可证 id 由 `[A-Za-z0-9.+-]` 组成，可用 AND/OR/WITH 连接并加括号。这挡得住现实中真正
+    会发生的误填（`Apache 2.0` 带空格、`商用授权` 带中文），但不校验 id 是否在 SPDX 清单内——
+    后者由发布工具链的 `sign-models` 自检兜底。
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise errors.RequestError(msg=f'{label} 不能为空')
+    if not _SPDX_EXPRESSION_RE.fullmatch(value.strip()):
+        raise errors.RequestError(msg=f'{label} 必须是 SPDX 许可证表达式，如 Apache-2.0 或 MIT')
 
 
 def _validate_signed_model_package(
@@ -1096,18 +1141,30 @@ def _validate_signed_model_package(
     )
     object_key = package['key']
     expected_prefix = f'runtime-model/{app_id}/{runtime_name}/{version}/'
-    if not isinstance(object_key, str) or not object_key.startswith(expected_prefix):
+    # `..` 与空白字符必须显式拦：daemon `validate_package` 拒绝二者，且带空白的 key
+    # 会让云端存的 key 与对象存储实际签出的路径不一致，下载直接 404。
+    if (
+        not isinstance(object_key, str)
+        or not object_key.startswith(expected_prefix)
+        or '..' in object_key
+        or any(character.isspace() for character in object_key)
+    ):
         raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 key 必须位于 {expected_prefix}')
     url = package['url']
-    if not isinstance(url, str) or urlparse(url).scheme not in {'http', 'https'}:
-        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 url 必须是 http(s)')
+    if not isinstance(url, str):
+        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 url 无效')
+    # 与 daemon `PackageSourceRef::parse` 对齐：只放行 https 或 loopback http。
+    # 明文 http 会被 macOS 桌面端 ATS 直接掐断，造成「Linux 装得上、macOS 装不上」的平台分叉。
+    parsed_url = urlparse(url)
+    loopback = parsed_url.scheme == 'http' and parsed_url.hostname in {'localhost', '127.0.0.1', '::1'}
+    if parsed_url.scheme != 'https' and not loopback:
+        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 url 必须是 HTTPS 或 loopback HTTP')
     digest = package['sha256']
     if not isinstance(digest, str) or not _SIGNED_ENGINE_SHA256_RE.fullmatch(digest):
         raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 sha256 必须是 64 位十六进制')
     for field in ('compressed_size', 'installed_size'):
         size = package[field]
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-            raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 {field} 必须是正整数')
+        _require_model_byte_size(size, label=f'图坊模型目录 {runtime_name} 的包 {field}')
     return package
 
 
@@ -1119,9 +1176,10 @@ def _validate_signed_model_release(*, app_id: str, dependency_id: str, release_v
         _SIGNED_MODEL_RELEASE_FIELDS,
         f'models.{dependency_id} ',
     )
-    runtime_name = release['runtime_name']
-    if not isinstance(runtime_name, str) or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(runtime_name):
-        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 runtime_name 无效')
+    runtime_name = _require_safe_model_token(
+        release['runtime_name'],
+        label=f'图坊模型目录 {dependency_id} 的 runtime_name',
+    )
     # 制品身份必须由 runtime_name 确定性派生，避免同一模型在不同发布里指向不同制品目录。
     expected_artifact_id = f'app.model.{app_id}.{runtime_name}'
     if release['artifact_id'] != expected_artifact_id:
@@ -1129,7 +1187,11 @@ def _validate_signed_model_release(*, app_id: str, dependency_id: str, release_v
             msg=f'图坊模型目录 {dependency_id} 的 artifact_id 必须为 {expected_artifact_id}',
         )
     display_name = release['display_name']
-    if not isinstance(display_name, str) or not display_name.strip() or len(display_name) > 128:
+    if (
+        not isinstance(display_name, str)
+        or not display_name.strip()
+        or len(display_name.encode('utf-8')) > _SIGNED_MODEL_DISPLAY_NAME_MAX_BYTES
+    ):
         raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 display_name 无效')
     purposes = release['purposes']
     if (
@@ -1140,9 +1202,7 @@ def _validate_signed_model_release(*, app_id: str, dependency_id: str, release_v
         or len(set(purposes)) != len(purposes)
     ):
         raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 purposes 无效')
-    license_expression = release['license']
-    if not isinstance(license_expression, str) or not license_expression.strip():
-        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 license 不能为空')
+    _require_spdx_like_license(release['license'], label=f'图坊模型目录 {dependency_id} 的 license')
     version = release['version']
     if not isinstance(version, str) or version in {'.', '..'} or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version):
         raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 version 无效')
@@ -1150,8 +1210,7 @@ def _validate_signed_model_release(*, app_id: str, dependency_id: str, release_v
     if not isinstance(filename, str) or not _SIGNED_MODEL_FILENAME_RE.fullmatch(filename):
         raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 filename 必须是单段 .onnx')
     size = release['size']
-    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 size 必须是正整数')
+    _require_model_byte_size(size, label=f'图坊模型目录 {dependency_id} 的 size')
     digest = release['sha256']
     if not isinstance(digest, str) or not _SIGNED_ENGINE_SHA256_RE.fullmatch(digest):
         raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 sha256 必须是 64 位十六进制')
@@ -1174,7 +1233,10 @@ def _validate_signed_model_catalog(*, app_id: str, document: object) -> dict:
     if not isinstance(signature, str) or not _SIGNED_ENGINE_SIGNATURE_RE.fullmatch(signature):
         raise errors.RequestError(msg='图坊模型目录 signature 必须是 128 位 Ed25519 hex')
     payload = _require_exact_model_fields(signed['payload'], _SIGNED_MODEL_PAYLOAD_FIELDS, 'payload ')
-    if payload['schema_version'] != 1:
+    # 裸相等判断放行 JSON 的 true 与 1.0（Python 里 True == 1、1.0 == 1）；
+    # 同函数对 release_sequence、size 都显式排除了 bool，这里同样要排。
+    schema_version = payload['schema_version']
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
         raise errors.RequestError(msg='图坊模型目录 schema_version 必须为 1')
     if payload['catalog_id'] != _SIGNED_MODEL_CATALOG_ID:
         raise errors.RequestError(msg=f'图坊模型目录 catalog_id 必须为 {_SIGNED_MODEL_CATALOG_ID}')
@@ -1306,8 +1368,10 @@ async def stage_signed_model_package(
     from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
     from backend.plugin.s3.service.storage_service import StorageService
 
-    if not _SIGNED_ENGINE_TOKEN_RE.fullmatch(runtime_name):
-        raise errors.RequestError(msg=f'图坊模型 runtime_name 无效：{runtime_name}')
+    # stage 发生在签名之前，runtime_name/version 是裸表单字段，没有任何工具校验过：
+    # 填 `..` 会拼出逃逸出应用命名空间的 object key，而且要等整个 GB 级包传完、
+    # 算完 sha256 之后才在 `_clean_object_path` 抛出一个与字段无关的模糊报错。
+    _require_safe_model_token(runtime_name, label=f'图坊模型 runtime_name（{runtime_name}）')
     if version in {'.', '..'} or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version):
         raise errors.RequestError(msg='图坊模型包 version 无效')
     catalog = await hasn_app_catalog_dao.get(db, pk)
