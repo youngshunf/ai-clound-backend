@@ -1064,6 +1064,9 @@ _SIGNED_MODEL_PACKAGE_FIELDS = {
     'installed_size',
 }
 _SIGNED_MODEL_CATALOG_ID = 'imagelab-models'
+# 模型签名目录目前只服务图坊：catalog_id 与 daemon 的 artifact 前缀都硬钉在 imagelab，
+# 归属闸缺位时选错 pk 会把 GB 级包写进别的应用命名空间且无回收路径。
+_SIGNED_MODEL_APP_ID = 'imagelab'
 _SIGNED_MODEL_DEPENDENCY_RE = re.compile(r'^model\.[A-Za-z0-9._-]{1,120}$')
 _SIGNED_MODEL_FILENAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}\.onnx$')
 # 模型 zip 上限 4 GiB，与 daemon `model_artifact.rs` 的 MAX_PACKAGE_BYTES 对齐。
@@ -1204,6 +1207,52 @@ def _validate_signed_model_catalog(*, app_id: str, document: object) -> dict:
     return signed
 
 
+def _require_signed_model_catalog_ownership(*, pk: int, app_id: str) -> None:
+    """拒绝把图坊模型发布面用在别的应用目录上（孪生的 finance 引擎面同样有这道闸）。"""
+    if app_id != _SIGNED_MODEL_APP_ID:
+        raise errors.RequestError(
+            msg=f'应用目录 {pk} 属于 {app_id}，图坊模型发布面仅接受 {_SIGNED_MODEL_APP_ID}',
+        )
+
+
+def extract_current_signed_model_document(models_node: object) -> dict | None:
+    """取出当前生效的签名目录文档，语义与 daemon `broker.rs` 的读路径完全一致。
+
+    daemon 是 `models.get("signed_catalog").unwrap_or(models)`——迁移期存在 ``models``
+    自身就是签名文档的形态。重放与不可变守卫必须覆盖**两条**读路径：只认 ``signed_catalog``
+    的话，处在迁移形态的行会让序列单调、同序列幂等、同版本异摘要三道闸整体静默失效。
+    """
+    if not isinstance(models_node, dict):
+        return None
+    candidate = models_node.get('signed_catalog')
+    if not isinstance(candidate, dict):
+        candidate = models_node
+    return candidate if isinstance(candidate.get('payload'), dict) else None
+
+
+def _reject_model_release_regression(previous_payload: dict, incoming_payload: dict) -> None:
+    """同一制品同版本的 zip 摘要一旦发布不得改写。
+
+    必须按 ``artifact_id`` 配对：``dependency_id`` 只是发布方自由选取的目录键，
+    按它配对时「换个键重发同一模型」即可绕过整道闸，而 daemon 认的是 artifact 身份。
+    """
+    previous_by_artifact = {
+        release['artifact_id']: release
+        for release in (previous_payload.get('models') or {}).values()
+        if isinstance(release, dict) and isinstance(release.get('artifact_id'), str)
+    }
+    for dependency_id, incoming_release in incoming_payload['models'].items():
+        previous_release = previous_by_artifact.get(incoming_release['artifact_id'])
+        if not isinstance(previous_release, dict) or previous_release.get('version') != incoming_release['version']:
+            continue
+        # `get('package', {})` 在 package 显式为 null 时会返回 None，默认值不生效；
+        # 历史脏数据（可经通用配置面写入）会让这里从 400 变成未捕获的 500。
+        previous_package = previous_release.get('package')
+        previous_digest = previous_package.get('sha256') if isinstance(previous_package, dict) else None
+        if previous_digest != incoming_release['package']['sha256']:
+            raise errors.RequestError(msg=f'图坊模型目录同版本异摘要：{dependency_id}')
+
+
 def merge_signed_model_catalog(config_json: dict | None, *, app_id: str, document: dict) -> dict:
     """严格校验并保存 schema v1 模型签名目录；发布序列单调、同版本异摘要拒绝。
 
@@ -1213,12 +1262,8 @@ def merge_signed_model_catalog(config_json: dict | None, *, app_id: str, documen
     signed = copy.deepcopy(_validate_signed_model_catalog(app_id=app_id, document=document))
     existing = copy.deepcopy(config_json or {})
     current = existing.get('models')
-    if (
-        isinstance(current, dict)
-        and isinstance(current.get('signed_catalog'), dict)
-        and isinstance(current['signed_catalog'].get('payload'), dict)
-    ):
-        previous = current['signed_catalog']
+    previous = extract_current_signed_model_document(current)
+    if previous is not None:
         previous_payload = previous['payload']
         incoming_payload = signed['payload']
         previous_sequence = previous_payload.get('release_sequence')
@@ -1230,18 +1275,14 @@ def merge_signed_model_catalog(config_json: dict | None, *, app_id: str, documen
                 if previous != signed:
                     raise errors.RequestError(msg='图坊模型目录相同发布序列内容不一致')
                 return existing
-        previous_models = previous_payload.get('models') or {}
-        for dependency_id, incoming_release in incoming_payload['models'].items():
-            previous_release = previous_models.get(dependency_id)
-            if (
-                isinstance(previous_release, dict)
-                and previous_release.get('version') == incoming_release['version']
-                and previous_release.get('package', {}).get('sha256') != incoming_release['package']['sha256']
-            ):
-                raise errors.RequestError(msg=f'图坊模型目录同版本异摘要：{dependency_id}')
+        _reject_model_release_regression(previous_payload, incoming_payload)
     # 只替换 signed_catalog 一项，保留 models 下运营可能维护的其它键。
     models_node = dict(current) if isinstance(current, dict) else {}
     models_node['signed_catalog'] = signed
+    # 迁移期直挂形态收敛到 signed_catalog：两份文档并存时 daemon 只读新的那份，
+    # 残留的旧 payload/signature 会让后续的守卫与人工排查都对着过期数据判断。
+    models_node.pop('payload', None)
+    models_node.pop('signature', None)
     existing['models'] = models_node
     return existing
 
@@ -1272,6 +1313,9 @@ async def stage_signed_model_package(
     catalog = await hasn_app_catalog_dao.get(db, pk)
     if not catalog:
         raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    # 归属闸必须在读取上传体之前：否则选错 pk 会先把整个 GB 级包写进别的应用命名空间，
+    # 到 publish 阶段才以「artifact_id 不匹配」报错，而对象已永久留在公共桶且无回收路径。
+    _require_signed_model_catalog_ownership(pk=pk, app_id=catalog.app_id)
     app_id = catalog.app_id
 
     digest = hashlib.sha256()
@@ -1324,6 +1368,7 @@ async def publish_signed_model_catalog(db: AsyncSession, *, pk: int, document: d
     catalog = await hasn_app_catalog_dao.get(db, pk)
     if not catalog:
         raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    _require_signed_model_catalog_ownership(pk=pk, app_id=catalog.app_id)
     merged = merge_signed_model_catalog(catalog.config_json, app_id=catalog.app_id, document=document)
     if merged == (catalog.config_json or {}):
         return copy.deepcopy(merged['models'])
