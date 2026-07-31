@@ -16,13 +16,14 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn.schema.hasn_sync import ClientEvent
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog
 from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_task.service.task_service import calc_next_run_at
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+from backend.app.home.service.workbench_pref_service import resolve_master_brain_agent_id
 from backend.common.log import log
 from backend.utils.timezone import timezone
 
@@ -65,18 +66,17 @@ async def _active_agents(db: AsyncSession, owner_id: str) -> list[HasnAgents]:
 
 
 async def _resolve_primary_agent(db: AsyncSession, owner_id: str, agents: list[HasnAgents]) -> HasnAgents | None:
-    """主脑：优先 workbench_pref.primary_agent_id；空则回落 role='primary' 最早活跃分身；再回落首个活跃分身。"""
-    pref_pid = (
-        await db.execute(
-            sa.select(HasnOwnerWorkbenchPref.primary_agent_id).where(HasnOwnerWorkbenchPref.owner_hasn_id == owner_id)
-        )
-    ).scalar_one_or_none()
+    """主脑：复用全仓唯一实现 `home.workbench_pref_service.resolve_master_brain_agent_id`。
+
+    算法本身（显式 pref → `role='primary'` → 最早活跃分身）不在这里重写——doc19 §4.4 / D-18 的
+    云端合并闸也用同一判定，判定一旦有第二份副本就会漂移，「旧主脑的迟到提交」会在某条路径上
+    被放行。本函数只负责把解析出的 hasn_id 映射回调用方已加载的分身对象；映射不中（活跃口径
+    边界差异）时回落首个活跃分身，保持播种不因主脑解析失败整体停摆。
+    """
+    primary_id = await resolve_master_brain_agent_id(db, owner_id)
     by_id = {a.hasn_id: a for a in agents}
-    if pref_pid and pref_pid in by_id:
-        return by_id[pref_pid]
-    for a in agents:
-        if a.role == 'primary':
-            return a
+    if primary_id and primary_id in by_id:
+        return by_id[primary_id]
     return agents[0] if agents else None
 
 

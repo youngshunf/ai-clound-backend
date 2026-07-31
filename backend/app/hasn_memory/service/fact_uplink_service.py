@@ -1046,6 +1046,14 @@ class FactUplinkService:
 
     # ---------------------------------------------------------------- 下行广播
 
+    async def emit_fact_downlink(self, db: AsyncSession, *, owner_id: str, fact_id: str) -> tuple[int, str]:
+        """对外的回灌发射口：合并闸（§5.6）写完 overlay / 派生事实后调它广播给各节点。
+
+        刻意只做转发、不复制实现——「回灌不得抹平溯源」（§8.2）的全列回发规则只能有一处，
+        合并闸另写一份迟早漏列，那正是自产片归属被抹平、事实从此不可整理的事故形态。
+        """
+        return await self._emit_fact_downlink(db, owner_id=owner_id, fact_id=fact_id)
+
     async def _emit_fact_downlink(
         self,
         db: AsyncSession,
