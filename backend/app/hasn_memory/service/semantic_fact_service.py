@@ -24,6 +24,15 @@ doc19 S3（19-多节点记忆分层与分身自治整理设计.md §3.2/§3.4/§
 - 生效可见性 = `status='active'` 且（未裁决 或 裁决所依据的 revision 已过期）。
   后半句是并发护栏：事实被裁决后又被本地整理或主人修改（revision 前进），旧裁决自动失效、
   事实重新可见，留待下轮合并重裁——竞态从「谁覆盖谁」变成「裁决过期作废」，不需要锁。
+
+doc19 S2（同文档 §6 项目记忆 · §4.3/§8.2）：
+- **项目记忆** = `subject_kind='world'` + `scope_kind='project'` + `scope_id=<云端项目 UUID>`，
+  槽位与 CHECK 早已存在，零 schema 变更（D-5）。`save_fact` 新增 `project_id` 入参：调用方**未
+  显式给 scope** 且有项目语境时自动落 `project` 作用域；显式传参永远优先；
+- **读不收窄**（铁律「项目轴写继承·读不收窄」）：`search`/`recall`/`list` 拿到 `project_id`
+  后做**并集**检索——排掉的只有**别的项目**的专属事实，全局常识与其它作用域一律照常可见；
+- `supersedes_hint` 从 S3 的「塞 source_refs_json」收敛为**正式列**（§8.2 增列汇总本就把它列为
+  双端增列；塞 JSON 串检索不到，合并规则层没法按列取）。
 """
 
 from __future__ import annotations
@@ -70,6 +79,62 @@ def effective_fact_condition() -> ColumnElement[bool]:
             SemanticFact.merge_judged_revision.is_distinct_from(SemanticFact.revision),
         ),
     )
+
+
+def scope_visibility_condition(
+    *,
+    scope_kind: str | None = None,
+    scope_id: str | None = None,
+    project_id: str | None = None,
+) -> ColumnElement[bool] | None:
+    """作用域过滤条件（doc19 §6.2 项目记忆并集检索）。返回 None 表示不加任何 scope 条件。
+
+    三档，按优先级：
+
+    1. **调用方显式收窄**（给了 `scope_kind` 和/或 `scope_id`）→ 按显式条件过滤。分身明确说
+       「只要这个作用域的」就照做，项目语境不再插手；
+    2. **未显式收窄 + 有项目语境** → 并集检索。条件是
+       ``scope_kind != 'project' OR scope_id = <当前项目>``，即**只排掉别的项目的专属事实**：
+       当前项目的事实、`global` 全局常识、以及 `topic`/`workspace`/`task`/`conversation` 等
+       非项目作用域的事实**全部照常可见**。
+       ⚠️ 这里是**故意**比「project ∪ global」更宽的：`world` 主体受表 CHECK
+       `ck_semantic_fact_world_scope` 约束**不许**用 `global` 作用域，全局性的世界知识只能落
+       `topic`/`workspace`。若按字面只留 `project ∪ global`，分身一进项目就再也看不见任何
+       world 事实——恰恰把 §6.2 要保住的「全局常识」全滤没了，直接违反铁律
+       「项目轴写继承·**读不收窄**」。故判据写成「排他项目」而非「只留两档」；
+    3. 都没有 → None，不加条件（全量可见，与本切片之前的行为完全一致）。
+
+    `scope_id` 列 NOT NULL，无三值逻辑坑，可直接用 ``!=`` / ``==``。
+    """
+    explicit: list[ColumnElement[bool]] = []
+    if scope_kind in _VALID_SCOPE_KINDS:
+        explicit.append(SemanticFact.scope_kind == scope_kind)
+    if scope_id:
+        explicit.append(SemanticFact.scope_id == scope_id)
+    if explicit:
+        return sa.and_(*explicit)
+    if project_id:
+        return sa.or_(
+            SemanticFact.scope_kind != 'project',
+            SemanticFact.scope_id == project_id,
+        )
+    return None
+
+
+def _project_first_order(project_id: str | None) -> list[ColumnElement[Any]]:
+    """并集检索的排序前缀（doc19 §6.2）：**项目专属事实排在全局/其它作用域之前**。
+
+    在项目里干活时，「这个项目怎么约定的」比「一般来说怎么样」更该先被看见；同档内仍按
+    `updated_at` 倒序。无项目语境 → 空前缀，排序与本切片之前完全一致。
+    """
+    if not project_id:
+        return []
+    return [
+        sa.case(
+            (sa.and_(SemanticFact.scope_kind == 'project', SemanticFact.scope_id == project_id), 0),
+            else_=1,
+        )
+    ]
 
 
 def _now_ms() -> int:
@@ -128,6 +193,8 @@ def _serialize(fact: SemanticFact) -> dict[str, Any]:
         'merge_verdict_run': fact.merge_verdict_run,
         'merge_judged_revision': fact.merge_judged_revision,
         'valid_until': fact.valid_until,
+        # doc19 §4.3：本人纠正指向随读返回——合并规则层与主人复盘都要看得见「这条想取代谁」
+        'supersedes_hint': fact.supersedes_hint,
     }
 
 
@@ -145,7 +212,7 @@ class SemanticFactService:
         subject_kind: str = 'agent_self',
         subject_id: str | None = None,
         confidence: Any = None,
-        scope_kind: str = 'global',
+        scope_kind: str | None = None,
         scope_id: str | None = None,
         source_refs: list[Any] | None = None,
         rationale: str | None = None,
@@ -153,6 +220,7 @@ class SemanticFactService:
         origin_agent_id: str | None = None,
         valid_until: int | None = None,
         supersedes_hint: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """落一条语义事实（云端权威）。owner_id 由凭据强制，绝不取自请求体。
 
@@ -164,10 +232,25 @@ class SemanticFactService:
         - `supersedes_hint`：本人纠正旧事实的快速通道线索（§4.3）。本片**只落库**——新事实
           照常进本节点自产片，hint 的裁决（同 `origin_agent_id` 即按 hint 直接裁决、指向他人
           事实只作 LLM 参考信号）属 S6 合并，此处不做任何隐式取代，免得假装已经生效。
+
+        doc19 §6.2 新增入参：
+
+        - `project_id`：**项目语境**（云端权威项目 UUID，由 `AgentContext.project_id` /
+          ContextVar 供给，**绝不接受分身自行指定**——否则等于放开往任意项目写记忆）。
+          语义严格三档：① 调用方显式给了 `scope_kind` 和/或 `scope_id` → 原样采用，显式优先；
+          ② 未显式给 scope 且有项目语境 → 自动落 `scope_kind='project'` + `scope_id=项目 UUID`；
+          ③ 都没有 → 走既有兜底（`scope_kind='global'`、`scope_id` 回落主体 id）。
+
+        ⚠️ `scope_kind` 默认值由 `'global'` 改为 `None` 就是为了把「显式传了 global」与「压根
+        没传」区分开——否则②档永远触发不了（旧默认值会被当成显式意图）。
         """
         if not predicate or not str(predicate).strip():
             raise ValueError('predicate 必填')
         subject_kind = subject_kind if subject_kind in _VALID_SUBJECT_KINDS else 'agent_self'
+        # doc19 §6.2 项目语境自动带入：只在调用方**完全没表达 scope 意图**时才接管
+        if not scope_kind and not scope_id and project_id:
+            scope_kind = 'project'
+            scope_id = project_id
         scope_kind = scope_kind if scope_kind in _VALID_SCOPE_KINDS else 'global'
 
         # 主体规约（与表 CHECK 一致）：agent_self→subject_id=agent_id 且 agent_id 必填；
@@ -184,16 +267,13 @@ class SemanticFactService:
             resolved_subject_id = subject_id or ''
             if not resolved_subject_id:
                 raise ValueError(f'{subject_kind} 事实需要 subject_id')
-        # world 不允许 global 作用域（表 CHECK ck_semantic_fact_world_scope）
+        # world 不允许 global 作用域（表 CHECK ck_semantic_fact_world_scope）。
+        # ⚠️ 只纠 global 这一种：doc19 §6.1 的**项目记忆恰恰是 world + project**（D-5），
+        # 这个组合完全合法，别在这里被顺手改掉。
         if subject_kind == 'world' and scope_kind == 'global':
             scope_kind = 'topic'
 
-        # doc19 §4.3：hint 只是「本人纠正本人」的线索，随来源引用一起留痕，交给 S6 合并裁决。
-        # 现表无独立列承载它（§8.2 增列汇总未列出），故落在 source_refs_json 的结构化条目里，
-        # 语义显式（kind='supersedes_hint'），不挤占 superseded_by——后者是已生效的取代关系。
         resolved_source_refs: list[Any] = list(source_refs or [])
-        if supersedes_hint:
-            resolved_source_refs.append({'kind': 'supersedes_hint', 'fact_id': supersedes_hint})
 
         now = _now_ms()
         fact = SemanticFact(
@@ -222,6 +302,9 @@ class SemanticFactService:
             merged_from='[]',
             revision=1,
             valid_until=valid_until,
+            # doc19 §4.3/§8.2：hint 落**正式列**（S3 曾临时塞 source_refs_json，S2 收敛）。
+            # 不挤占 superseded_by——后者是已生效的取代关系，hint 只是待裁决的线索。
+            supersedes_hint=supersedes_hint or None,
         )
         db.add(fact)
         await db.flush()
@@ -235,12 +318,17 @@ class SemanticFactService:
         query: str,
         subject_kind: str | None = None,
         subject_id: str | None = None,
+        scope_kind: str | None = None,
+        scope_id: str | None = None,
+        project_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """按文本在 predicate/object_json 上模糊搜索 owner 名下**生效**事实。
 
         doc18 S2：可选 `subject_id` 限定主体——「按人 + 关键词」组合检索（如查某 peer 关于某话题的事实）。
         doc19 §3.4：生效判据含合并裁决 overlay，裁决过期即自动重新可见。
+        doc19 §6.2：新增 `scope_kind`/`scope_id` 显式过滤 + `project_id` 项目并集检索
+        （判据见 `scope_visibility_condition`，项目专属事实排前）。
         """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         stmt = sa.select(SemanticFact).where(
@@ -255,7 +343,10 @@ class SemanticFactService:
         if q:
             like = f'%{q}%'
             stmt = stmt.where(sa.or_(SemanticFact.predicate.ilike(like), SemanticFact.object_json.ilike(like)))
-        stmt = stmt.order_by(SemanticFact.updated_at.desc()).limit(limit)
+        scope_cond = scope_visibility_condition(scope_kind=scope_kind, scope_id=scope_id, project_id=project_id)
+        if scope_cond is not None:
+            stmt = stmt.where(scope_cond)
+        stmt = stmt.order_by(*_project_first_order(project_id), SemanticFact.updated_at.desc()).limit(limit)
         rows = (await db.execute(stmt)).scalars().all()
         return [_serialize(r) for r in rows]
 
@@ -269,6 +360,7 @@ class SemanticFactService:
         query: str | None = None,
         scope_kind: str | None = None,
         scope_id: str | None = None,
+        project_id: str | None = None,
         min_confidence: float = 0.0,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
@@ -276,6 +368,7 @@ class SemanticFactService:
 
         doc18 S2：可选 `query` 词项过滤（predicate/object ILIKE，与 search 同实现）——补上「按人 + 关键词」召回。
         doc19 §3.4：被合并裁决为 merged_into / disputed 且裁决仍有效的事实**不进注入**。
+        doc19 §6.2：`project_id` 触发项目并集检索（排他项目、留全局与其它作用域），项目专属事实排前。
         """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         stmt = sa.select(SemanticFact).where(
@@ -291,11 +384,10 @@ class SemanticFactService:
         if q:
             like = f'%{q}%'
             stmt = stmt.where(sa.or_(SemanticFact.predicate.ilike(like), SemanticFact.object_json.ilike(like)))
-        if scope_kind in _VALID_SCOPE_KINDS:
-            stmt = stmt.where(SemanticFact.scope_kind == scope_kind)
-        if scope_id:
-            stmt = stmt.where(SemanticFact.scope_id == scope_id)
-        stmt = stmt.order_by(SemanticFact.updated_at.desc()).limit(limit)
+        scope_cond = scope_visibility_condition(scope_kind=scope_kind, scope_id=scope_id, project_id=project_id)
+        if scope_cond is not None:
+            stmt = stmt.where(scope_cond)
+        stmt = stmt.order_by(*_project_first_order(project_id), SemanticFact.updated_at.desc()).limit(limit)
         rows = (await db.execute(stmt)).scalars().all()
         return [_serialize(r) for r in rows]
 
@@ -306,12 +398,17 @@ class SemanticFactService:
         owner_id: str,
         subject_kind: str | None = None,
         agent_id: str | None = None,
+        scope_kind: str | None = None,
+        scope_id: str | None = None,
+        project_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """分页列 owner 名下**生效**事实（默认全主体；可按 subject_kind / agent_id 过滤）。
+        """分页列 owner 名下**生效**事实（默认全主体；可按 subject_kind / agent_id / scope 过滤）。
 
         doc19 §3.4：与 search/recall 同一判据，避免「列表里有、召回里没有」的口径分裂。
+        doc19 §6.2：`scope_kind`/`scope_id` 显式过滤 + `project_id` 项目并集检索，同样与另两条读路
+        同判据同排序——三者口径一旦分裂，分身在项目里就会「列表能翻到、召回却拿不到」。
         """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         offset = max(0, int(offset))
@@ -323,9 +420,18 @@ class SemanticFactService:
             base = base.where(SemanticFact.subject_kind == subject_kind)
         if agent_id:
             base = base.where(SemanticFact.agent_id == agent_id)
+        scope_cond = scope_visibility_condition(scope_kind=scope_kind, scope_id=scope_id, project_id=project_id)
+        if scope_cond is not None:
+            base = base.where(scope_cond)
         total = (await db.execute(sa.select(sa.func.count()).select_from(base.subquery()))).scalar_one()
         rows = (
-            (await db.execute(base.order_by(SemanticFact.updated_at.desc()).limit(limit).offset(offset)))
+            (
+                await db.execute(
+                    base.order_by(*_project_first_order(project_id), SemanticFact.updated_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            )
             .scalars()
             .all()
         )

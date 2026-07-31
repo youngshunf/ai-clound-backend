@@ -138,7 +138,7 @@ async def test_save_fact_defaults_to_node_origin_revision_one(session: AsyncSess
 
 
 async def test_save_fact_persists_origin_and_valid_until_and_hint(session: AsyncSession) -> None:
-    """溯源三列 / valid_until 落库；supersedes_hint 作为结构化来源引用留痕（不做隐式取代）。"""
+    """溯源三列 / valid_until 落库；supersedes_hint 落**正式列**（S2 收敛，不再塞 source_refs_json）。"""
     owner = f'h_d19_{uuid.uuid4().hex[:8]}'
     agent = f'a_d19_{uuid.uuid4().hex[:8]}'
     node = f'node_{uuid.uuid4().hex[:10]}'
@@ -158,12 +158,14 @@ async def test_save_fact_persists_origin_and_valid_until_and_hint(session: Async
         assert second['origin_node_id'] == node
         assert second['origin_agent_id'] == agent
         assert second['valid_until'] == 4102444800000
+        assert second['supersedes_hint'] == first['fact_id']
 
         row = (
             await session.execute(select(SemanticFact).where(SemanticFact.fact_id == second['fact_id']))
         ).scalar_one()
-        assert first['fact_id'] in row.source_refs_json
-        assert 'supersedes_hint' in row.source_refs_json
+        # S2 收敛（doc19 §8.2 增列汇总）：hint 落正式列，不再塞 source_refs_json
+        assert row.supersedes_hint == first['fact_id']
+        assert 'supersedes_hint' not in row.source_refs_json
         # 本片不做裁决：旧事实必须仍然 active、未被隐式取代
         old = (await session.execute(select(SemanticFact).where(SemanticFact.fact_id == first['fact_id']))).scalar_one()
         assert old.status == 'active'

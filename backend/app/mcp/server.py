@@ -353,11 +353,20 @@ class HasnCloudMcpServer:
             # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
             # （`_hasn_project_id`，分身不可伪造）→ ContextVar，供 register-on-write 公共接缝把产物
             # 自动打标进 hasn_artifacts.project_id（只进不退）。缺省=不在项目中工作，产物不挂项目。
+            # 项目语境两级权威（doc19 §6.2，只进不退）：
+            # ① 保留参数 `_hasn_project_id`（Hermes/daemon 逐调用盖章）——最贴近本次调用，优先；
+            # ② auth 绑定 `agent_context.project_id`（streamable 从 `X-Hasn-Project-Id` header 取，
+            #    或由工作会话反查 `hasn_sessions.project_id`）——次优。
+            # 两处归一到同一个值并回写 AgentContext：记忆工具面读 AgentContext、产物登记读
+            # ContextVar，绝不能各看各的一半而分叉。重入的内层 tool.call 入参没有 stamp
+            # （只打最外层），此时 ① 为空、② 已是外层值，天然不会被清掉。
             from backend.app.mcp.context import set_current_project_id
 
             arguments, origin_project_id = _tg.pop_project_id(arguments)
-            if origin_project_id:
-                set_current_project_id(origin_project_id)
+            bound_project_id = origin_project_id or agent_context.project_id
+            if bound_project_id:
+                set_current_project_id(bound_project_id)
+                agent_context.project_id = bound_project_id
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游

@@ -17,6 +17,14 @@ doc19 S3 增列（双端一致，见 19-多节点记忆分层与分身自治整�
   `semantic_fact_service.effective_fact_condition`——裁决所依据的 revision 与当前不等即作废；
 - **时效** `valid_until`：可空 epoch ms，review 复盘候选③依据。
 
+doc19 S2 增列：
+
+- **本人纠正指向** `supersedes_hint`（§4.3 / D-21）：`save` 携带的「我从前记的那条错了」线索，
+  与 `superseded_by` 严格区分——后者是**已生效**的取代关系，前者只是待裁决的线索，是否生效由
+  S6 合并规则层判（hint 指向的旧事实 `origin_agent_id` 与新事实一致 = 本人纠正本人 → 直接按
+  hint 裁决，不调 LLM；指向他人事实只作 LLM 参考信号）。不建外键：hint 可指向另一节点上、
+  本库尚未汇聚的 fact_id，也可指向已被主人 purge 的事实。
+
 ⚠️ `origin_agent_id` 记录**全部主体类别**的写入分身；既有 `agent_id` 列受
 `ck_semantic_fact_agent_id` 约束仅 `agent_self` 可填，两者语义不同，勿混用。
 """
@@ -93,3 +101,7 @@ class SemanticFact(MappedBase):
     merge_judged_revision = sa.Column(sa.BigInteger, comment='裁决所依据的 revision（与当前不等即裁决过期作废）')
     # ---- doc19 §8.2 时效 ----
     valid_until = sa.Column(sa.BigInteger, comment='有效期截止 (epoch ms)；时效性事实，review 候选③依据')
+    # ---- doc19 §4.3 本人纠正快速通道指向（D-21）----
+    supersedes_hint = sa.Column(
+        sa.String(40), comment='save 携带的本人纠正指向旧 fact_id；只是线索非已生效取代，由合并规则层裁决'
+    )
