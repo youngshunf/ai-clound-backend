@@ -36,6 +36,11 @@ class HeadlessImageRequest(SchemaBase):
     image_ref: str = Field(description='私有 registry ref，如 registry.example.com/hasn-node:1.2.0')
     image_digest: str = Field(description='镜像 digest，形如 sha256:<64hex>（以 digest 为准，不信 tag）')
     image_size: int = Field(default=0, description='镜像字节数（可选）')
+    release_notes_md: str | None = Field(
+        default=None,
+        description='发布说明（Markdown）。设计 §8.1 要求登记内容含 changelog；'
+        '仅在该版本尚无发布说明时写入，绝不覆盖桌面端已维护的正文',
+    )
     min_cloud_contract_version: str | None = Field(default=None, description='本版要求的最低云端契约版本')
     publish: bool = Field(default=True, description='是否把该版本置为 published（仅在其尚未发布时生效）')
 

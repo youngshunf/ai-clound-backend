@@ -1064,7 +1064,7 @@ class ReleaseService:
             release = AppRelease(
                 version=req.version,
                 channel=channel,
-                release_notes_md=None,
+                release_notes_md=req.release_notes_md or None,
                 release_notes_en_md=None,
                 status='published' if req.publish else 'draft',
                 is_latest=False,  # 镜像登记不抢桌面端 latest 指针
@@ -1077,6 +1077,10 @@ class ReleaseService:
         elif req.publish and release.status == 'draft':
             release.status = 'published'
             release.published_time = release.published_time or now
+        # 发布说明只填空缺、绝不覆盖：同版本号的桌面端发布链路可能已经维护了正文，
+        # 无头镜像登记晚到时把它冲掉就是数据丢失。
+        if req.release_notes_md and not release.release_notes_md:
+            release.release_notes_md = req.release_notes_md
         if req.min_cloud_contract_version is not None:
             release.min_cloud_contract_version = req.min_cloud_contract_version
 

@@ -156,3 +156,30 @@ async def test_resolve_image_picks_published_headless_asset(sess) -> None:
 async def test_resolve_image_raises_when_no_published_image(sess) -> None:
     with pytest.raises(errors.NotFoundError):
         await cloud_node_service.resolve_image(sess, platform_target='headless-linux-arm64')
+
+
+async def test_release_notes_are_written_when_absent(sess) -> None:
+    """设计 §8.1 要求登记内容含 changelog：该版本还没有发布说明时写进去。"""
+    detail = await release_service.register_headless_image(sess, _req(release_notes_md='## 1.2.0\n- 无头镜像首版'))
+    await sess.commit()
+
+    release = (await sess.execute(select(AppRelease).where(AppRelease.id == detail.release_id))).scalar_one()
+    await sess.refresh(release)
+    assert release.release_notes_md == '## 1.2.0\n- 无头镜像首版'
+
+
+async def test_release_notes_never_overwrite_existing(sess) -> None:
+    """只填空缺、绝不覆盖：同版本号的桌面端发布链路可能已维护正文，冲掉就是数据丢失。"""
+    await release_service.register_headless_image(sess, _req(release_notes_md='桌面端先写的正文'))
+    await sess.commit()
+
+    # 第二个架构随后登记，带着不同的（甚至是空的）发布说明。
+    detail = await release_service.register_headless_image(
+        sess,
+        _req(platform_target='headless-linux-arm64', release_notes_md='镜像脚本后写的正文'),
+    )
+    await sess.commit()
+
+    release = (await sess.execute(select(AppRelease).where(AppRelease.id == detail.release_id))).scalar_one()
+    await sess.refresh(release)
+    assert release.release_notes_md == '桌面端先写的正文'
