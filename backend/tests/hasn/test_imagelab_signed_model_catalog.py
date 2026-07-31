@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import copy
+import io
+import zipfile
 
 from collections.abc import Callable
 
@@ -491,3 +493,48 @@ async def test_stage_rejects_dot_runtime_name_before_reading_the_upload(
             upload=upload,
         )
     assert upload.read_calls == 0
+
+
+# ---- staging 的 zip 结构校验（is_zipfile 只探测尾部 EOCD，断不了这些）----
+
+
+def _zip_bytes(entries: dict[str, bytes]) -> io.BytesIO:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    buffer.seek(0)
+    return buffer
+
+
+def test_zip_guard_accepts_a_single_onnx() -> None:
+    app_catalog_service._require_single_onnx_zip(
+        _zip_bytes({'u2netp.onnx': b'onnx'}), runtime_name='u2netp'
+    )
+
+
+def test_zip_guard_rejects_truncated_archive_that_only_looks_like_a_zip() -> None:
+    """前半段被截断、`is_zipfile` 仍可能通过的坏包必须在 staging 就被拦下。"""
+    corrupted = io.BytesIO(b'\x00' * 512 + _zip_bytes({'u2netp.onnx': b'onnx'}).getvalue()[400:])
+    with pytest.raises(errors.RequestError, match=r'ZIP|截断'):
+        app_catalog_service._require_single_onnx_zip(corrupted, runtime_name='u2netp')
+
+
+def test_zip_guard_rejects_multiple_entries() -> None:
+    with pytest.raises(errors.RequestError, match='恰好包含一个文件'):
+        app_catalog_service._require_single_onnx_zip(
+            _zip_bytes({'u2netp.onnx': b'onnx', 'README.md': b'hi'}), runtime_name='u2netp'
+        )
+
+
+def test_zip_guard_rejects_empty_archive() -> None:
+    with pytest.raises(errors.RequestError, match='恰好包含一个文件'):
+        app_catalog_service._require_single_onnx_zip(_zip_bytes({}), runtime_name='u2netp')
+
+
+@pytest.mark.parametrize('entry_name', ['weights.bin', 'nested/u2netp.onnx', '../u2netp.onnx'])
+def test_zip_guard_rejects_non_single_segment_onnx(entry_name: str) -> None:
+    with pytest.raises(errors.RequestError, match=r'必须是单段 \.onnx'):
+        app_catalog_service._require_single_onnx_zip(
+            _zip_bytes({entry_name: b'x'}), runtime_name='u2netp'
+        )

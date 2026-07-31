@@ -70,7 +70,8 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     # 网页发布制品（模块 18）：私有桶；语义独立于 dm_attachment，**不触发 extract 抽取流水线**
     # （extract 由 register_asset(extract_status='pending') 这层显式触发，本类别不进那条路径）。
     'published_artifact': ('private', 3600),
-    # downloadable_local 应用引擎分发包（模块 14 / FILMPUB）：**公共桶、不签名、无 TTL**。
+    # downloadable_local 应用制品分发包（模块 14 / FILMPUB / IMG4）：**公共桶、不签名、无 TTL**。
+    # 同时承载应用引擎包（runtime-engine/…）与图坊模型包（runtime-model/…）：两者的下载语义一致——
     # daemon 是无鉴权纯 GET 下载（install.rs::http_get_bytes）+ sha256 校验，URL 必须长效公开，
     # 不能是会过期的签名 URL——故归 public，与 user_avatar 等同策略。
     'film_engine': ('public', None),

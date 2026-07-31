@@ -17,9 +17,10 @@ from __future__ import annotations
 import copy
 import json
 import re
+import zipfile
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
@@ -35,6 +36,7 @@ from backend.app.hasn.service.app_catalog_registry import App, app_catalog_regis
 from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
@@ -1227,12 +1229,8 @@ def _validate_signed_model_release(*, app_id: str, dependency_id: str, release_v
         raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 installed_size 必须等于模型 size')
 
 
-def _validate_signed_model_catalog(*, app_id: str, document: object) -> dict:
-    signed = _require_exact_model_fields(document, _SIGNED_MODEL_DOCUMENT_FIELDS, '顶层')
-    signature = signed['signature']
-    if not isinstance(signature, str) or not _SIGNED_ENGINE_SIGNATURE_RE.fullmatch(signature):
-        raise errors.RequestError(msg='图坊模型目录 signature 必须是 128 位 Ed25519 hex')
-    payload = _require_exact_model_fields(signed['payload'], _SIGNED_MODEL_PAYLOAD_FIELDS, 'payload ')
+def _validate_signed_model_catalog_header(payload: dict) -> None:
+    """校验 payload 的头部标量字段（schema/catalog_id/序列/通道/版本/有效期）。"""
     # 裸相等判断放行 JSON 的 true 与 1.0（Python 里 True == 1、1.0 == 1）；
     # 同函数对 release_sequence、size 都显式排除了 bool，这里同样要排。
     schema_version = payload['schema_version']
@@ -1254,6 +1252,15 @@ def _validate_signed_model_catalog(*, app_id: str, document: object) -> dict:
     expires_at = _parse_signed_engine_time(payload['expires_at'], 'expires_at')
     if expires_at <= issued_at:
         raise errors.RequestError(msg='图坊模型目录 expires_at 必须晚于 issued_at')
+
+
+def _validate_signed_model_catalog(*, app_id: str, document: object) -> dict:
+    signed = _require_exact_model_fields(document, _SIGNED_MODEL_DOCUMENT_FIELDS, '顶层')
+    signature = signed['signature']
+    if not isinstance(signature, str) or not _SIGNED_ENGINE_SIGNATURE_RE.fullmatch(signature):
+        raise errors.RequestError(msg='图坊模型目录 signature 必须是 128 位 Ed25519 hex')
+    payload = _require_exact_model_fields(signed['payload'], _SIGNED_MODEL_PAYLOAD_FIELDS, 'payload ')
+    _validate_signed_model_catalog_header(payload)
     models = payload['models']
     if not isinstance(models, dict) or not models:
         raise errors.RequestError(msg='图坊模型目录 models 不能为空')
@@ -1349,6 +1356,33 @@ def merge_signed_model_catalog(config_json: dict | None, *, app_id: str, documen
     return existing
 
 
+def _require_single_onnx_zip(file: BinaryIO, *, runtime_name: str) -> None:
+    """读中央目录确认这是一个恰好含单个 .onnx 的 zip。
+
+    不能用 `zipfile.is_zipfile`：它只在文件尾部 64 KiB 内找 EOCD 魔数（CPython `_check_zipfile`
+    仅调 `_EndRecData`），还会吞掉 OSError 返回 False。前半段被截断但尾部中央目录完整的 zip
+    照样能通过，随后被签进目录发布上线——daemon 安装时才因逐文件摘要不符失败，而那时
+    release_sequence 已被消耗，只能走「重传 + 重签 + 抬序列」。
+
+    这里只读中央目录、不做 CRC 全量校验：GB 级包上 `testzip()` 的耗时不可接受，
+    而内容正确性另有 daemon 侧 `verify_expanded` 的逐文件摘要比对兜底。
+    """
+    file.seek(0)
+    try:
+        with zipfile.ZipFile(file) as archive:
+            entries = [item for item in archive.infolist() if not item.is_dir()]
+    except zipfile.BadZipFile as exc:
+        raise errors.RequestError(msg='图坊模型包不是可读取的 ZIP 文件') from exc
+    except OSError as exc:
+        raise errors.RequestError(msg='图坊模型包读取失败，可能在传输中被截断') from exc
+    if len(entries) != 1:
+        raise errors.RequestError(msg=f'图坊模型包必须恰好包含一个文件，实际 {len(entries)} 个')
+    entry_name = entries[0].filename
+    if not _SIGNED_MODEL_FILENAME_RE.fullmatch(entry_name):
+        raise errors.RequestError(msg=f'图坊模型包内文件名 {entry_name} 必须是单段 .onnx')
+    log.info(f'图坊模型包 staging 结构校验通过：{runtime_name} → {entry_name}（{entries[0].file_size} 字节）')
+
+
 async def stage_signed_model_package(
     db: AsyncSession,
     *,
@@ -1363,7 +1397,6 @@ async def stage_signed_model_package(
     数据库事务，避免长事务占住连接。本步骤不修改 ``config_json``，在线 daemon 看不到半套发布。
     """
     import hashlib
-    import zipfile
 
     from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
     from backend.plugin.s3.service.storage_service import StorageService
@@ -1393,8 +1426,7 @@ async def stage_signed_model_package(
     if size == 0:
         raise errors.RequestError(msg='图坊模型包不能为空')
     await upload.seek(0)
-    if not zipfile.is_zipfile(upload.file):
-        raise errors.RequestError(msg='图坊模型包必须是可读取的 ZIP 文件')
+    _require_single_onnx_zip(upload.file, runtime_name=runtime_name)
     package_sha256 = digest.hexdigest()
     object_key = f'runtime-model/{app_id}/{runtime_name}/{version}/{package_sha256[:16]}-{runtime_name}.zip'
 
