@@ -30,9 +30,12 @@ def _free_port() -> int:
 
 
 def test_hosting_service_is_registered_with_contract_defaults() -> None:
-    """契约 §1：服务注册名 hosting、默认端口 8003、健康路径 /health、派生令牌。"""
+    """契约 §1：服务注册名 hosting、默认端口 8004、健康路径 /health、派生令牌。
+
+    8004 而非初稿的 8003：8003 已被 lead-crawler 占用，同机 dev 回落会连错服务。
+    """
     spec = get_service_spec(HOSTING_SERVICE_NAME)
-    assert spec.default_port == 8003
+    assert spec.default_port == 8004
     assert spec.health_path == '/health'
     assert spec.derive_token is True
     assert spec.url_attr == 'HOSTING_AGENT_URL'
