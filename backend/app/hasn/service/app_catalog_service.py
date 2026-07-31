@@ -39,6 +39,7 @@ from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from fastapi import UploadFile
     from sqlalchemy.ext.asyncio import AsyncSession
 
 # 默认应用标识（订阅档与 billing 同源，见 [[project_billing_newapi_authoritative_source]]）。
@@ -1067,6 +1068,8 @@ _SIGNED_MODEL_DEPENDENCY_RE = re.compile(r'^model\.[A-Za-z0-9._-]{1,120}$')
 _SIGNED_MODEL_FILENAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}\.onnx$')
 # 模型 zip 上限 4 GiB，与 daemon `model_artifact.rs` 的 MAX_PACKAGE_BYTES 对齐。
 MAX_SIGNED_MODEL_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
+# 签名目录 json 上限 8 MiB；供 api 层做有界读，避免误传模型包时全量读进内存。
+MAX_SIGNED_MODEL_CATALOG_BYTES = 8 * 1024 * 1024
 _SIGNED_MODEL_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 
 
@@ -1249,7 +1252,7 @@ async def stage_signed_model_package(
     pk: int,
     runtime_name: str,
     version: str,
-    upload,
+    upload: UploadFile,
 ) -> dict:
     """两遍流式上传模型 zip 到公共桶，返回进入签名正文的云端权威字段。
 
@@ -1291,25 +1294,26 @@ async def stage_signed_model_package(
     # 远程 I/O 前释放事务：上传可能持续数分钟，长事务会耗尽连接池。
     await db.rollback()
     await upload.seek(0)
-    reference = await StorageService.upload_stream_to_storage(
+    # 必须走分片上传：单次预签名 PUT 的超时与预签名 TTL 都硬顶 1800 秒且不可续传，
+    # GB 级模型包只要吞吐略低就会在最后一刻整体作废。
+    reference = await StorageService.upload_public_package_to_storage(
         storage,
-        _iterate_upload(upload, _SIGNED_MODEL_UPLOAD_CHUNK_BYTES),
+        upload.file,
         size=size,
         key=object_key,
         content_type='application/zip',
     )
+    # 回读核对：预签名 PUT 返回 2xx 不等于对象完整落地，也不保证落在推算出的 provider key 上。
+    # 不核对的话，运维会拿着一份「云端认为成功」的字段去签名，故障要到全网 daemon 校验时才暴露。
+    stat = await StorageService.stat_on_storage(storage, object_key=object_key)
+    if stat.size != size:
+        raise errors.ServerError(msg=f'模型包落地大小与上传不一致：期望 {size}，实际 {stat.size}')
     return {
         'key': object_key,
         'url': reference.stable_url,
         'sha256': package_sha256,
         'compressed_size': size,
     }
-
-
-async def _iterate_upload(upload, chunk_bytes: int):
-    """把 ``UploadFile`` 转成有界内存的异步字节流。"""
-    while chunk := await upload.read(chunk_bytes):
-        yield chunk
 
 
 async def publish_signed_model_catalog(db: AsyncSession, *, pk: int, document: dict) -> dict:

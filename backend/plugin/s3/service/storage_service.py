@@ -45,6 +45,7 @@ from backend.plugin.s3.utils.file_ops import (
     upload_multipart_part,
     write_bytes,
     write_immutable_speech_package,
+    write_public_package_stream,
     write_stream,
 )
 from backend.utils.timezone import timezone
@@ -428,6 +429,32 @@ class StorageService:
         )
         detached.id = storage.id
         return detached
+
+    @staticmethod
+    async def upload_public_package_to_storage(
+        storage: S3Storage,
+        file: BinaryIO,
+        *,
+        size: int,
+        content_type: str,
+        key: str,
+    ) -> ObjectRef:
+        """按存储快照分片上传 GB 级制品包（引擎包 / 模型包），重复上传同内容为幂等成功。"""
+        await write_public_package_stream(
+            storage,
+            key,
+            file,
+            size=size,
+            content_type=content_type,
+        )
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=storage.access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type,
+            size=size,
+        )
 
     @staticmethod
     async def upload_immutable_speech_package_to_storage(

@@ -276,8 +276,11 @@ async def publish_signed_model_catalog(
     pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
     catalog: Annotated[UploadFile, File(description='schema v1 签名模型目录 json')],
 ) -> ResponseSchemaModel[dict]:
-    raw = await catalog.read()
-    if len(raw) > 8 * 1024 * 1024:
+    # 必须有界读：无参数 `read()` 会先把整个上传体读进内存再判上限，等于没有上限。
+    # 本端点与 `/{pk}/model-package-stage` 只差一个路径段、两者都收 UploadFile，误传 GB 级
+    # 模型包时若先全量读入，worker 会被 OOM-Kill 而不是返回一条可读的 400。
+    raw = await catalog.read(app_catalog_service.MAX_SIGNED_MODEL_CATALOG_BYTES + 1)
+    if len(raw) > app_catalog_service.MAX_SIGNED_MODEL_CATALOG_BYTES:
         raise errors.RequestError(msg='图坊模型目录超过 8 MiB 上限')
     try:
         document = json.loads(raw)
