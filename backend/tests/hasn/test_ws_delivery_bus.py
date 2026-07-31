@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from typing import Any
@@ -40,6 +41,7 @@ class FakeRedis:
         self.sets: dict[str, set[Any]] = {}
         self.hash: dict[str, dict[str, Any]] = {}
         self.lists: dict[str, list[Any]] = {}
+        self.expires: dict[str, int] = {}
         self.published: list[tuple[str, str]] = []
         self.fail_publish = fail_publish
 
@@ -56,7 +58,7 @@ class FakeRedis:
         values = self.lists.get(key, [])
         return list(values[start:] if end == -1 else values[start : end + 1])
 
-    async def eval(self, _script: str, numkeys: int, *args: Any) -> Any:
+    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
         if numkeys == 2:
             source = str(args[0])
             destination = str(args[1])
@@ -69,6 +71,18 @@ class FakeRedis:
 
         assert numkeys == 1
         key = str(args[0])
+        if 'RPUSH' in script:
+            # 离线入队脚本：追加、按上限裁剪最旧、重置 TTL，返回被裁剪条数
+            payload, ttl, max_length = args[1], int(args[2]), int(args[3])
+            values = self.lists.setdefault(key, [])
+            values.append(payload)
+            trimmed = 0
+            if max_length > 0 and len(values) > max_length:
+                trimmed = len(values) - max_length
+                del values[:trimmed]
+            self.expires[key] = ttl
+            return trimmed
+
         claimed = list(args[1:])
         values = self.lists.setdefault(key, [])
         if values[: len(claimed)] != claimed:
@@ -105,7 +119,7 @@ class FakeRedis:
         return removed
 
     async def expire(self, key: str, ttl: int) -> None:
-        pass
+        self.expires[key] = ttl
 
     async def publish(self, channel: str, message: str) -> int:
         if self.fail_publish:
@@ -562,3 +576,34 @@ async def test_push_self_sync_excludes_sender_node(monkeypatch: pytest.MonkeyPat
     assert not any(k.startswith(module.OFFLINE_PREFIX) for k in redis.lists)
 
     module._ws_connections.clear()
+
+
+@pytest.mark.asyncio
+async def test_stop_listener_reclaims_retry_task_even_if_transport_stop_fails() -> None:
+    """transport 停止失败不得漏掉周期 drain 任务和单例引用，也不得盖掉原始异常。"""
+    from backend.app.hasn_im.adapters.routing.delivery_bus import WsDeliveryBus
+
+    class _FailingWakeupBus:
+        def start(self, _handler: object) -> None:
+            return None
+
+        async def stop(self) -> None:
+            raise RuntimeError('transport 停止失败')
+
+    async def _idle() -> None:
+        await asyncio.sleep(3600)
+
+    previous_bus = WsDeliveryBus._wakeup_bus
+    previous_task = WsDeliveryBus._retry_task
+    retry_task = asyncio.create_task(_idle())
+    WsDeliveryBus._wakeup_bus = _FailingWakeupBus()  # type: ignore[assignment]
+    WsDeliveryBus._retry_task = retry_task
+    try:
+        await WsDeliveryBus.stop_listener()
+
+        assert WsDeliveryBus._wakeup_bus is None
+        assert WsDeliveryBus._retry_task is None
+        assert retry_task.cancelled() or retry_task.done()
+    finally:
+        WsDeliveryBus._wakeup_bus = previous_bus
+        WsDeliveryBus._retry_task = previous_task

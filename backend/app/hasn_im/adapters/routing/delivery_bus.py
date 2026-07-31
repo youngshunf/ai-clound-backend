@@ -254,15 +254,23 @@ class WsDeliveryBus:
 
     @classmethod
     async def stop_listener(cls) -> None:
-        """停止订阅任务。"""
+        """停止订阅任务。
+
+        transport 停止失败不得让周期 drain 任务和单例引用留在原地：那样既泄漏后台
+        任务，又会在启动失败回滚路径上把原始异常盖掉，所以清理放在 `finally`。
+        """
         wakeup_bus = cls._wakeup_bus
-        if wakeup_bus is not None:
-            await wakeup_bus.stop()
-        cls._wakeup_bus = None
-        if cls._retry_task is not None and not cls._retry_task.done():
-            cls._retry_task.cancel()
-            await asyncio.gather(cls._retry_task, return_exceptions=True)
-        cls._retry_task = None
+        try:
+            if wakeup_bus is not None:
+                await wakeup_bus.stop()
+        except Exception as exc:
+            log.warning(f'[WsDeliveryBus] 唤醒总线停止失败（继续回收本地任务）: {exc!r}')
+        finally:
+            cls._wakeup_bus = None
+            if cls._retry_task is not None and not cls._retry_task.done():
+                cls._retry_task.cancel()
+                await asyncio.gather(cls._retry_task, return_exceptions=True)
+            cls._retry_task = None
 
 
 ws_delivery_bus = WsDeliveryBus()

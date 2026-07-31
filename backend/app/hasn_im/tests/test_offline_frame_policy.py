@@ -11,6 +11,7 @@ from backend.app.hasn_im.adapters.routing.offline_frame_policy import (
     OfflineFrameCategory,
     OfflineFramePolicyError,
     OfflineStorageAction,
+    assert_offline_recovery_mode_supported,
     classify_offline_frame,
     decide_offline_storage,
     require_registered_offline_method,
@@ -173,3 +174,39 @@ def test_unregistered_or_unidentifiable_frame_fails_explicitly(payload: str) -> 
     """未知来源或关键 ID 缺失必须显式报错，禁止静默进入未审计队列。"""
     with pytest.raises(OfflineFramePolicyError):
         classify_offline_frame(payload)
+
+
+def test_sync_mode_gate_runs_at_startup_not_on_request_path() -> None:
+    """`sync` 模式的 durable 缺口必须在启动期暴露，而不是等某个离线用户的请求炸掉。"""
+    assert_offline_recovery_mode_supported('redis')
+    assert_offline_recovery_mode_supported('dual')
+    # 当前矩阵无 gap，sync 可放行
+    assert_offline_recovery_mode_supported('sync')
+
+    with pytest.raises(OfflineFramePolicyError, match='模式非法'):
+        assert_offline_recovery_mode_supported('rabbitmq')
+
+
+def test_sync_mode_gate_rejects_registry_with_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """矩阵一旦出现 gap，`sync` 模式必须启动即失败。"""
+    from types import MappingProxyType
+
+    from backend.app.hasn_im.adapters.routing import offline_frame_policy as module
+
+    gap_policy = module.OfflineFramePolicy(
+        method='hasn.future.command',
+        category=OfflineFrameCategory.GAP,
+        identity_fields=('command_id',),
+        durable_source='尚无',
+        recovery_path='尚无',
+    )
+    monkeypatch.setattr(
+        module,
+        'OFFLINE_FRAME_POLICIES',
+        MappingProxyType({**OFFLINE_FRAME_POLICIES, gap_policy.method: gap_policy}),
+    )
+
+    # dual/redis 仍可运行（Redis 仍在保护用户），只有 sync 被拦
+    module.assert_offline_recovery_mode_supported('dual')
+    with pytest.raises(OfflineFramePolicyError, match='hasn.future.command'):
+        module.assert_offline_recovery_mode_supported('sync')

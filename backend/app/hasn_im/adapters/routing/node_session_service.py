@@ -30,6 +30,7 @@ from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindin
 from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_im.adapters.routing.delivery_bus import ws_delivery_bus
 from backend.app.hasn_im.adapters.routing.offline_frame_policy import (
+    OfflineFramePolicyError,
     OfflineStorageAction,
     decide_offline_storage,
 )
@@ -41,10 +42,12 @@ from backend.app.hasn_im.adapters.routing.redis_presence_store import (
     NODE_ENTITIES_PREFIX,
     NODE_GENERATION_KEY,
     NODE_PRESENCE_TTL_SECS,
+    OFFLINE_MAX_LENGTH,
     OFFLINE_PREFIX,
     OFFLINE_TTL,
     USER_NODES_PREFIX,
     _ACK_OFFLINE_PREFIX_SCRIPT,
+    _ENQUEUE_OFFLINE_SCRIPT,
     _REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
     _UNREGISTER_NODE_IF_CURRENT_SCRIPT,
 )
@@ -552,16 +555,40 @@ class NodeSessionService:
         return False
 
     async def _enqueue_offline(self, hasn_id: str, payload_json: str) -> None:
-        """按 durable 覆盖策略决定是否写入 Redis 离线队列。"""
-        action = decide_offline_storage(
-            payload_json,
-            settings.HASN_OFFLINE_RECOVERY,
-        )
+        """按 durable 覆盖策略决定是否写入 Redis 离线队列。
+
+        本方法位于「业务事实已提交后」的 best-effort 推送路径上：策略异常必须显式记
+        `error` 并跳过入队，绝不能冒泡把已落库的业务写变成 5xx。未登记帧由 CI 静态守卫
+        `test_architecture_guards` 拦截，`sync` 模式的 durable 缺口由启动门禁拦截。
+        """
+        try:
+            action = decide_offline_storage(
+                payload_json,
+                settings.HASN_OFFLINE_RECOVERY,
+            )
+        except OfflineFramePolicyError as exc:
+            # 不变量破坏：帧未登记 durable 覆盖矩阵，或 sync 模式仍有缺口。
+            logger.error('[NodeSession] 离线帧策略拒绝，已跳过入队 entity=%s: %s', hasn_id, exc)
+            return
         if action is OfflineStorageAction.SKIP:
             return
         key = f'{OFFLINE_PREFIX}:{hasn_id}'
-        await redis_client.rpush(key, payload_json)
-        await redis_client.expire(key, OFFLINE_TTL)
+        trimmed = await redis_client.eval(
+            _ENQUEUE_OFFLINE_SCRIPT,
+            1,
+            key,
+            payload_json,
+            OFFLINE_TTL,
+            OFFLINE_MAX_LENGTH,
+        )
+        if trimmed:
+            logger.warning(
+                '[NodeSession] 离线队列超过 %s 条，已丢弃最旧 %s 条 entity=%s；'
+                '对应帧仍可由 PostgreSQL sync/history 恢复',
+                OFFLINE_MAX_LENGTH,
+                trimmed,
+                hasn_id,
+            )
 
     # ─── 离线消息补推 ───
 
@@ -569,8 +596,13 @@ class NodeSessionService:
         self,
         entity_ids: list[str],
     ) -> tuple[list[dict], dict[str, list[str]]]:
-        """redis 模式读取待补推帧；dual/sync 均以 sync/history 为客户端恢复主路径。"""
-        if settings.HASN_OFFLINE_RECOVERY != 'redis':
+        """redis/dual 模式读取待补推帧；只有 sync 完全交给 sync/history 恢复。
+
+        `dual` 必须继续从 Redis 补推：它是切 `sync` 前的观测窗，若此时就停读，
+        daemon 侧 sync 一旦有缺口，用户在观测期内已经丢帧，7 天对账只剩事后统计。
+        同一帧经 WS 与 sync pull 重复到达由客户端按稳定 `message_id/event_id` 去重。
+        """
+        if settings.HASN_OFFLINE_RECOVERY == 'sync':
             return [], {}
         all_msgs: list[dict] = []
         claims: dict[str, list[str]] = {}
@@ -585,8 +617,8 @@ class NodeSessionService:
         return all_msgs, claims
 
     async def ack_offline_messages(self, claims: dict[str, list[str]]) -> None:
-        """redis 模式确认补推前缀；dual 的影子证据保留至 TTL，sync 不读写该键。"""
-        if settings.HASN_OFFLINE_RECOVERY != 'redis':
+        """redis/dual 模式确认补推前缀；sync 不读写该键。"""
+        if settings.HASN_OFFLINE_RECOVERY == 'sync':
             return
         for key, raw_messages in claims.items():
             if not raw_messages:
@@ -602,8 +634,8 @@ class NodeSessionService:
         self,
         entity_ids: list[str],
     ) -> list[dict]:
-        """redis 模式获取并清理离线消息；dual/sync 不向客户端回放 Redis 影子。"""
-        if settings.HASN_OFFLINE_RECOVERY != 'redis':
+        """redis/dual 模式获取并清理离线消息；sync 不向客户端回放 Redis。"""
+        if settings.HASN_OFFLINE_RECOVERY == 'sync':
             return []
         all_msgs: list[dict] = []
 

@@ -20,6 +20,7 @@ from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractRobustConnection,
 )
+from aio_pika.exceptions import PublishError
 from aio_pika.robust_channel import RobustChannel
 
 from backend.app.hasn_im.observability.metrics import (
@@ -50,9 +51,16 @@ REALTIME_QUEUE_PREFIX = 'huanxing.realtime.worker.'
 REALTIME_QUEUE_TRACE_DESTINATION = 'huanxing.realtime.worker'
 REALTIME_QUEUE_EXPIRES_MS = 300_000
 RECONNECT_DELAY_SECS = 2.0
-PUBLISHER_RECOVERY_TIMEOUT_SECS = 30.0
+# publish 位于用户消息发送的热路径上，任何等待都必须有上界：
+# broker 触发 memory/disk alarm 进入 connection.blocked 时，无超时的 publish
+# 会把发送请求一起挂死。唤醒丢失由 Redis pending + 周期 drain 兜底，超时远比挂起安全。
+PUBLISHER_RECOVERY_TIMEOUT_SECS = 3.0
+PUBLISH_TIMEOUT_SECS = 5.0
+CONNECT_TIMEOUT_SECS = 5.0
 EVENT_SCHEMA_VERSION = 1
 _INSTANCE_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_NODE_EVENT_REQUIRED_KEYS = frozenset({'version', 'event_id', 'sent_at_ms', 'kind', 'node_id'})
+_BROADCAST_EVENT_REQUIRED_KEYS = frozenset({'version', 'event_id', 'sent_at_ms', 'kind', 'payload'})
 
 
 class RabbitMQRealtimeSettings(Protocol):
@@ -143,7 +151,12 @@ def _valid_metadata(value: dict[str, Any]) -> bool:
 
 
 def decode_wakeup_event(body: bytes) -> DecodedWakeupEvent | None:
-    """严格校验 RabbitMQ 唤醒 schema，并还原既有 delivery 事件。"""
+    """校验 RabbitMQ 唤醒 schema，并还原既有 delivery 事件。
+
+    只要求必需键齐全，**忽略未识别的新增键**：滚动发布期间新 publisher 补字段时，
+    旧 worker 必须继续消费，否则一次加字段就是一整轮全量丢帧。不兼容变更只能通过
+    提升 `version` 表达（`_valid_metadata` 精确比对版本号）。
+    """
     try:
         value = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
@@ -154,14 +167,14 @@ def decode_wakeup_event(body: bytes) -> DecodedWakeupEvent | None:
     kind = value.get('kind')
     delivery_event: dict[str, Any]
     if kind == 'node':
-        if set(value) != {'version', 'event_id', 'sent_at_ms', 'kind', 'node_id'}:
+        if not _NODE_EVENT_REQUIRED_KEYS <= set(value):
             return None
         node_id = value.get('node_id')
         if not isinstance(node_id, str) or not node_id:
             return None
         delivery_event = {'node_id': node_id}
     elif kind == 'broadcast':
-        if set(value) != {'version', 'event_id', 'sent_at_ms', 'kind', 'payload'}:
+        if not _BROADCAST_EVENT_REQUIRED_KEYS <= set(value):
             return None
         payload = value.get('payload')
         if not isinstance(payload, str):
@@ -286,18 +299,36 @@ class RabbitMQRealtimeWakeupBus:
                     await exchange.publish(
                         message,
                         routing_key='',
+                        timeout=PUBLISH_TIMEOUT_SECS,
                     )
+                except PublishError as exc:
+                    # fanout 上暂时没有任何绑定队列（API worker 全部重启中、或本进程
+                    # 只发不收）。这是预期状态而非连接故障：帧仍在 Redis pending 里，
+                    # 由重连握手与周期 drain 兜底。不得重建连接、不得重试。
+                    HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                        transport='rabbitmq',
+                        result='returned',
+                    ).inc()
+                    HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL.labels(
+                        result='returned',
+                    ).inc()
+                    mark_messaging_span(span, result='returned', error=exc)
+                    log.warning(
+                        '[RabbitMQRealtimeWakeupBus] 唤醒无可路由队列，'
+                        f'等待 pending drain 兜底 {self._endpoint}'
+                    )
+                    return
                 except Exception as exc:
                     if attempt == 0 and exchange is not None:
                         # confirm 失败时交付状态可能不确定；同一 event_id 最多重放一次。
                         # 唤醒不承载业务事实，重复由 pending/generation 语义幂等收敛。
+                        # 这里位于用户发送热路径，重建后立即重放，不做退避等待。
                         span.set_attribute('hasn.messaging.retried', True)
                         log.warning(
                             '[RabbitMQRealtimeWakeupBus] publisher 连接失效，'
                             f'重建后重放一次 {self._endpoint} error={type(exc).__name__}'
                         )
                         await self._reset_publisher_if_current(exchange)
-                        await asyncio.sleep(RECONNECT_DELAY_SECS)
                         continue
                     HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
                         transport='rabbitmq',
@@ -343,10 +374,13 @@ class RabbitMQRealtimeWakeupBus:
                 self._publisher_connection = None
                 await self._close_channel_and_connection(channel, connection)
 
-            connection = await aio_pika.connect_robust(self._dsn, timeout=10)
+            connection = await aio_pika.connect_robust(self._dsn, timeout=CONNECT_TIMEOUT_SECS)
             channel = cast(
                 'RobustChannel',
-                await connection.channel(publisher_confirms=True),
+                # `on_return_raises=True` 让不可路由的 mandatory 消息抛 `PublishError`，
+                # 否则 aiormq 会把被退回的消息当作正常确认返回，指标上「confirmed」
+                # 会把丢弃的唤醒一起算进去。
+                await connection.channel(publisher_confirms=True, on_return_raises=True),
             )
             exchange = await channel.declare_exchange(
                 REALTIME_EXCHANGE,

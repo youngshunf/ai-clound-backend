@@ -34,13 +34,20 @@
 
 - `offline_frame_policy.py` 是离线帧分类、稳定身份和恢复说明的唯一注册表。
 - `NodeSessionRealtimeGateway.push_to_owner` 拒绝未登记的方法。
-- `_enqueue_offline` 在写 Redis 前解析真实 HASN 信封并校验稳定身份。
+- `_enqueue_offline` 在写 Redis 前解析真实 HASN 信封并校验稳定身份。它位于「业务事实
+  已提交后」的 best-effort 推送路径上，策略异常只记 `error` 并跳过入队，不冒泡成 5xx；
+  真正的 fail-closed 由 CI 静态守卫（未登记帧）和启动门禁
+  `assert_offline_recovery_mode_supported`（`sync` 模式的 durable 缺口）承担。
+- 入队走原子 Lua：`RPUSH` + 超出 `OFFLINE_MAX_LENGTH=1000` 时 `LTRIM` 最旧 + `EXPIRE`。
+  先前 `rpush` 后单独 `expire` 的写法对「长期离线且持续收帧」的实体等于永不过期且无长度
+  上限。被裁剪的帧一律是 `durable_sync`，仍可由 PostgreSQL sync/history 恢复，裁剪会告警。
 - `redis` 与 `dual` 对 durable 帧继续写 Redis；所有模式都不保存
   `hasn.typing` 和未被 daemon 消费的 `WorkspaceSwitched`。
-- `dual` 的 Redis LIST 只保留影子证据，客户端恢复只走 sync/history，claim、ACK 和
-  遗留 get 均不读取影子，因此不会双路展示。
-- `sync` 对 durable 帧停写 Redis；若以后新增 gap 帧，策略仍会显式报错，禁止静默丢失。
-- `dual`/`sync` 的 claim、ACK 和遗留 get 三个入口都在构造
+- **`dual` 仍从 Redis 补推**：它是切 `sync` 前的观测窗，若此时就停读，daemon 侧 sync
+  一旦有缺口，用户在观测期内已经丢帧、7 天对账只剩事后统计。同一帧经 WS 与 sync pull
+  重复到达由客户端按稳定 `message_id`/`event_id` 去重（hasn-node
+  `pull_once_replay_is_idempotent_on_duplicate_message_id` 覆盖）。
+- 只有 `sync` 停写并停读 Redis；claim、ACK 和遗留 get 三个入口在 `sync` 模式下于构造
   `hasn:offline:*` key 前返回。
 - AST 静态守卫枚举生产 `RealtimeFrame` 方法；新增字面量方法未登记时 CI 失败。唯一动态
   方法来自任务 outbox，并被固定 `_METHOD='hasn.task.exec'` 校验。
@@ -48,6 +55,12 @@
   中的 `hasn_sync_events` 对账；`sync-only` 只统计最近七天，当前 Redis 候选则额外精确
   查询仍保留的历史 sync 事实，避免 LIST 整键 TTL 被新追加刷新后把旧帧误报为不可恢复。
   指标只使用 `result` 低基数标签。
+- 走权威快照（而非 sync event）恢复的联系人帧必须**真实核验**：`request_received`/
+  `connected` 查 `hasn_contact_requests` 仍有该行，`removed` 查 `hasn_contacts` 确已无该
+  关系；核验不过计入 `snapshot_unverified` 并汇入 `redis_only_unrecoverable`。否则
+  「映射不到 sync 类型就算快照兜底」会让 `redis_only_unrecoverable=0` 这条门槛对联系人
+  类帧恒真、形同虚设。
+- 存量 `transient` 影子帧单列计数，不再和「真的解析不了」混进同一个 `malformed`。
 
 ## 4. 进入 `sync` 前仍须完成的生产门槛
 

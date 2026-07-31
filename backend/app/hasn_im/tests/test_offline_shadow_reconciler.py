@@ -36,7 +36,9 @@ def test_shadow_identity_comparison_distinguishes_three_sets() -> None:
     report = compare_shadow_identities(
         redis_identities={shared, redis_only},
         sync_identities={shared, sync_only},
-        snapshot_backed=2,
+        snapshot_verified=2,
+        snapshot_unverified=0,
+        transient=3,
         malformed=1,
     )
 
@@ -45,9 +47,27 @@ def test_shadow_identity_comparison_distinguishes_three_sets() -> None:
     assert report.both == 1
     assert report.redis_only == 1
     assert report.sync_only == 1
+    assert report.snapshot_verified == 2
+    assert report.snapshot_unverified == 0
     assert report.snapshot_backed == 2
+    assert report.transient == 3
     assert report.malformed == 1
     assert report.redis_only_unrecoverable == 1
+
+
+def test_unverified_snapshot_counts_as_unrecoverable() -> None:
+    """核验不过的「快照可恢复」必须计入不可恢复，否则切换门槛恒真。"""
+    report = compare_shadow_identities(
+        redis_identities=set(),
+        sync_identities=set(),
+        snapshot_verified=5,
+        snapshot_unverified=2,
+        transient=0,
+        malformed=0,
+    )
+
+    assert report.snapshot_backed == 7
+    assert report.redis_only_unrecoverable == 2
 
 
 def test_historical_sync_only_repairs_current_redis_candidate() -> None:

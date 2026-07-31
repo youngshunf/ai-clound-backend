@@ -1,8 +1,9 @@
 # Redis 8 与 RabbitMQ 消息基础设施方案 B 实施文档
 
-> 状态：实施中（B0–B5；B3 生产切换被共享 Redis 归属门禁阻断）
+> 状态：B0–B7 代码实现均已合入 `huanxing`；生产切换只完成 Celery（B2-02）。
+> B3-02 生产切换被共享 Redis 归属门禁阻断；B4/B5/B6 仍在生产默认值（Redis）上运行。
 >
-> 日期：2026-07-29
+> 日期：2026-07-29（2026-07-31 缺陷评审后修订）
 >
 > 架构事实源：[`Redis 8 与 RabbitMQ 消息基础设施迁移方案`](Redis8与RabbitMQ消息基础设施迁移方案.md)
 >
@@ -77,10 +78,22 @@
 | `HASN_REALTIME_BUS` | `redis` / `rabbitmq`，默认 `redis` | 当前实际驱动 |
 | `HASN_REALTIME_SHADOW_RABBITMQ` | `false` / `true`，默认 `false` | 双发、消费、计数，但不触发 WS 下发 |
 | `HASN_OFFLINE_RECOVERY` | `redis` / `dual` / `sync`，默认 `redis` | 离线恢复切换 |
+| `REDIS_PROTOCOL` | `2` / `3`，默认 `2` | B3 新增，显式固定 RESP，避免跟随客户端默认值漂移 |
+| `REDIS_LIST_MOVE_MODE` | `lua` / `lmove`，默认 `lua` | B3 新增，Redis 6 兼容 Lua 与 Redis 8 原生 `LMOVE` 的显式切换 |
 
 `HASN_REALTIME_SHADOW_RABBITMQ=true` 只允许 Rabbit consumer 做格式校验、延迟和覆盖率计数，禁止调用 `_deliver_local`。这样可以避免“双通道同时驱动下发”的歧义。
 
-启动日志只记录 manager/bus 模式、host、port 和 vhost，不得记录用户名、密码或完整 DSN。
+shadow 的“不影响用户”必须同时覆盖三个维度，只对齐下发次数是不够的：
+
+- **次数**：consumer 只计量，不触发 WS send 或 pending drain；
+- **延迟**：RabbitMQ 双发在后台任务中完成，active Redis 发布返回即结束用户请求；
+  在途双发有上限（`SHADOW_MAX_INFLIGHT_PUBLISHES`），超限直接丢弃并计量；
+- **可用性**：shadow 队列就绪失败只告警降级为纯 Redis，不阻塞 API 启动。
+  `HASN_REALTIME_BUS=rabbitmq`（active）时队列就绪仍是启动硬门禁。
+
+启动日志记录 celery broker、socketio manager、realtime bus、shadow 开关、offline 恢复模式
+和 RabbitMQ 端点（`registrar.py` 的「消息通道：…」行）；不得记录用户名、密码或完整 DSN，
+涉及 RabbitMQ 的日志一律只输出 `describe_rabbitmq_endpoint` 给出的 `host/port/vhost` 描述。
 
 ### 3.3 RabbitMQ topology
 
@@ -88,7 +101,11 @@
 |---|---|---|---|
 | Celery | `huanxing.celery` / direct | `huanxing.celery.default` | durable classic |
 | Socket.IO | `huanxing.socketio` / fanout | manager 自动生成的临时队列 | non-durable、auto-delete |
-| HASN realtime | `huanxing.realtime` / fanout | `huanxing.realtime.worker.<instance_id>` | exclusive、auto-delete、空闲 5 分钟过期 |
+| HASN realtime | `huanxing.realtime` / fanout | `huanxing.realtime.worker.<instance_id>` | exclusive、auto-delete |
+
+`instance_id` 默认取进程内随机 UUID（`RabbitMQRealtimeWakeupBus` 惰性构造），
+不是跨重启稳定的编号：队列声明为 `exclusive` + `auto_delete`，随连接消亡即回收，
+不需要稳定命名来复用。`x-expires` 只是异常路径的兜底，exclusive 队列正常不会走到它。
 
 约束：
 
@@ -107,28 +124,35 @@
 
 ### 3.4 HASN realtime 事件信封
 
+事实源是 `rabbitmq_realtime_wakeup_bus.py` 的 `encode_node_wakeup` /
+`encode_broadcast_wakeup` / `decode_wakeup_event`。定向与广播两种形状：
+
 ```json
-{
-  "schema_version": 1,
-  "event_id": "rt_...",
-  "kind": "node_wakeup",
-  "node_id": "n_...",
-  "broadcast": false,
-  "revision": null,
-  "occurred_at": "2026-07-29T20:00:00+08:00",
-  "traceparent": "00-..."
-}
+{ "version": 1, "event_id": "…", "sent_at_ms": 1777500000000, "kind": "node", "node_id": "n_…" }
+{ "version": 1, "event_id": "…", "sent_at_ms": 1777500000000, "kind": "broadcast", "payload": "{…}" }
 ```
+
+`traceparent` 走 AMQP message headers（`inject_rabbitmq_trace_headers`），不进 body。
 
 要求：
 
 - `event_id` 全局唯一，用于双通道 shadow 对账和指标去重。
 - 定向事件不携带消息正文；正文已在 Redis pending 列表或 PostgreSQL 权威投影中。
-- 广播仅允许携带可由 revision 对账恢复的小型失效通知。
-- 未识别的 `schema_version/kind` 必须告警并 ACK，禁止无限 requeue。
+- 广播仅允许携带可由 revision 对账恢复的小型失效通知（当前只有 `hasn.sync.invalidate`）。
+- 未识别的 `version`/`kind` 必须告警并 ACK，禁止无限 requeue。
+- **解码只校验必需键，忽略未识别的新增键**：滚动发布期间新 publisher 补字段时旧 worker
+  必须继续消费，否则一次加字段就是一整轮全量丢帧。不兼容变更只能通过提升 `version` 表达。
 - 消费失败是否 requeue 按错误类型固定：连接级瞬时错误由 robust connection 恢复；畸形消息 ACK 丢弃；业务下发失败 ACK 并等待 Redis pending 周期 drain 或 sync pull 恢复。
+- publish 位于用户消息发送热路径，必须有上界：`PUBLISH_TIMEOUT_SECS` 限制 confirm 等待，
+  `PUBLISHER_RECOVERY_TIMEOUT_SECS` 限制 robust channel 恢复等待，重建后立即重放且不做
+  退避 sleep。broker 进入 `connection.blocked`（memory/disk alarm）时宁可超时也不能挂住请求。
+- fanout 上暂无绑定队列是**预期状态**（API worker 全部重启中，或发布方本身不消费）：
+  channel 使用 `on_return_raises=True`，`PublishError` 计入 `result="returned"` 并直接返回，
+  不重建连接、不重试。若按「confirmed」统计，被退回的唤醒会混进确认数，指标即失真。
 
 ## 4. 依赖关系与施工顺序
+
+阶段编号以下图与 §5 为准（两处使用同一套 B0–B7 编号）：
 
 ```mermaid
 flowchart TD
@@ -136,14 +160,10 @@ flowchart TD
     B1[B1 RabbitMQ 基础设施]
     B2[B2 Celery 切换]
     B3[B3 Redis 8.8 升级]
-    B4[B4 Socket.IO 切换]
-    B5[B5 Realtime bus 抽象]
-    B6[B6 Rabbit realtime + shadow]
-    B7[B7 Realtime 生产切换]
-    B8[B8 离线帧覆盖矩阵]
-    B9[B9 daemon sync/ACK 收口]
-    B10[B10 Redis offline 退役]
-    B11[B11 可观测与生产收口]
+    B4[B4 传统 Socket.IO 切换]
+    B5[B5 Realtime bus 抽象 + shadow + 生产切换]
+    B6[B6 离线恢复收口：覆盖矩阵 / daemon sync / dual / sync]
+    B7[B7 可观测、安全与生产收口]
 
     B0 --> B1
     B1 --> B2
@@ -151,26 +171,27 @@ flowchart TD
     B1 --> B4
     B3 --> B5
     B5 --> B6
+    B2 --> B7
+    B4 --> B7
+    B5 --> B7
     B6 --> B7
-    B7 --> B8
-    B8 --> B9
-    B9 --> B10
-    B2 --> B11
-    B4 --> B11
-    B7 --> B11
-    B10 --> B11
 ```
 
 复杂阶段必须使用确定性 worktree 分支。开始施工时把“任务号、分支名、worktree 路径、目标仓”登记在本文进度表；禁止提前创建全部分支。
 
-| 任务段 | 后端建议分支 | hasn-node 建议分支 |
-|---|---|---|
-| B0–B2 | `fix/rabbitmq-b-celery` | 不涉及 |
-| B3 | `fix/rabbitmq-b-redis8` | 不涉及 |
-| B4 | `fix/rabbitmq-b-socketio` | 不涉及 |
-| B5–B7 | `fix/rabbitmq-b-realtime` | 不涉及 |
-| B8–B10 | `fix/rabbitmq-b-offline-sync` | `fix/rabbitmq-b-offline-sync` |
-| B11 | `fix/rabbitmq-b-observability` | 按需 |
+原计划按阶段拆五条分支；实际施工把 B0–B7 的后端改动全部落在
+`fix/rabbitmq-b-celery` 一条分支上（见 §7），只有 B6-02 的 daemon 改动走
+`hasn-node` 独立分支。此处保留计划仅作参考，**以 §7 登记的实际分支为准**。
+
+| 任务段 | 后端计划分支 | 实际分支 | hasn-node |
+|---|---|---|---|
+| B0–B2 | `fix/rabbitmq-b-celery` | `fix/rabbitmq-b-celery` | 不涉及 |
+| B3 | `fix/rabbitmq-b-redis8` | `fix/rabbitmq-b-celery` | 不涉及 |
+| B4 | `fix/rabbitmq-b-socketio` | `fix/rabbitmq-b-celery` | 不涉及 |
+| B5 | `fix/rabbitmq-b-realtime` | `fix/rabbitmq-b-celery` | 不涉及 |
+| B6 | `fix/rabbitmq-b-offline-sync` | `fix/rabbitmq-b-celery` | `fix/doc03-message-history-bootstrap` |
+| B7 | `fix/rabbitmq-b-observability` | `fix/rabbitmq-b-celery` | 不涉及 |
+| 缺陷收口 | — | `fix/rabbitmq-b-defect-fix` | 不涉及 |
 
 ## 5. 分阶段任务
 
@@ -249,11 +270,13 @@ flowchart TD
 
 **依赖：** B0-02。
 
-**预计文件：**
+**实际文件：**
 
-- `deploy/rabbitmq/rabbitmq.conf`（新建）
-- `deploy/rabbitmq/definitions.json`（新建，不含密码）
-- `deploy/rabbitmq/README.md`（新建）
+- `deploy/rabbitmq/rabbitmq.conf`
+- `deploy/rabbitmq/definitions.json`（`"users": []`，不含密码）
+- `deploy/rabbitmq/docker-compose.yml`、`bootstrap.sh`、`enabled_plugins`
+- `deploy/rabbitmq/huanxing-rabbitmq-prometheus-proxy.{service,socket}`（私网采集）
+- `deploy/rabbitmq/README.md`
 - 父仓 `docs/生产部署/` 下生产 runbook
 
 **预计规模：** M，2–4 人日。
@@ -325,9 +348,14 @@ flowchart TD
 
 ### 检查点二：Celery 已解耦
 
-- [ ] Celery 在 RabbitMQ 上稳定运行至少 24 小时。
-- [ ] 无持续增长的 ready/unacked 队列。
-- [ ] Redis DB 1 不再承担 Celery broker 写入。
+2026-07-31 在生产实测复核（切换窗口为 2026-07-30 03:56 CST，已超 24 小时）：
+
+- [x] Celery 在 RabbitMQ 上稳定运行至少 24 小时。`rabbitmqctl status` 显示
+      `Uptime (seconds): 155762`（≈43.3 小时），RabbitMQ 4.3.4，`check_local_alarms` 无告警。
+- [x] 无持续增长的 ready/unacked 队列。`huanxing.celery.default = 0 / 0 / consumers 1`；
+      另有 2 个 `celeryev.*` 与 1 个 pidbox 临时队列，均为 0。
+- [x] Redis DB 1 不再承担 Celery broker 写入。`dbsize=4`，`*celery*` 与 `_kombu*` 均为 0 个 key，
+      `huanxing.celery.rollback` 与同机通用 `celery` 队列长度均为 0。
 - [x] RabbitMQ 故障回滚流程已实操，不只是文档推演。
 
 ### 阶段 B3：Redis 8.8 升级
@@ -459,9 +487,12 @@ flowchart TD
 
 **验收条件：**
 
-- [x] 每个 API worker 使用稳定 instance ID 创建独立临时 queue。
+- [x] 每个 API worker 使用独立临时 queue（`exclusive` + `auto_delete`，队列名由进程内
+      随机 instance ID 派生；不需要跨重启稳定，队列随连接回收）。
 - [x] 定向 wake-up 到达所有 worker，但只有持有目标连接且 generation 匹配的 worker drain。
 - [x] 畸形事件告警并 ACK；业务 send 失败不 requeue 风暴。
+- [x] 未识别的新增键被忽略而非整帧丢弃，滚动发布向前兼容。
+- [x] publish 有超时上界；不可路由的退回单列 `returned`，不计入 confirmed、不触发重连。
 - [x] stop 时 consumer、channel、connection 有序关闭。
 
 **验证：**
@@ -579,14 +610,24 @@ flowchart TD
 
 #### 任务 B6-03：实现 offline dual 模式与对账
 
-**描述：** `HASN_OFFLINE_RECOVERY=dual` 时继续写 Redis offline LIST，同时以 PostgreSQL sync/history 为恢复主路径；对两条路径的稳定消息 ID 做 shadow 对账。
+**描述：** `HASN_OFFLINE_RECOVERY=dual` 时 Redis offline LIST **继续读写**，同时让
+PostgreSQL sync/history 承担同一批帧的恢复，对两条路径的稳定消息 ID 做 shadow 对账。
+
+dual 是切 `sync` 前的**观测窗，不是提前切换**：若 dual 就停掉 Redis 读路径，daemon 侧
+sync 一旦有缺口，用户在观测期内已经丢帧，7 天对账只剩事后统计，起不到「先观测后切换」
+的作用。同一帧经 WS 与 sync pull 重复到达由客户端按稳定 `message_id`/`event_id` 去重。
 
 **验收条件：**
 
-- [ ] dual 不向客户端重复展示消息。
+- [ ] dual 不向客户端重复展示消息（依赖客户端稳定 ID 去重，daemon 侧已有
+      `pull_once_replay_is_idempotent_on_duplicate_message_id` 覆盖）。
 - [ ] 对账区分“Redis 独有”“sync 独有”“两边都有”，但指标不使用用户 ID 标签。
+- [ ] 走权威快照恢复的联系人帧必须真实查证（`snapshot_verified`），查不到的计入
+      `snapshot_unverified` 并汇入 `redis_only_unrecoverable`，不得默认算作可恢复。
 - [ ] RabbitMQ、Redis 或 API worker 任一重启后，PostgreSQL 路径仍能追平。
-- [ ] 对账数据保存 7 天，能证明 Redis 没有不可替代的独有消息。
+- [ ] 连续 7 天的对账报告（每 5 分钟一轮采样）能证明 Redis 没有不可替代的独有消息。
+      注意 Redis 影子在 dual 下会被正常补推消费，报告反映的是**当时仍在积压的**候选集合，
+      不是「Redis 里静态保存 7 天的证据」。
 
 **验证：**
 
@@ -611,9 +652,11 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] `sync` 模式不会读写 `hasn:offline:*`。
+- [ ] `sync` 模式不会读写 `hasn:offline:*`，且启动门禁
+      `assert_offline_recovery_mode_supported` 在矩阵仍有 `gap` 帧时拒绝进程启动。
 - [ ] 支持中的所有客户端均具备 durable sync cursor 和历史快照恢复。
 - [ ] Redis offline key 数只降不升，且 PostgreSQL/sync 可恢复全部关键消息。
+      （入队本身已有 `OFFLINE_MAX_LENGTH` 上限与原子续期，单键长度不会无界增长。）
 - [ ] 清理旧 key 前保留切回 `dual` 的代码开关。
 
 **验证：**
@@ -758,13 +801,31 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B5-02 | 实现已合入，生产四 consumer 与原位重连、隔离 broker 真实重启恢复已通过；真实 Redis pending 完整组合拓扑待验 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`8696e9b6` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-03 | 实现已合入，10 万条真实 shadow 对账通过；生产 24h 观察待 B3 门禁解除 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`559a6bca` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-01 | 已完成并合入；生产真实 PostgreSQL 事务回滚、提交后 relay 与 Redis 恢复 E2E 已通过，零测试残留 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735`、`f1067daa` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B6-02 | daemon 常驻补拉、历史快照、SQLite 命令收件箱与幂等提交已合入 hasn-node `main`；真实云端 E2E 待部署 | `fix/doc03-message-history-bootstrap` | `hasn-node/.worktrees/doc03-message-history-bootstrap` | `c972720ac`–`ac637fbe2` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B6-02 | daemon 常驻补拉、历史快照、SQLite 命令收件箱与幂等提交已合入 hasn-node `main`；本机实测 `cargo test -p hasn-node --lib sync_pull` 57 passed、`cargo test -p hasn-daemon --test cross_device_msg_sync` 3 passed；真实云端双设备 E2E 待部署 | `fix/doc03-message-history-bootstrap` | `hasn-node/.worktrees/doc03-message-history-bootstrap` | `c972720ac`–`ac637fbe2` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-03 | offline dual、低基数对账和定时任务实现已合入；生产 7 天 shadow 待 B2/B3 门禁通过后启动 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-04 | `sync` 停写/停读 Redis offline 的实现门禁已具备；正式切换等待生产 7 天 shadow 与客户端 E2E | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0eeed735` | `docs/方案B离线帧Durable覆盖矩阵.md`、`docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B7-01 | 代码、指标、私网采集、dashboard 和 10 条规则已生产就绪；真实 trace、接收器路由与 alarm 演练待完成 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `05551659`、`c641db26a`、`935600d1f` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B7-02 | Runbook 已合入，生产可观测配置已留证；跨阶段最终演练和全部切换收口待前置门槛 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `05551659`、`935600d1f` | `docs/方案B生产部署与回滚Runbook.md`、父仓生产部署记录 |
+| BD-01 | 缺陷评审收口：离线队列上限与原子续期、dual 恢复读路径回归、shadow 移出热路径、发布超时与 `returned` 计量、解码向前兼容、`sync` 启动门禁、遗留撤回双写删除、对账口径纠偏 | `fix/rabbitmq-b-defect-fix` | `.worktrees/rabbitmq-b-defect-fix` | 见本节下方“缺陷收口清单” | 本文 §8 |
 
-## 8. 最终完成定义
+## 8. 缺陷收口清单（2026-07-31）
+
+评审在已施工的 B0–B7 上发现并修复以下问题。每项都有对应测试。
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P1 | `dual` 模式下 `hasn:offline:*` 只写不读，且每次写入刷新 7 天 TTL → 长期离线实体无界增长 | 入队改原子 Lua（`RPUSH` + 超 `OFFLINE_MAX_LENGTH=1000` 时 `LTRIM` + `EXPIRE`），裁剪告警 |
+| P1 | `dual` 一进入就把恢复读路径切到 sync，观测期内用户已在丢帧，7 天对账只剩事后统计 | `claim`/`ack`/`get_offline_messages` 改为只在 `sync` 短路，`dual` 继续从 Redis 补推 |
+| P1 | shadow 双发内联在用户发送热路径：`channel.ready()` 30s + 失败 2s sleep + `publish` 无超时，broker `connection.blocked` 时请求跟着挂；`wait_shadow_ready` 还让 RabbitMQ 成为启动硬依赖 | 双发移入有上限的后台任务；`PUBLISH_TIMEOUT_SECS`/`PUBLISHER_RECOVERY_TIMEOUT_SECS` 收紧到 5s/3s；去掉热路径 sleep；shadow 就绪失败降级告警 |
+| P2 | `message_service.recall_message` 仍推遗留 `{"cmd":"MESSAGE_RECALLED"}`（无 `method`），接收方离线时 `_enqueue_offline` 抛错，且发生在 `db.commit()` 之后 | 删除该遗留双写与随之失效的 `_push_message_to`；`_enqueue_offline` 捕获策略异常记 `error` 后跳过 |
+| P2 | `mandatory=True` + `on_return_raises=False`：fanout 无绑定队列时退回消息被算成 confirmed，指标失真 | channel 改 `on_return_raises=True`，`PublishError` 计 `result="returned"` 并直接返回 |
+| P3 | `decode_wakeup_event` 用精确键集合比对，加字段=旧 worker 全量丢帧 | 改为必需键齐全 + 忽略未知键，不兼容只由 `version` 表达 |
+| P3 | 对账把 `transient` 帧计进 `malformed` | 单列 `transient` 计数 |
+| P3 | `snapshot_backed` 是无条件假设，`redis_only_unrecoverable=0` 对联系人帧恒真 | 新增 `verify_snapshot_candidates` 查 `hasn_contact_requests`/`hasn_contacts` 真核验，未核验计入不可恢复 |
+| P3 | `WsDeliveryBus.stop_listener` 在 transport 停止失败时漏掉周期任务回收并盖掉原始异常；`ShadowRealtimeWakeupBus.stop` 的 `gather` 缺 `return_exceptions` | 清理移入 `finally`；`gather(..., return_exceptions=True)` |
+| 文档 | 头部状态、§4 双套阶段编号、分支表与实际不符、§3.4 信封与实现完全不同、§3.2 缺 B3 新增配置、启动日志契约无实现、`exclusive`+`x-expires` 并列误导、B5-02“稳定 instance ID”与实现相反、B1-01 预计文件未回填 | 本次一并订正 |
+
+## 9. 最终完成定义
 
 只有同时满足以下条件，方案 B 才能标记完成：
 

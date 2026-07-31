@@ -129,6 +129,29 @@ def test_invalid_event_is_rejected(body: bytes) -> None:
     assert decode_wakeup_event(body) is None
 
 
+@pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        (
+            b'{"version":1,"event_id":"x","sent_at_ms":1,"kind":"node",'
+            b'"node_id":"n_1","occurred_at":"2026-07-31T00:00:00+08:00"}',
+            {'node_id': 'n_1'},
+        ),
+        (
+            b'{"version":1,"event_id":"x","sent_at_ms":1,"kind":"broadcast",'
+            b'"payload":"{}","revision":"r-9"}',
+            {'broadcast': True, 'payload': '{}'},
+        ),
+    ],
+)
+def test_unknown_keys_are_ignored_for_rolling_deploy(body: bytes, expected: dict[str, object]) -> None:
+    """新 publisher 补字段时旧 worker 必须继续消费，否则加字段=全量丢帧。"""
+    event = decode_wakeup_event(body)
+
+    assert event is not None
+    assert event.delivery_event == expected
+
+
 def test_worker_queue_name_is_stable_and_permission_scoped() -> None:
     """同一 worker 实例重连时复用固定临时队列名。"""
     bus = RabbitMQRealtimeWakeupBus(
@@ -427,3 +450,137 @@ async def test_real_shadow_reconciles_one_hundred_thousand_event_ids() -> None:
         assert consumed_event_ids == published_event_ids
     finally:
         await shadow.stop()
+
+
+class _SlowShadowPublisher:
+    """模拟 RabbitMQ 侧阻塞（broker 被 alarm 卡住）的 shadow publisher。"""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = 0
+
+    async def publish_node_wakeup_event(self, _node_id: str, *, event_id: str) -> str:
+        self.started.set()
+        await self.release.wait()
+        self.finished += 1
+        return event_id
+
+    async def publish_broadcast_event(self, _payload_json: str, *, event_id: str) -> str:
+        self.started.set()
+        await self.release.wait()
+        self.finished += 1
+        return event_id
+
+    def start(self, _handler: object) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def wait_ready(self, timeout: float = 10.0) -> None:
+        raise TimeoutError('shadow 队列不可用')
+
+
+class _RecordingActiveBus:
+    """记录 active Redis 侧调用的替身。"""
+
+    def __init__(self) -> None:
+        self.node_wakeups: list[str] = []
+        self.broadcasts: list[str] = []
+        self.stopped = False
+
+    async def publish_node_wakeup(self, node_id: str) -> None:
+        self.node_wakeups.append(node_id)
+
+    async def publish_broadcast(self, payload_json: str) -> None:
+        self.broadcasts.append(payload_json)
+
+    def start(self, _handler: object) -> None:
+        return None
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def wait_ready(self, timeout: float = 10.0) -> None:
+        return None
+
+
+def _shadow_with_doubles(
+    active: _RecordingActiveBus,
+    shadow_publisher: _SlowShadowPublisher,
+) -> ShadowRealtimeWakeupBus:
+    bus = ShadowRealtimeWakeupBus.__new__(ShadowRealtimeWakeupBus)
+    bus._active = active  # type: ignore[assignment]
+    bus._shadow = shadow_publisher  # type: ignore[assignment]
+    bus._inflight = set()
+    return bus
+
+
+@pytest.mark.asyncio
+async def test_shadow_double_publish_never_blocks_user_send_path() -> None:
+    """shadow 只做观测：RabbitMQ 侧阻塞不得计入用户可见发送延迟。"""
+    active = _RecordingActiveBus()
+    shadow_publisher = _SlowShadowPublisher()
+    bus = _shadow_with_doubles(active, shadow_publisher)
+
+    # RabbitMQ 侧永久挂起，publish 仍须立即返回
+    event_id = await asyncio.wait_for(bus.publish_node_wakeup_event('n_1'), timeout=1)
+
+    assert event_id
+    assert active.node_wakeups == ['n_1']
+    await asyncio.wait_for(shadow_publisher.started.wait(), timeout=1)
+    assert shadow_publisher.finished == 0
+
+    shadow_publisher.release.set()
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_shadow_inflight_publishes_are_bounded() -> None:
+    """shadow 在途双发必须有上限，不能反过来堆积任务拖垮 active。"""
+    from backend.app.hasn_im.adapters.routing.realtime_wakeup_factory import (
+        SHADOW_MAX_INFLIGHT_PUBLISHES,
+    )
+
+    active = _RecordingActiveBus()
+    shadow_publisher = _SlowShadowPublisher()
+    bus = _shadow_with_doubles(active, shadow_publisher)
+
+    for _ in range(SHADOW_MAX_INFLIGHT_PUBLISHES + 10):
+        await bus.publish_node_wakeup_event('n_1')
+
+    assert len(bus._inflight) <= SHADOW_MAX_INFLIGHT_PUBLISHES
+    assert len(active.node_wakeups) == SHADOW_MAX_INFLIGHT_PUBLISHES + 10
+
+    shadow_publisher.release.set()
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_shadow_readiness_failure_does_not_block_startup() -> None:
+    """打开观测不得把 RabbitMQ 变成 API 的启动硬依赖。"""
+    active = _RecordingActiveBus()
+    shadow_publisher = _SlowShadowPublisher()
+    bus = _shadow_with_doubles(active, shadow_publisher)
+
+    await bus.wait_shadow_ready(timeout=0.05)
+
+    shadow_publisher.release.set()
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_shadow_stop_never_skips_the_other_transport() -> None:
+    """一侧停止失败不得漏停另一侧。"""
+
+    class _FailingShadow(_SlowShadowPublisher):
+        async def stop(self) -> None:
+            raise RuntimeError('shadow 停止失败')
+
+    active = _RecordingActiveBus()
+    bus = _shadow_with_doubles(active, _FailingShadow())
+
+    await bus.stop()
+
+    assert active.stopped is True

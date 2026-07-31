@@ -81,6 +81,33 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     # 启动缓存 Pub/Sub 监听器
     cache_pubsub_manager.start_listener()
 
+    # 离线恢复模式门禁：`sync` 模式若还留着 durable 缺口，必须在启动期失败，
+    # 不能等到某个离线用户的推送路径上才炸。
+    from backend.app.hasn_im.adapters.routing.offline_frame_policy import (
+        assert_offline_recovery_mode_supported,
+    )
+
+    assert_offline_recovery_mode_supported(settings.HASN_OFFLINE_RECOVERY)
+
+    # 消息基础设施选型必须在启动日志里可读（排障时要能一眼确认本进程跑在哪条通道上）。
+    # 只输出模式与端点描述，绝不输出用户名、密码或完整 DSN。
+    from backend.common.messaging.rabbitmq import describe_rabbitmq_endpoint
+
+    log.info(
+        '消息通道：celery_broker=%s socketio_manager=%s realtime_bus=%s '
+        'realtime_shadow=%s offline_recovery=%s rabbitmq[%s]',
+        settings.CELERY_BROKER,
+        settings.SOCKETIO_MANAGER,
+        settings.HASN_REALTIME_BUS,
+        settings.HASN_REALTIME_SHADOW_RABBITMQ,
+        settings.HASN_OFFLINE_RECOVERY,
+        describe_rabbitmq_endpoint(
+            host=settings.REALTIME_RABBITMQ_HOST,
+            port=settings.REALTIME_RABBITMQ_PORT,
+            vhost=settings.REALTIME_RABBITMQ_VHOST,
+        ),
+    )
+
     # 启动 WS 跨 worker 投递总线（每个 worker 进程一份）：多 worker 部署下，消息/同步
     # 帧要投给连接落在别的 worker 的 node 时经此 Redis pub/sub fan-out 下发。
     from backend.app.hasn_im.adapters.routing.delivery_bus import ws_delivery_bus
