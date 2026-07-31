@@ -401,6 +401,31 @@ class StorageService:
         access, _ = _category_policy('speech_model')
         return _pick_storage(await cls._storages(db), access)
 
+    @classmethod
+    async def get_public_package_storage(cls, db: AsyncSession, *, category: str) -> S3Storage:
+        """返回该上传类别对应的存储**脱离会话副本**，供大包流式上传前释放事务。
+
+        引擎包、模型包这类制品动辄数百 MB，上传耗时以分钟计；必须先拿到脱离 ORM 会话的配置
+        快照再 `rollback`，否则长事务会占住连接池。
+        """
+        access, _ = _category_policy(category)
+        storage = _pick_storage(await cls._storages(db), access)
+        detached = S3Storage(
+            name=storage.name,
+            endpoint=storage.endpoint,
+            access_key=storage.access_key,
+            secret_key=storage.secret_key,
+            bucket=storage.bucket,
+            access=storage.access,
+            sign_strategy=storage.sign_strategy,
+            prefix=storage.prefix,
+            region=storage.region,
+            cdn_domain=storage.cdn_domain,
+            remark=storage.remark,
+        )
+        detached.id = storage.id
+        return detached
+
     @staticmethod
     async def upload_immutable_speech_package_to_storage(
         storage: S3Storage,
