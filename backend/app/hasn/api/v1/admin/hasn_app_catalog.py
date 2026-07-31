@@ -235,6 +235,58 @@ async def publish_signed_engine_manifest(
     return response_base.success(data=engine)
 
 
+@router.post(
+    '/{pk}/model-package-stage',
+    summary='上传 schema v1 待签模型包，不切换在线目录',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_stage_signed_model_package',
+)
+async def stage_signed_model_package(
+    # 模型包上传耗时以分钟计，服务内部会在远程 I/O 前显式释放事务，故不用事务型会话依赖。
+    db: CurrentSession,
+    pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
+    file: Annotated[UploadFile, File(description='模型 zip（内含单个 .onnx）')],
+    runtime_name: Annotated[str, Form(description='引擎识别的稳定运行时模型名，如 birefnet-general')],
+    version: Annotated[str, Form(description='模型发布版本')],
+) -> ResponseSchemaModel[dict]:
+    package = await app_catalog_service.stage_signed_model_package(
+        db,
+        pk=pk,
+        runtime_name=runtime_name,
+        version=version,
+        upload=file,
+    )
+    return response_base.success(data=package)
+
+
+@router.post(
+    '/{pk}/model-catalog',
+    summary='发布 schema v1 Ed25519 签名模型目录并原子切换在线配置',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_publish_signed_model_catalog',
+)
+async def publish_signed_model_catalog(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
+    catalog: Annotated[UploadFile, File(description='schema v1 签名模型目录 json')],
+) -> ResponseSchemaModel[dict]:
+    raw = await catalog.read()
+    if len(raw) > 8 * 1024 * 1024:
+        raise errors.RequestError(msg='图坊模型目录超过 8 MiB 上限')
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise errors.RequestError(msg='图坊模型目录不是合法 UTF-8 JSON') from exc
+    models = await app_catalog_service.publish_signed_model_catalog(db, pk=pk, document=document)
+    return response_base.success(data=models)
+
+
 @router.delete(
     '',
     summary='批量删除AI-Native 应用目录（云端权威）',
