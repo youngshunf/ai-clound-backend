@@ -20,8 +20,6 @@ from backend.plugin.s3.model import S3Storage
 IMMUTABLE_SPEECH_PACKAGE_PREFIX = 'speech/sha256/'
 # 制品包分片大小；与语音包上传保持一致。
 PUBLIC_PACKAGE_PART_BYTES = 4 * 1024 * 1024
-# 七牛 insertOnly 命中同名对象时的响应码，用于把重复上传判为幂等成功。
-_QINIU_FILE_EXISTS_STATUS = 614
 
 
 def _package_upload_timeout(size: int) -> float:
@@ -630,14 +628,16 @@ async def write_public_package_stream(
     size: int,
     content_type: str,
 ) -> None:
-    """分片上传 GB 级制品包（引擎包 / 模型包），重复上传同一内容为幂等成功。
+    """分片上传 GB 级制品包（引擎包 / 模型包）。
 
     不能走 :func:`write_stream`：那条路径是单次预签名 PUT，``upload_timeout`` 与
     ``presign_ttl`` 都硬顶 1800 秒且不可续传——2 GiB 级的包只要实际吞吐低于约 1.2 MB/s，
     就会在第 1800 秒预签名过期时整体作废，且没有断点续传，只能从零重传。
 
-    制品包的 object key 内嵌内容摘要，同一份包必然落到同一 key，因此七牛分支用
-    ``insertOnly`` 语义：重复 stage 会拿到 ``614 file exists``，这里按幂等成功处理。
+    **刻意不加 ``insertOnly``**：制品包的 key 内嵌内容摘要，「跳过重复上传」由调用方在上传前
+    以服务端复算摘要判定（见 `_reuse_uploaded_model_package`）。若桶内同 key 的对象与本次内容
+    不符（上一次上传中断留下的残包），调用方的语义是覆盖重传；用 insert-only 会让这种残包
+    永远修不好——每次重试都拿到 ``614 file exists``，却仍指向那份坏字节。
     """
     clean_path = _clean_object_path(path)
     _reject_reserved_immutable_mutation(clean_path)
@@ -657,8 +657,8 @@ async def write_public_package_stream(
 
     prefix = _public_prefix(s3_storage.prefix)
     provider_key = '/'.join(part for part in (prefix, clean_path) if part)
+    # 只锁大小与 MIME，不锁 insert-only：同 key 异内容的残包必须能被覆盖修复。
     policy = {
-        'insertOnly': 1,
         'fsizeMin': size,
         'fsizeLimit': size,
         'mimeLimit': content_type,
@@ -699,10 +699,6 @@ async def write_public_package_stream(
         log.exception(f'制品包分片上传失败: {type(exc).__name__}: {exc!r}')
         raise errors.ServerError(msg=f'制品包分片上传失败: {type(exc).__name__}: {exc!s}') from exc
     status_code = int(getattr(info, 'status_code', 0) or 0)
-    if status_code == _QINIU_FILE_EXISTS_STATUS:
-        # key 内嵌内容摘要，同 key 即同内容：重复 stage 视为幂等成功，不覆盖已在桶里的对象。
-        log.info(f'制品包已存在，按幂等成功处理: {provider_key}')
-        return
     if status_code != 200 or result is None:
         detail = str(getattr(info, 'text_body', '') or getattr(info, 'error', '') or 'unknown error')[:300]
         raise errors.ServerError(msg=f'制品包分片上传失败: HTTP {status_code} {detail}')

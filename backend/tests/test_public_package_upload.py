@@ -91,17 +91,30 @@ async def test_large_package_uses_chunked_upload_not_single_put(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_repeated_stage_of_identical_package_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """object key 内嵌内容摘要，重复 stage 命中 insertOnly 冲突时按幂等成功处理。"""
+async def test_upload_token_is_not_insert_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不得加 insertOnly：同 key 异内容的残包必须还能被覆盖修复。
 
-    def fake_put_stream_v2(*args: Any, **kwargs: Any) -> tuple[None, _Info]:
-        return None, _Info(file_ops._QINIU_FILE_EXISTS_STATUS, 'file exists')
+    「跳过重复上传」由调用方在上传前以服务端复算摘要判定；若这里锁成 insert-only，
+    上一次中断留下的残包每次重试都拿到 614，却仍指向坏字节，永远修不好。
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_auth(*args: Any, **kwargs: Any) -> Any:
+        class _Auth:
+            @staticmethod
+            def upload_token(bucket: str, key: str, expires: int, policy: dict) -> str:
+                captured['policy'] = policy
+                return 'tok'
+
+        return _Auth()
+
+    def fake_put_stream_v2(token, key, file, fname, size, **kwargs):  # noqa: ANN001, ANN202
+        return {'key': key, 'hash': 'etag', 'size': size}, _Info(200)
 
     monkeypatch.setattr(file_ops, 'put_stream_v2', fake_put_stream_v2)
-    monkeypatch.setattr(file_ops, 'Auth', _fake_auth)
+    monkeypatch.setattr(file_ops, 'Auth', fake_auth)
 
     size = file_ops.PUBLIC_PACKAGE_PART_BYTES * 2
-    # 不抛异常即为通过：重复发布同一个包不应让运维以为上传失败。
     await file_ops.write_public_package_stream(
         _storage(),
         'runtime-model/imagelab/u2netp/2024.07/abc-u2netp.zip',
@@ -109,6 +122,11 @@ async def test_repeated_stage_of_identical_package_is_idempotent(monkeypatch: py
         size=size,
         content_type='application/zip',
     )
+
+    assert 'insertOnly' not in captured['policy']
+    # 大小与 MIME 仍必须锁死，避免上传成与声明不符的对象。
+    assert captured['policy']['fsizeMin'] == size
+    assert captured['policy']['fsizeLimit'] == size
 
 
 @pytest.mark.asyncio

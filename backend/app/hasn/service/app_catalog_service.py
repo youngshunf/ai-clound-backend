@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     from fastapi import UploadFile
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from backend.plugin.s3.model import S3Storage
+
 # 默认应用标识（订阅档与 billing 同源，见 [[project_billing_newapi_authoritative_source]]）。
 _DEFAULT_APP_CODE = 'huanxing'
 
@@ -1433,6 +1435,26 @@ async def stage_signed_model_package(
     storage = await StorageService.get_public_package_storage(db, category='film_engine')
     # 远程 I/O 前释放事务：上传可能持续数分钟，长事务会耗尽连接池。
     await db.rollback()
+
+    # 内容寻址 key 意味着同一份字节永远落同一个对象：已经在桶里就不该再传一遍。
+    # 这不只是省流量——上传大模型时服务器到对象存储那一段是吞吐瓶颈（817 MB 实测超过
+    # nginx 的 600s `proxy_read_timeout` 导致 504），而 504 之后的每一次重试都在重传全部字节。
+    # 复用前必须由服务端流式复算桶内对象摘要，不接受客户端声明，也不接受仅凭大小相等。
+    existing_url = await _reuse_uploaded_model_package(
+        storage,
+        object_key=object_key,
+        expected_sha256=package_sha256,
+        expected_size=size,
+    )
+    if existing_url is not None:
+        return {
+            'key': object_key,
+            'url': existing_url,
+            'sha256': package_sha256,
+            'compressed_size': size,
+            'reused': True,
+        }
+
     await upload.seek(0)
     # 必须走分片上传：单次预签名 PUT 的超时与预签名 TTL 都硬顶 1800 秒且不可续传，
     # GB 级模型包只要吞吐略低就会在最后一刻整体作废。
@@ -1453,7 +1475,39 @@ async def stage_signed_model_package(
         'url': reference.stable_url,
         'sha256': package_sha256,
         'compressed_size': size,
+        'reused': False,
     }
+
+
+async def _reuse_uploaded_model_package(
+    storage: S3Storage,
+    *,
+    object_key: str,
+    expected_sha256: str,
+    expected_size: int,
+) -> str | None:
+    """桶内已有同 key 且**服务端复算摘要**一致时返回其稳定 URL，否则返回 `None` 走正常上传。
+
+    任何读取或校验异常都按「没有可复用对象」处理：宁可重传一遍，也不能凭一次失败的探测
+    就把未经证实的对象当成已发布内容。
+    """
+    from backend.plugin.s3.service.storage_service import StorageService
+    from backend.plugin.s3.utils.file_ops import build_object_url
+
+    try:
+        digest, actual_size = await StorageService.sha256_on_storage(storage, object_key=object_key)
+    # 探测失败一律回落到重传，不影响正确性
+    except Exception:
+        log.info(f'图坊模型包 {object_key} 无法复用（对象不存在或读取失败），按正常上传处理')
+        return None
+    if digest.lower() != expected_sha256.lower() or actual_size != expected_size:
+        log.warning(
+            f'图坊模型包 {object_key} 桶内对象与本次上传不一致'
+            f'（桶内 sha256={digest[:16]} size={actual_size}），将覆盖重传'
+        )
+        return None
+    log.info(f'图坊模型包 {object_key} 已在桶内且摘要一致，跳过重传')
+    return build_object_url(storage, object_key)
 
 
 async def publish_signed_model_catalog(db: AsyncSession, *, pk: int, document: dict) -> dict:
