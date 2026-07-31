@@ -18,19 +18,35 @@ from backend.app.hasn.service.hasn_sync_service import (
     SqlAlchemySyncGateway,
     TaskSyncConflictError,
 )
+from backend.app.hasn_memory.service.fact_uplink_service import (
+    MEMORY_FACT_UPLINK_EVENTS,
+    FactUplinkConflictError,
+    FactUplinkPermanentError,
+    fact_uplink_service,
+)
 from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
 from backend.app.hasn_sync.ports.dto import InboxEnvelope, SyncEnvelope
 from backend.common.exception import errors
 
 
 SESSION_SYNC_EVENT = 'session.sync'
-MEMORY_SYNC_EVENTS = frozenset(
+# doc16 时代的三类 memory 事件：走 `MemorySyncHandler` → `save_client_event`，只推游标不落业务表。
+# 实施/98 起客户端已不再产出它们；接收面保留只为兜底未升级 daemon（实施/98 决策 3.5）。
+MEMORY_LEGACY_SYNC_EVENTS = frozenset(
     {
         'memory.owner_event.upserted',
         'memory.owner_fact.upserted',
         'memory.agent_self_event.upserted',
     }
 )
+# doc19 §8.3-5：上行事件类型必须**同时**登记进云端白名单与本地事件构造——
+# **两侧白名单不对称正是实施/98 事故的直接成因**（本地能产 12 类、云端只认 3 类，
+# 客户端零过滤全推 → 每条被拒 → 无退避无丢弃 → 5s 无限重推 → 日志洪水 94%）。
+# 语义事实六件套的定义与本地对照点见
+# `backend/app/hasn_memory/service/fact_uplink_service.py::MEMORY_FACT_UPLINK_EVENTS`
+# （本地构造点：`hasn-node/crates/hasn-memory/src/storage/authority.rs::MemoryOp::fact_event_type`）。
+# 改动任一侧都必须同步另一侧，评审时逐条对照。
+MEMORY_SYNC_EVENTS = MEMORY_LEGACY_SYNC_EVENTS | MEMORY_FACT_UPLINK_EVENTS
 TASK_SYNC_EVENTS = frozenset({'task.created', 'task.updated', 'task.deleted'})
 _SESSION_KINDS = frozenset({'interactive', 'task', 'temporary', 'external', 'system'})
 _SESSION_SCOPES = frozenset({'conversation_visible', 'summary_only'})
@@ -258,7 +274,9 @@ class MemorySyncHandler:
         *,
         idempotency_key: str,
     ) -> None:
-        if envelope.event_type not in MEMORY_SYNC_EVENTS:
+        # 只认 doc16 时代那三类；语义事实六件套走 `FactUplinkHandler`，别落错路由——
+        # 走这条路只推游标不落 `semantic_fact`，事实会静默丢失。
+        if envelope.event_type not in MEMORY_LEGACY_SYNC_EVENTS:
             raise PermanentSyncBusinessError(
                 f'不支持的 memory sync 事件：{envelope.event_type}'
             )
@@ -289,6 +307,54 @@ class MemorySyncHandler:
             errors.ConflictError,
         ) as exc:
             raise PermanentSyncBusinessError(str(exc)) from exc
+
+
+@dataclass(frozen=True)
+class FactUplinkHandler:
+    """应用 daemon 上行的语义事实业务事件（doc19 §8.3）。
+
+    与 `MemorySyncHandler` 的根本区别：**这条路真的落 `hasn_memory.semantic_fact`**，
+    再由 `emit_memory_event` 推进命名空间 revision 把结果回灌全网；那条路只推游标。
+
+    拒绝三分类（§8.3-4）在此收口：
+
+    - `FactUplinkPermanentError` → `PermanentSyncBusinessError`：inbox 立即置 dead，不重试
+      （载荷非法 / 越权 / 墓碑命中。push 端点已在入队前拦掉绝大多数，这里兜 push→apply 竞态）；
+    - `FactUplinkConflictError` → 原样上抛：worker 走既有重试计数，**有退避**；
+    - 其余异常（DB 抖动）同样上抛重试。
+    """
+
+    async def apply(
+        self,
+        db: AsyncSession,
+        envelope: InboxEnvelope,
+        *,
+        idempotency_key: str,
+    ) -> None:
+        if envelope.event_type not in MEMORY_FACT_UPLINK_EVENTS:
+            raise PermanentSyncBusinessError(
+                f'不支持的语义事实上行事件：{envelope.event_type}'
+            )
+        await _require_owned_subject(
+            db,
+            owner_id=envelope.owner_id,
+            subject_hasn_id=envelope.hasn_id,
+        )
+        try:
+            await fact_uplink_service.apply_fact_event(
+                db,
+                owner_id=envelope.owner_id,
+                node_id=envelope.node_id,
+                event_type=envelope.event_type,
+                payload=envelope.payload,
+            )
+        except FactUplinkPermanentError as exc:
+            raise PermanentSyncBusinessError(
+                f'{exc.error.name}({exc.error.code}): {exc.reason}；幂等键={idempotency_key}'
+            ) from exc
+        except FactUplinkConflictError:
+            # 可退避重试：不要包成 PermanentSyncBusinessError，否则一次竞态就把事实永久丢弃。
+            raise
 
 
 @dataclass(frozen=True)
@@ -352,9 +418,11 @@ class TaskSyncHandler:
 def build_sync_handler_registry() -> dict[str, SyncBusinessHandler]:
     """构造业务事件类型到幂等 handler 的显式注册表。"""
     memory_handler = MemorySyncHandler()
+    fact_handler = FactUplinkHandler()
     task_handler = TaskSyncHandler()
     return {
         SESSION_SYNC_EVENT: SessionSyncHandler(),
-        **{event_type: memory_handler for event_type in MEMORY_SYNC_EVENTS},
-        **{event_type: task_handler for event_type in TASK_SYNC_EVENTS},
+        **dict.fromkeys(MEMORY_LEGACY_SYNC_EVENTS, memory_handler),
+        **dict.fromkeys(MEMORY_FACT_UPLINK_EVENTS, fact_handler),
+        **dict.fromkeys(TASK_SYNC_EVENTS, task_handler),
     }
