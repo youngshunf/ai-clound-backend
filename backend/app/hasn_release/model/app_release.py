@@ -70,3 +70,7 @@ class AppRelease(HasnReleaseAppBase):
     published_time: Mapped[datetime | None] = mapped_column(
         TimeZone, default=None, comment='发布时刻（status 转 published 时写入）'
     )
+    # 无头 hasn-node 托管（H8）：主后端发布不兼容变更前，先确认在线云端节点已滚动到该契约版本以上。
+    min_cloud_contract_version: Mapped[str | None] = mapped_column(
+        sa.String(32), default=None, comment='本版要求的最低云端契约版本（NULL=不设门槛）'
+    )

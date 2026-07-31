@@ -32,12 +32,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_release.model import AppRelease, ReleaseAsset, ReleaseBuild
 from backend.app.hasn_release.schema.release import (
+    HEADLESS_PLATFORM_TARGETS,
     REQUIRED_DESKTOP_PLATFORMS,
     BuildDetail,
     CiCallbackRequest,
     CiUploadResponse,
     ConfirmReleaseTagRequest,
     GithubBuildRequest,
+    HeadlessImageDetail,
+    HeadlessImageRequest,
     LatestReleaseResponse,
     PrepareReleaseRequest,
     PublishReleaseRequest,
@@ -1022,6 +1025,101 @@ class ReleaseService:
         if error is not None:
             values['error_message'] = error
         await db.execute(update(ReleaseBuild).where(ReleaseBuild.id == build_id).values(**values))
+
+    # ─── 无头 hasn-node 容器镜像登记（H8） ───
+
+    async def register_headless_image(self, db: AsyncSession, req: HeadlessImageRequest) -> HeadlessImageDetail:
+        """登记一条无头镜像资产（契约 §7）。
+
+        与桌面端流程**完全隔离**：只 upsert `(release, platform_target, asset_kind='image')` 一行，
+        不删其它资产、不动 `is_latest` 指针、不改 `required_platforms`/`completed_platforms`。
+        桌面端的 latest / updater manifest 都按 `asset_kind in (installer, updater)` 过滤，
+        镜像行进不去那两条读路径。
+
+        校验：
+        - `platform_target` 必须是 headless 目标（写错就是往桌面端表里塞脏行）；
+        - `image_digest` 必须是 `sha256:<64hex>`——digest 是滚动更新的唯一判据，格式不对即拒。
+        """
+        channel = req.channel or 'stable'
+        if channel not in ('stable', 'beta'):
+            raise errors.RequestError(msg=f'非法 channel: {channel}')
+        if req.platform_target not in HEADLESS_PLATFORM_TARGETS:
+            raise errors.RequestError(
+                msg=f'非法 headless platform_target: {req.platform_target}（应为 {"/".join(HEADLESS_PLATFORM_TARGETS)}）'
+            )
+        digest = (req.image_digest or '').strip()
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+            raise errors.RequestError(msg='image_digest 必须形如 sha256:<64位小写hex>')
+        image_ref = (req.image_ref or '').strip()
+        if not image_ref:
+            raise errors.RequestError(msg='image_ref 不能为空')
+
+        release = (
+            await db.execute(
+                select(AppRelease).where(AppRelease.version == req.version, AppRelease.channel == channel)
+            )
+        ).scalar_one_or_none()
+        now = timezone.now()
+        if release is None:
+            release = AppRelease(
+                version=req.version,
+                channel=channel,
+                release_notes_md=None,
+                release_notes_en_md=None,
+                status='published' if req.publish else 'draft',
+                is_latest=False,  # 镜像登记不抢桌面端 latest 指针
+                source='github',
+                github_run_id=None,
+                published_time=now if req.publish else None,
+            )
+            db.add(release)
+            await db.flush()
+        elif req.publish and release.status == 'draft':
+            release.status = 'published'
+            release.published_time = release.published_time or now
+        if req.min_cloud_contract_version is not None:
+            release.min_cloud_contract_version = req.min_cloud_contract_version
+
+        existing = (
+            await db.execute(
+                select(ReleaseAsset).where(
+                    ReleaseAsset.release_id == release.id,
+                    ReleaseAsset.platform_target == req.platform_target,
+                    ReleaseAsset.asset_kind == 'image',
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(
+                ReleaseAsset(
+                    release_id=release.id,
+                    platform_target=req.platform_target,
+                    asset_kind='image',
+                    download_url=image_ref,
+                    file_name=image_ref.rsplit('/', 1)[-1],
+                    file_size=req.image_size or 0,
+                    sha256=digest,
+                    signature=None,
+                    download_count=0,
+                )
+            )
+        else:
+            existing.download_url = image_ref
+            existing.file_name = image_ref.rsplit('/', 1)[-1]
+            existing.file_size = req.image_size or 0
+            existing.sha256 = digest
+        # 写路由走 CurrentSessionTransaction（外层 begin() 自动提交），这里只 flush
+        await db.flush()
+        return HeadlessImageDetail(
+            release_id=release.id,
+            version=release.version,
+            channel=release.channel,
+            status=release.status,
+            platform_target=req.platform_target,
+            image_ref=image_ref,
+            image_digest=digest,
+            min_cloud_contract_version=release.min_cloud_contract_version,
+        )
 
 
 release_service = ReleaseService()

@@ -15,9 +15,42 @@ from backend.common.schema import SchemaBase
 
 # 平台目标枚举（近期 macOS 双架构；预留 windows/linux）
 PLATFORM_TARGETS = ('darwin-aarch64', 'darwin-x86_64', 'windows-x86_64', 'linux-x86_64')
-ASSET_KINDS = ('installer', 'updater')
+# 无头 hasn-node 容器镜像目标（H8）：与桌面 target 同表不同语义——不是可下载文件，
+# download_url 存 registry ref、sha256 存镜像 digest（契约 §1 / §7）。
+HEADLESS_PLATFORM_TARGETS = ('headless-linux-amd64', 'headless-linux-arm64')
+ASSET_KINDS = ('installer', 'updater', 'image')
 CHANNELS = ('stable', 'beta')
 REQUIRED_DESKTOP_PLATFORMS = ('darwin-aarch64', 'darwin-x86_64', 'windows-x86_64')
+
+
+class HeadlessImageRequest(SchemaBase):
+    """无头镜像登记入参（CI `release-headless-node.sh` 推私有 registry 后回调）。
+
+    只加不改：本请求**只**upsert 一条 `asset_kind='image'` 资产，不动 `is_latest`、不动
+    桌面端资产、不改发布批次状态——桌面发布链路行为完全不变。
+    """
+
+    version: str = Field(description='semver，与桌面端同版本号')
+    channel: str = Field(default='stable', description='stable/beta')
+    platform_target: str = Field(description='headless-linux-amd64 / headless-linux-arm64')
+    image_ref: str = Field(description='私有 registry ref，如 registry.example.com/hasn-node:1.2.0')
+    image_digest: str = Field(description='镜像 digest，形如 sha256:<64hex>（以 digest 为准，不信 tag）')
+    image_size: int = Field(default=0, description='镜像字节数（可选）')
+    min_cloud_contract_version: str | None = Field(default=None, description='本版要求的最低云端契约版本')
+    publish: bool = Field(default=True, description='是否把该版本置为 published（仅在其尚未发布时生效）')
+
+
+class HeadlessImageDetail(SchemaBase):
+    """无头镜像登记结果。"""
+
+    release_id: int
+    version: str
+    channel: str
+    status: str
+    platform_target: str
+    image_ref: str
+    image_digest: str
+    min_cloud_contract_version: str | None = None
 
 
 class ReleaseAssetInput(SchemaBase):
