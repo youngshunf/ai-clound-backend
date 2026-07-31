@@ -569,6 +569,10 @@ class Settings(BaseSettings):
         'new_password',
         'confirm_password',
     ]
+    # 超过该长度的请求体不读入操作日志，避免大文件上传把 worker 内存打满。
+    # `request.body()` 会把整个请求体缓冲进内存，非 JSON 分支还会再 decode 出一份等长字符串；
+    # 发布数百 MB 的引擎包 / 模型包时，这一步发生在路由之前，会让端点侧的分块读取彻底失效。
+    OPERA_LOG_MAX_BODY_BYTES: int = 1 * 1024 * 1024
     OPERA_LOG_QUEUE_MAXSIZE: int = 100000
     OPERA_LOG_QUEUE_BATCH_CONSUME_SIZE: int = 100
     OPERA_LOG_QUEUE_TIMEOUT: int = 60  # 1 分钟
