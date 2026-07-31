@@ -191,6 +191,8 @@ _FACT_COLUMNS = (
     'merge_verdict_run',
     'merge_judged_revision',
     'valid_until',
+    # doc19 §4.3 / §8.2 双端列：本地 `SemanticFactRecord.supersedes_hint` ↔ 本列。
+    'supersedes_hint',
 )
 # 逐列写死而不是 ``SELECT *`` / ORM 全列展开：本表正被并行切片增列（如 supersedes_hint），
 # 模型先于迁移落地时全列展开会整条炸掉；显式列表让本模块与那条时序解耦。
@@ -365,6 +367,8 @@ class ParsedFact:
     merged_from: str
     revision: int
     valid_until: int | None
+    #: doc19 §4.3 / D-21 本人纠正指向（`save` 携带的线索，非已生效取代关系）。
+    supersedes_hint: str | None = None
     #: 原始 object（回灌下行要发回**解析后的值**，不是串）。
     object_value: Any = None
 
@@ -440,6 +444,9 @@ def _parse_fact(payload: Mapping[str, Any], *, owner_id: str) -> ParsedFact:
         merged_from=_json_text(_string_list(payload, 'merged_from'), 'merged_from'),
         revision=revision,
         valid_until=_integer(payload, 'valid_until', required=False),
+        # 宽度必须与本列 varchar(40) 一致（本地 crate 的 fact_id 同宽）：超长在这里就按
+        # 4xx 语义永久拒绝，而不是让它撞进 DB 变成 5xx。
+        supersedes_hint=_text(payload, 'supersedes_hint', max_length=40, required=False),
         object_value=object_value,
     )
 
@@ -768,6 +775,7 @@ class FactUplinkService:
             'merged_from': parsed.merged_from,
             'revision': parsed.revision,
             'valid_until': parsed.valid_until,
+            'supersedes_hint': parsed.supersedes_hint,
         }
         landed = (
             await db.execute(
@@ -778,13 +786,13 @@ class FactUplinkService:
                     scope_kind, scope_id, predicate, object_json, confidence, status,
                     superseded_by, source_turn_ids, source_refs_json, rationale,
                     created_at, updated_at, origin_kind, origin_node_id, origin_agent_id,
-                    merged_from, revision, valid_until
+                    merged_from, revision, valid_until, supersedes_hint
                 ) VALUES (
                     :fact_id, :owner_id, :agent_id, :subject_kind, :subject_id, 'semantic',
                     :scope_kind, :scope_id, :predicate, :object_json, :confidence, :status,
                     :superseded_by, :source_turn_ids, :source_refs_json, :rationale,
                     :created_at, :updated_at, :origin_kind, :origin_node_id, :origin_agent_id,
-                    :merged_from, :revision, :valid_until
+                    :merged_from, :revision, :valid_until, :supersedes_hint
                 )
                 -- ⚠️ DO UPDATE 的 SET 里**故意没有**溯源四列与 created_at：
                 --    `origin_*` / `merged_from` 只在首次插入时确定，后续整理不得改写归属，
@@ -801,6 +809,8 @@ class FactUplinkService:
                     updated_at = EXCLUDED.updated_at,
                     revision = EXCLUDED.revision,
                     valid_until = EXCLUDED.valid_until,
+                    -- 本人纠正指向属业务字段组（分身写的线索），整理时随之覆盖。
+                    supersedes_hint = EXCLUDED.supersedes_hint,
                     scope_kind = EXCLUDED.scope_kind,
                     scope_id = EXCLUDED.scope_id
                 WHERE hasn_memory.semantic_fact.owner_id = EXCLUDED.owner_id
@@ -1077,6 +1087,9 @@ class FactUplinkService:
             'rationale': row['rationale'],
             'created_at': row['created_at'],
             'updated_at': row['updated_at'],
+            # doc19 §4.3 本人纠正指向（双端列）：回灌必须带回去，否则来源节点自己按游标
+            # 拉回这条事件时会拿 payload 覆盖本地行、把 hint 抹平——与溯源同款风险。
+            'supersedes_hint': row['supersedes_hint'],
             # ---- §8.2 溯源与 overlay 六列：一个都不许少 ----
             'origin_kind': row['origin_kind'],
             'origin_node_id': row['origin_node_id'],

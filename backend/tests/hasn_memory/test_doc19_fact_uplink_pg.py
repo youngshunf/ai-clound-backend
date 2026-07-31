@@ -105,6 +105,7 @@ def _snapshot(
     valid_until: int | None = None,
     rationale: str | None = None,
     confidence: float = 0.8,
+    supersedes_hint: str | None = None,
 ) -> dict[str, Any]:
     """本地 outbox 快照载荷。字段名与 hasn-node 侧 ``fact_snapshot_json`` 严格一致。"""
     is_agent_self = subject_kind == 'agent_self'
@@ -125,6 +126,9 @@ def _snapshot(
         'source_refs': [],
         'rationale': rationale,
         'valid_until': valid_until,
+        # doc19 §4.3 / §8.2 双端列。本地对照点：
+        # `hasn-node/crates/hasn-memory/src/storage/facts.rs::fact_snapshot_json`
+        'supersedes_hint': supersedes_hint,
         'created_at': 1_785_000_000_000,
         'updated_at': 1_785_000_000_000 + revision,
         'revision': revision,
@@ -156,6 +160,7 @@ async def _row(session: AsyncSession, fact_id: str) -> dict[str, Any] | None:
             sa.text(
                 'SELECT fact_id, owner_id, agent_id, subject_kind, subject_id, scope_kind, scope_id, '
                 'predicate, object_json, confidence, status, superseded_by, rationale, valid_until, '
+                'supersedes_hint, '
                 'updated_at, origin_kind, origin_node_id, origin_agent_id, merged_from, revision, '
                 'merge_verdict, merge_verdict_run, merge_judged_revision '
                 'FROM hasn_memory.semantic_fact WHERE fact_id = :fact_id'
@@ -1101,26 +1106,51 @@ _EXPECTED_UPLINK_EVENTS = frozenset(
 _LOCAL_AUTHORITY_RS = Path('crates/hasn-memory/src/storage/authority.rs')
 
 
-def _find_local_authority_source() -> Path | None:
-    """在同机 side-by-side 的 hasn-node 检出里找 ``authority.rs``（含 worktree）。
+def _paired_worktree_name() -> str | None:
+    """本测试文件所在的 worktree 名（不在 worktree 里则 ``None``）。
 
-    云端仓的 CI 不会检出 hasn-node，硬依赖会让这条断言变成永久 skip / 永久红；而**引入不对称
+    跨仓任务按约定在两仓开**同名** worktree（分支名从文档号确定性派生），
+    因此「与本仓同名的 hasn-node worktree」才是本轮真正配对的那份检出。
+    """
+    parts = Path(__file__).resolve().parts
+    if '.worktrees' not in parts:
+        return None
+    index = parts.index('.worktrees')
+    return parts[index + 1] if index + 1 < len(parts) else None
+
+
+def _find_local_source(relative: Path) -> Path | None:
+    """在同机 side-by-side 的 hasn-node 检出里找一个源文件。
+
+    云端仓的 CI 不会检出 hasn-node，硬依赖会让这些断言变成永久 skip / 永久红；而**引入不对称
     的现场恰恰是开发机**（两仓并排、改了一侧忘了另一侧）。故：找得到就逐条比真源文件，找不到
-    就退化为下面的显式期望集合钉子——两条断言都在，不留空档。
+    就退化为显式期望集合钉子——两类断言都在，不留空档。
+
+    ⚠️ **配对 worktree 优先**：本仓在 worktree 里跑时，比对对象必须是**同名的** hasn-node
+    worktree，而不是主 clone。否则跨仓改动做在两仓 worktree 里、这条测试却拿主 clone 的旧
+    源文件去比——一路绿灯，等合并回主分支才炸，正好错过它该守住的那一刻。
     """
     # 本仓可能是主 clone（<project>/huanxing-cloud-backend）也可能是 worktree
     # （<project>/huanxing-cloud-backend/.worktrees/<name>），故逐级上溯找兄弟目录 hasn-node。
-    candidates: list[Path] = []
     for ancestor in Path(__file__).resolve().parents:
         node_repo = ancestor / 'hasn-node'
         if not node_repo.is_dir():
             continue
-        candidates.append(node_repo / _LOCAL_AUTHORITY_RS)
         worktrees = node_repo / '.worktrees'
+        candidates: list[Path] = []
+        paired = _paired_worktree_name()
+        if paired and worktrees.is_dir():
+            candidates.append(worktrees / paired / relative)
+        candidates.append(node_repo / relative)
         if worktrees.is_dir():
-            candidates.extend(sorted(path / _LOCAL_AUTHORITY_RS for path in worktrees.iterdir() if path.is_dir()))
-        break
-    return next((path for path in candidates if path.is_file()), None)
+            candidates.extend(sorted(path / relative for path in worktrees.iterdir() if path.is_dir()))
+        return next((path for path in candidates if path.is_file()), None)
+    return None
+
+
+def _find_local_authority_source() -> Path | None:
+    """本地事件名构造点 ``authority.rs``（同一套配对 worktree 优先规则）。"""
+    return _find_local_source(_LOCAL_AUTHORITY_RS)
 
 
 async def test_uplink_whitelist_is_pinned_to_expected_six_events() -> None:  # noqa: RUF029 模块级 pytestmark 是 asyncio，纯契约钉子无需 await
@@ -1162,3 +1192,167 @@ async def test_error_code_allocation_is_pinned() -> None:  # noqa: RUF029 模块
         'ERR_SYNC_EVENT_CONFLICT': 8041,
     }
     assert set(MEMORY_FACT_PERMANENT_CODES) == {8043, 8044, 8045}
+
+
+# --------------------------------------------------------------------------------------
+# 十、跨仓契约钉子（本地 Rust 源文件在场时逐条比对真源）
+# --------------------------------------------------------------------------------------
+
+#: 本地上行 drain 所在的 Rust 源文件（事件白名单 + 拒绝分类都在这里）。
+_LOCAL_MEMORY_PUSH_RS = Path('crates/hasn-node/src/runtime/memory_push.rs')
+#: 本地错误码分类所在的 Rust 源文件。
+_LOCAL_SYNC_TYPES_RS = Path('crates/hasn-node/src/backend/types/sync.rs')
+
+
+async def test_uplink_whitelist_matches_local_drain_constant() -> None:  # noqa: RUF029 纯契约钉子无需 await
+    """§8.3-5：云端白名单还必须与**本地 drain 的白名单常量**逐条对称。
+
+    上一条测试比的是 ``authority.rs::MemoryOp::fact_event_type``（事件名的构造点）；
+    真正决定「哪些事件会被发出去」的是 drain 里的
+    ``memory_push.rs::MEMORY_UPLINK_EVENT_TYPES``——两处在本地就可能漂移，
+    故两条都要比。
+    """
+    source = _find_local_source(_LOCAL_MEMORY_PUSH_RS)
+    if source is None:
+        pytest.skip('本机没有并排的 hasn-node 检出，已由显式期望集合钉子兜底')
+    body = source.read_text(encoding='utf-8')
+    match = re.search(r'MEMORY_UPLINK_EVENT_TYPES:\s*\[&str;\s*\d+\]\s*=\s*\[(.*?)\];', body, re.DOTALL)
+    assert match is not None, f'{source} 里找不到 MEMORY_UPLINK_EVENT_TYPES，两侧对照点已漂移'
+    local_events = set(re.findall(r'"(memory\.fact\.[a-z_]+)"', match.group(1)))
+    assert local_events == set(MEMORY_FACT_UPLINK_EVENTS), (
+        f'两侧上行事件白名单不对称（实施/98 事故的直接成因）：'
+        f'本地 drain={sorted(local_events)} 云端={sorted(MEMORY_FACT_UPLINK_EVENTS)}'
+    )
+
+
+async def test_local_daemon_reads_the_purge_local_directive_key_we_actually_send() -> None:  # noqa: RUF029 纯契约钉子无需 await
+    """**链路钉子**：本地必须按 ``detail.action`` 读 purge 指令，而不是某个我们从没发过的键。
+
+    云端 ``_purge_local_error()`` 发的是 ``{'action': 'purge_local', 'fact_id': ...}``；
+    本地若读 ``detail.purge_local``（布尔旗标），墓碑命中时**永远收不到删除指令**——
+    本地行不删、op 一直挂在 outbox 每轮重试到毒丸上限。这条曾经真的不对齐过。
+    """
+    source = _find_local_source(_LOCAL_MEMORY_PUSH_RS)
+    if source is None:
+        pytest.skip('本机没有并排的 hasn-node 检出')
+    body = source.read_text(encoding='utf-8')
+    match = re.search(r'fn purge_local_requested\(.*?\n\}', body, re.DOTALL)
+    assert match is not None, f'{source} 里找不到 purge_local_requested，两侧对照点已漂移'
+    reader = match.group(0)
+    assert '"action"' in reader, f'本地必须按 detail.action 读 purge 指令：\n{reader}'
+    assert 'get("purge_local")' not in reader, (
+        f'云端从未发过 detail.purge_local 布尔旗标，读它等于永远收不到指令：\n{reader}'
+    )
+    # 取值可以写字面量，也可以走本地常量（本地现用 `PURGE_LOCAL_ACTION`）——两种都认，
+    # 但取值本身必须逐字是 `purge_local`。
+    action_const = re.search(r'PURGE_LOCAL_ACTION:\s*&str\s*=\s*"([^"]+)"', body)
+    action_value = action_const.group(1) if action_const else None
+    assert '"purge_local"' in reader or action_value == 'purge_local', (
+        f'指令取值必须逐字是 purge_local（本地常量取值={action_value!r}）：\n{reader}'
+    )
+
+
+async def test_local_permanent_code_set_matches_cloud() -> None:  # noqa: RUF029 纯契约钉子无需 await
+    """§8.3-4：本地 ``SyncRejected::is_permanent()`` 必须覆盖云端全部永久码、且**不含冲突码**。
+
+    漏码 → 永久拒绝的事件不出队、``purge_local`` 不执行；
+    多收冲突码（8041/8042）→ 一次乱序就把一条记忆永久丢掉。两个方向都要钉。
+    """
+    source = _find_local_source(_LOCAL_SYNC_TYPES_RS)
+    if source is None:
+        pytest.skip('本机没有并排的 hasn-node 检出')
+    body = source.read_text(encoding='utf-8')
+    match = re.search(r'fn is_permanent\(&self\)\s*->\s*bool\s*\{(.*?)\n    \}', body, re.DOTALL)
+    assert match is not None, f'{source} 里找不到 is_permanent，两侧对照点已漂移'
+    local_codes = {int(code) for code in re.findall(r'\b(80\d\d)\b', match.group(1))}
+    missing = set(MEMORY_FACT_PERMANENT_CODES) - local_codes
+    assert not missing, f'本地 is_permanent 漏了云端永久码 {sorted(missing)}：永久拒绝的事件将永不出队'
+    leaked = local_codes & {8041, 8042}
+    assert not leaked, f'冲突码 {sorted(leaked)} 混进了本地永久集合：一次乱序就会永久丢一条记忆'
+
+
+# --------------------------------------------------------------------------------------
+# 十一、supersedes_hint 双端往返（doc19 §4.3 / §8.2 增列汇总）
+# --------------------------------------------------------------------------------------
+
+
+async def test_supersedes_hint_lands_from_uplink_and_is_echoed_downlink(session: AsyncSession) -> None:
+    """§4.3 / §8.2：本人纠正指向是**双端列**——上行落列、整理可改、回灌带回。
+
+    这条列曾经只在云端存在：本地把 hint 编码进 ``source_refs``、云端 apply 又完全不读它，
+    结果是 ``save(supersedes_hint=...)`` 写下的线索**永远到不了云端**，S6 合并规则层的
+    「本人纠正本人直接裁决」等于从来不会触发。
+    """
+    ids = _Ids()
+    old_fact = uuid.uuid4().hex
+    try:
+        await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.node,
+            event_type='memory.fact.saved',
+            payload=_snapshot(
+                owner_id=ids.owner,
+                node_id=ids.node,
+                agent_id=ids.agent,
+                fact_id=ids.fact,
+                supersedes_hint=old_fact,
+            ),
+        )
+        row = await _row(session, ids.fact)
+        assert row is not None
+        assert row['supersedes_hint'] == old_fact, 'saved 必须把 hint 落到正式列'
+
+        # 回灌必须把它带回来，否则来源节点自己拉回这条事件时会把本地 hint 抹平。
+        events = await _downlink_events(session, ids.owner)
+        assert events, '应有一条回灌事件'
+        assert events[-1]['payload']['supersedes_hint'] == old_fact
+
+        # 整理属业务字段组，hint 随之覆盖（这里清空）。
+        await _apply(
+            session,
+            owner_id=ids.owner,
+            node_id=ids.node,
+            event_type='memory.fact.updated',
+            payload=_snapshot(
+                owner_id=ids.owner,
+                node_id=ids.node,
+                agent_id=ids.agent,
+                fact_id=ids.fact,
+                revision=2,
+                supersedes_hint=None,
+            ),
+        )
+        cleared = await _row(session, ids.fact)
+        assert cleared is not None
+        assert cleared['supersedes_hint'] is None
+        assert cleared['revision'] == 2
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
+
+
+async def test_supersedes_hint_over_column_width_is_permanently_rejected(session: AsyncSession) -> None:
+    """宽度必须与本列 ``varchar(40)`` 一致（本地 crate 的 fact_id 同宽）。
+
+    超长在解析层就按 4xx 语义永久拒绝，绝不让它撞进 DB 变成 5xx / error 洪水。
+    """
+    ids = _Ids()
+    try:
+        with pytest.raises(FactUplinkPermanentError) as excinfo:
+            await fact_uplink_service.apply_fact_event(
+                session,
+                owner_id=ids.owner,
+                node_id=ids.node,
+                event_type='memory.fact.saved',
+                payload=_snapshot(
+                    owner_id=ids.owner,
+                    node_id=ids.node,
+                    agent_id=ids.agent,
+                    fact_id=ids.fact,
+                    supersedes_hint='x' * 41,
+                ),
+            )
+        assert excinfo.value.error.code == 8043
+        assert 'supersedes_hint' in excinfo.value.reason
+    finally:
+        await _cleanup(session, ids.owner, ids.agent)
