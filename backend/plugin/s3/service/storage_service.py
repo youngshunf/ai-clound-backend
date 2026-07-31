@@ -408,9 +408,12 @@ class StorageService:
         引擎包、模型包这类制品动辄数百 MB，上传耗时以分钟计；必须先拿到脱离 ORM 会话的配置
         快照再 `rollback`，否则长事务会占住连接池。
         """
+        # S3Storage 在本模块只按 TYPE_CHECKING 导入；这里要真正构造实例，必须运行期本地导入。
+        from backend.plugin.s3.model import S3Storage as S3StorageModel
+
         access, _ = _category_policy(category)
         storage = _pick_storage(await cls._storages(db), access)
-        detached = S3Storage(
+        detached = S3StorageModel(
             name=storage.name,
             endpoint=storage.endpoint,
             access_key=storage.access_key,
