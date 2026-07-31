@@ -14,7 +14,16 @@ runtime 统一）经 `/api/v1/mcp/streamable` 直达云端，工具体 in-proces
   可按阈值过滤）。
 - **object 串字段**：与本地 crate 双端一致，`object_json` 存 JSON 字符串；读出反序列化为
   `object`。时间 epoch ms（与本地 BigInteger 一致）。
-- 只读方法默认只取 `status='active'`，被替代/撤回的事实不喂召回。
+- 只读方法默认只取**生效事实**（doc19 §3.4，见 `effective_fact_condition`），被替代/撤回的
+  事实与「裁决仍然有效的」被合并/矛盾事实都不喂召回。
+
+doc19 S3（19-多节点记忆分层与分身自治整理设计.md §3.2/§3.4/§8.2）：
+- `save_fact` 写入时落 `origin_kind='node'` / `revision=1`，并接收 `origin_node_id`、
+  `origin_agent_id`、`valid_until`、`supersedes_hint`——溯源与时效**先落库**，
+  裁决逻辑（hint 快速通道、overlay 写入）在 S6 合并里做，本片不假装已实现；
+- 生效可见性 = `status='active'` 且（未裁决 或 裁决所依据的 revision 已过期）。
+  后半句是并发护栏：事实被裁决后又被本地整理或主人修改（revision 前进），旧裁决自动失效、
+  事实重新可见，留待下轮合并重裁——竞态从「谁覆盖谁」变成「裁决过期作废」，不需要锁。
 """
 
 from __future__ import annotations
@@ -31,11 +40,36 @@ from backend.app.hasn_memory.model.semantic_fact import SemanticFact
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.elements import ColumnElement
 
 _VALID_SUBJECT_KINDS = frozenset({'owner', 'agent_self', 'peer', 'world'})
 _VALID_SCOPE_KINDS = frozenset({'global', 'workspace', 'project', 'task', 'conversation', 'topic'})
 _DEFAULT_CONFIDENCE = 0.6
 _MAX_LIMIT = 200
+
+
+def effective_fact_condition() -> ColumnElement[bool]:
+    """生效可见性判据（doc19 §3.4，注入 / 检索默认过滤）。
+
+    ``status='active'`` 且（``merge_verdict IS NULL`` 或 ``merge_judged_revision`` 与当前
+    ``revision`` 不同）。
+
+    后半句是**并发护栏**，不是可选优化：合并把某条标成 `merged_into` / `disputed` 之后，
+    该事实又被 origin 节点的分身整理、或被主人确认（§4.6，主人写使 revision 前进），旧裁决
+    **自动失效**、事实立即重新可见，留待下轮合并重裁。「合并 vs 本地整理」的竞态因此从
+    「谁覆盖谁」退化成「裁决过期作废」，不需要任何锁。
+
+    ``IS DISTINCT FROM`` 而非 ``!=``：`merge_judged_revision` 可空，SQL 三值逻辑下
+    ``NULL != 1`` 求值为 NULL（该行会被整体过滤掉），只有 IS DISTINCT FROM 才把
+    「有裁决但没记依据 revision」的行按「裁决不可信 → 事实可见」处理。
+    """
+    return sa.and_(
+        SemanticFact.status == 'active',
+        sa.or_(
+            SemanticFact.merge_verdict.is_(None),
+            SemanticFact.merge_judged_revision.is_distinct_from(SemanticFact.revision),
+        ),
+    )
 
 
 def _now_ms() -> int:
@@ -85,6 +119,15 @@ def _serialize(fact: SemanticFact) -> dict[str, Any]:
         'rationale': fact.rationale,
         'created_at': fact.created_at,
         'updated_at': fact.updated_at,
+        # doc19 §3.2/§3.4：溯源与裁决 overlay 随读返回——分身据此一眼看出哪些它能改（§7.2 editable）
+        'origin_kind': fact.origin_kind,
+        'origin_node_id': fact.origin_node_id,
+        'origin_agent_id': fact.origin_agent_id,
+        'revision': fact.revision,
+        'merge_verdict': fact.merge_verdict,
+        'merge_verdict_run': fact.merge_verdict_run,
+        'merge_judged_revision': fact.merge_judged_revision,
+        'valid_until': fact.valid_until,
     }
 
 
@@ -106,8 +149,22 @@ class SemanticFactService:
         scope_id: str | None = None,
         source_refs: list[Any] | None = None,
         rationale: str | None = None,
+        origin_node_id: str | None = None,
+        origin_agent_id: str | None = None,
+        valid_until: int | None = None,
+        supersedes_hint: str | None = None,
     ) -> dict[str, Any]:
-        """落一条语义事实（云端权威）。owner_id 由凭据强制，绝不取自请求体。"""
+        """落一条语义事实（云端权威）。owner_id 由凭据强制，绝不取自请求体。
+
+        doc19 §3.2/§4.3 新增入参：
+
+        - `origin_node_id` / `origin_agent_id`：溯源。**由服务端按凭据强制写入**，不接受调用
+          方（分身）自行指定；缺省留空表示「产自未知节点」，本地判自产片时不会误判成自产；
+        - `valid_until`：时效性事实的有效期截止（epoch ms），review 复盘候选③依据；
+        - `supersedes_hint`：本人纠正旧事实的快速通道线索（§4.3）。本片**只落库**——新事实
+          照常进本节点自产片，hint 的裁决（同 `origin_agent_id` 即按 hint 直接裁决、指向他人
+          事实只作 LLM 参考信号）属 S6 合并，此处不做任何隐式取代，免得假装已经生效。
+        """
         if not predicate or not str(predicate).strip():
             raise ValueError('predicate 必填')
         subject_kind = subject_kind if subject_kind in _VALID_SUBJECT_KINDS else 'agent_self'
@@ -131,6 +188,13 @@ class SemanticFactService:
         if subject_kind == 'world' and scope_kind == 'global':
             scope_kind = 'topic'
 
+        # doc19 §4.3：hint 只是「本人纠正本人」的线索，随来源引用一起留痕，交给 S6 合并裁决。
+        # 现表无独立列承载它（§8.2 增列汇总未列出），故落在 source_refs_json 的结构化条目里，
+        # 语义显式（kind='supersedes_hint'），不挤占 superseded_by——后者是已生效的取代关系。
+        resolved_source_refs: list[Any] = list(source_refs or [])
+        if supersedes_hint:
+            resolved_source_refs.append({'kind': 'supersedes_hint', 'fact_id': supersedes_hint})
+
         now = _now_ms()
         fact = SemanticFact(
             fact_id=_gen_fact_id(),
@@ -146,10 +210,18 @@ class SemanticFactService:
             confidence=_clamp_confidence(confidence if confidence is not None else _DEFAULT_CONFIDENCE),
             status='active',
             source_turn_ids='[]',
-            source_refs_json=_dumps(source_refs or []),
+            source_refs_json=_dumps(resolved_source_refs),
             rationale=rationale,
             created_at=now,
             updated_at=now,
+            # doc19 §3.2：新写入的事实一律是「节点自产」，血缘为空；overlay 三列留 NULL——
+            # 只有合并能写（§3.4 字段组写者不相交），save 永远不碰它们。
+            origin_kind='node',
+            origin_node_id=origin_node_id,
+            origin_agent_id=origin_agent_id,
+            merged_from='[]',
+            revision=1,
+            valid_until=valid_until,
         )
         db.add(fact)
         await db.flush()
@@ -165,14 +237,15 @@ class SemanticFactService:
         subject_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """按文本在 predicate/object_json 上模糊搜索 owner 名下 active 事实。
+        """按文本在 predicate/object_json 上模糊搜索 owner 名下**生效**事实。
 
         doc18 S2：可选 `subject_id` 限定主体——「按人 + 关键词」组合检索（如查某 peer 关于某话题的事实）。
+        doc19 §3.4：生效判据含合并裁决 overlay，裁决过期即自动重新可见。
         """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         stmt = sa.select(SemanticFact).where(
             SemanticFact.owner_id == owner_id,
-            SemanticFact.status == 'active',
+            effective_fact_condition(),
         )
         if subject_kind in _VALID_SUBJECT_KINDS:
             stmt = stmt.where(SemanticFact.subject_kind == subject_kind)
@@ -199,14 +272,15 @@ class SemanticFactService:
         min_confidence: float = 0.0,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """召回某主体/作用域下的 active 事实（供注入），按 updated_at 倒序。
+        """召回某主体/作用域下的**生效**事实（供注入），按 updated_at 倒序。
 
         doc18 S2：可选 `query` 词项过滤（predicate/object ILIKE，与 search 同实现）——补上「按人 + 关键词」召回。
+        doc19 §3.4：被合并裁决为 merged_into / disputed 且裁决仍有效的事实**不进注入**。
         """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         stmt = sa.select(SemanticFact).where(
             SemanticFact.owner_id == owner_id,
-            SemanticFact.status == 'active',
+            effective_fact_condition(),
             SemanticFact.confidence >= float(min_confidence),
         )
         if subject_kind in _VALID_SUBJECT_KINDS:
@@ -235,12 +309,15 @@ class SemanticFactService:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """分页列 owner 名下 active 事实（默认全主体；可按 subject_kind / agent_id 过滤）。"""
+        """分页列 owner 名下**生效**事实（默认全主体；可按 subject_kind / agent_id 过滤）。
+
+        doc19 §3.4：与 search/recall 同一判据，避免「列表里有、召回里没有」的口径分裂。
+        """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         offset = max(0, int(offset))
         base = sa.select(SemanticFact).where(
             SemanticFact.owner_id == owner_id,
-            SemanticFact.status == 'active',
+            effective_fact_condition(),
         )
         if subject_kind in _VALID_SUBJECT_KINDS:
             base = base.where(SemanticFact.subject_kind == subject_kind)
