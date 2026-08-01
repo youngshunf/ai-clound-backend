@@ -42,6 +42,11 @@ class LeadContact(HasnGrowthAppBase):
     dedupe_key_email: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     dedupe_key_phone: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     dedupe_key_domain: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
+    fact_dedupe_key: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='不含 PII 的全局公共事实去重键',
+    )
     normalization_version: Mapped[str] = mapped_column(sa.String(32), default='', comment=None)
     first_seen_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment=None)
     last_seen_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment=None)

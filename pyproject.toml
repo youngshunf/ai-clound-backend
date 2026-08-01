@@ -8,31 +8,48 @@ authors = [
   { name = "Wu Clan", email = "jianhengwu0407@gmail.com" },
 ]
 dependencies = [
+  "aio-pika>=9.5.8",
+  "aiosmtplib>=5.0.0",
   "alembic>=1.18.4",
   "asgiref>=3.11.1",
   "asyncmy>=0.2.11",
   "asyncpg>=0.31.0",
+  "backoff>=2.2.0",
   "bcrypt>=5.0.0",
   # If there is a serious problem, we will try `moka-py`
   "cachebox>=5.2.2",
   "cappa>=0.31.0",
-  "celery>=5.6.2",
+  "celery==5.6.3",
   # When celery version < 6.0.0
   # https://github.com/celery/celery/issues/7874
   "celery-aio-pool>=0.1.0rc8",
+  "croniter>=6.0.0",
   "cryptography>=46.0.5",
+  "dicebear-core>=10.3.0",
+  "dicebear-styles>=10.2.0",
   "dulwich>=1.1.0",
   "fast-captcha>=0.3.2",
+  "fastapi-oauth20>=0.0.2",
   "fastapi-pagination>=0.15.10",
   "fastapi[standard-no-fastapi-cloud-cli]>=0.131.0",
   "flower>=2.0.1",
   "gevent>=25.9.1",
+  # Git 操作
+  "gitpython>=3.1.43",
   "granian>=2.7.1",
+  "httpx[http2]>=0.28.1",
   "ip2loc>=1.0.0",
   "itsdangerous>=2.2.0",
   "jinja2>=3.1.6",
+  # 语言检测
+  "langdetect>=1.0.9",
+  # LLM 网关依赖
+  "litellm[proxy]>=1.50.0",
   "loguru>=0.7.3",
+  "markdown-it-py>=4.0.0",
   "msgspec>=0.20.0",
+  # S3 插件依赖
+  "opendal>=0.46.0",
   "opentelemetry-exporter-otlp-proto-grpc>=1.39.1",
   "opentelemetry-instrumentation-asyncio>=0.60b1",
   "opentelemetry-instrumentation-celery>=0.60b1",
@@ -42,49 +59,34 @@ dependencies = [
   "opentelemetry-instrumentation-redis>=0.60b1",
   "opentelemetry-instrumentation-sqlalchemy>=0.60b1",
   "opentelemetry-sdk>=1.39.1",
+  "orjson>=3.10.0",
+  "passlib>=1.7.4",
+  "playwright>=1.55.0",
   "prometheus-client>=0.24.1",
   "psutil>=7.2.2",
-  "pypinyin>=0.55.0",
   # https://github.com/fastapi-practices/fastapi_best_architecture/issues/887
   "psycopg[binary]==3.2.10",
   "pwdlib>=0.3.0",
+  "py-ip2region>=3.0.4",
   "pydantic>=2.12.5",
   "pydantic-settings>=2.13.1",
   "pymysql>=1.1.2",
+  "pypinyin>=0.55.0",
   "pyrate-limiter>=4.0.2",
+  # 支付 SDK
+  "python-alipay-sdk>=3.2.0",  # 支付宝（公钥+证书模式）
   "python-jose>=3.5.0",
   "python-socketio>=5.16.1",
-  "redis[hiredis]>=7.2.0",
+  "qiniu>=7.17.0",
+  "redis[hiredis]==8.0.1",
   "rtoml>=0.13.0",
   "sqlalchemy-crud-plus>=1.13.1",
   "sqlalchemy[asyncio]>=2.0.46",
   "sqlparse>=0.5.5",
   "starlette-context>=0.4.0",
-  "user-agents>=2.2.0",
-  # LLM 网关依赖
-  "litellm[proxy]>=1.50.0",
-  "orjson>=3.10.0",
-  "backoff>=2.2.0",
   "tiktoken>=0.7.0",
-  # 支付 SDK
-  "python-alipay-sdk>=3.2.0", # 支付宝（公钥+证书模式）
-  "wechatpayv3>=1.2.44", # 微信支付 v3
-  # S3 插件依赖
-  "opendal>=0.46.0",
-  "passlib>=1.7.4",
-  "croniter>=6.0.0",
-  # 语言检测
-  "langdetect>=1.0.9",
-  # Git 操作
-  "gitpython>=3.1.43",
-  "httpx[http2]>=0.28.1",
-  "dicebear-core>=10.3.0",
-  "dicebear-styles>=10.2.0",
-  "py-ip2region>=3.0.4",
-  "qiniu>=7.17.0",
-  "fastapi-oauth20>=0.0.2",
-  "playwright>=1.55.0",
-  "aiosmtplib>=5.0.0",
+  "user-agents>=2.2.0",
+  "wechatpayv3>=1.2.44",  # 微信支付 v3
 ]
 dynamic = ["version"]
 
@@ -103,18 +105,17 @@ dev = [
   "pytest-cov>=7.0.0",
   "pytest-sugar>=1.1.1",
   "python-socketio-stubs==5.13.0.12.20250809",
+  "types-PyYAML>=6.0.12.20250915",
   "types-croniter>=6.0.0.20250809",
   "types-jsonschema>=4.26.0.20260518",
   "types-psutil>=7.2.2.20260518",
   "types-python-dateutil>=2.9.0.20260716",
   "types-python-jose>=3.5.0",
-  "types-PyYAML>=6.0.12.20250915",
 ]
 lint = [
   "prek>=0.3.3",
 ]
 server = [
-  "aio-pika>=9.5.8",
   "wait-for-it>=2.3.0",
 ]
 

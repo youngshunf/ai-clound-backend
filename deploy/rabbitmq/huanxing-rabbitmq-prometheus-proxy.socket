@@ -1,0 +1,13 @@
+[Unit]
+Description=唤星 RabbitMQ Prometheus 私网代理套接字
+After=network-online.target
+
+[Socket]
+# 只在可观测 Docker 固定私网监听，不占用 RabbitMQ 的 loopback 15692。
+ListenStream=172.24.0.1:15693
+Accept=false
+FreeBind=true
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

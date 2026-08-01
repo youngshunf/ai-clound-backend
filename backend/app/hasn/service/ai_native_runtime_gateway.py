@@ -220,39 +220,29 @@ class AiNativeRuntimeGateway:
         # register-on-write 会话通道（doc31·产物自动登记铁律 + 设计 02 §4.3 会话轴分流）：
         # 剥离系统注入保留参数 → ContextVar，供 handler 登记产物时挂进工作会话资源栏。
         # 须在 bind_tool_input 前剥离（保留参未在 input_schema 声明，留着会原样透传给 handler）。
-        # 分键语义：`_hasn_work_session_id` 只承载工作会话 id（新节点双键同发，直接采信）；
-        # `_hasn_session_id` 是运行时/逻辑会话语义，只在「在册 task 收窄」命中时才回填
-        # ContextVar（兼容只发混合值的旧节点；IM 主会话 runtime id 查无 → 不落，防误绑会话）。
+        # 分键语义：`_hasn_work_session_id` 只承载工作会话 id（现行节点双键同发，直接采信）；
+        # `_hasn_session_id` 是运行时/逻辑会话语义，P2-8d 起绝不再经「在册 task 收窄」回填
+        # ContextVar（旧回落只服务混合语义时期的旧节点，退役后 runtime id 天然不可能误绑会话）。
         # 到达面：daemon 代理面（FastAPI 路由）daemon `ai_native.rs` 把两键重注入进 input → 本处
         # 剥离；MCP 直连面（AppTool shim）`server.call_tool` 已剥离并落 ContextVar，input 里没有
         # → 已落非 None 时不覆写（只进不退）。
-        from backend.app.hasn.service.hasn_artifacts_service import coalesce_legacy_work_session_id
         from backend.app.mcp import trust_gate as _tg
         from backend.app.mcp.context import (
-            get_current_work_session_id,
             set_current_project_id,
             set_current_work_session_id,
         )
 
         input_payload, _relay_session_id = _tg.pop_session_id(input_payload)
-        input_payload, _relay_work_session_id = _tg.pop_work_session_id(input_payload)
-        if _relay_work_session_id:
-            set_current_work_session_id(_relay_work_session_id)
-        elif get_current_work_session_id() is None and _relay_session_id:
-            narrowed = await coalesce_legacy_work_session_id(
-                db,
-                owner_hasn_id=agent.owner_hasn_id,
-                session_id=_relay_session_id,
-            )
-            if narrowed:
-                set_current_work_session_id(narrowed)
+        input_payload, relay_work_session_id = _tg.pop_work_session_id(input_payload)
+        if relay_work_session_id:
+            set_current_work_session_id(relay_work_session_id)
 
         # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
         # （`_hasn_project_id`）→ ContextVar，供 handler 登记产物时自动打标进 hasn_artifacts.project_id。
         # mcp_face 面 server.call_tool 已剥离并落 ContextVar、input 里没有 → guard 不覆盖。
-        input_payload, _relay_project_id = _tg.pop_project_id(input_payload)
-        if _relay_project_id:
-            set_current_project_id(_relay_project_id)
+        input_payload, relay_project_id = _tg.pop_project_id(input_payload)
+        if relay_project_id:
+            set_current_project_id(relay_project_id)
 
         # 入参绑定接缝（候选①）：按 capability.input_schema 校验 + 强转 + 回填默认，使 manifest
         # 成为工具入参的唯一事实源——下游授权闸门与 handler 都拿到规范化 typed 入参（也让
@@ -663,6 +653,8 @@ class AiNativeRuntimeGateway:
             'growth.enrich_company': growth_handlers.handle_growth_enrich_company,
             'growth.collect_start': growth_handlers.handle_growth_collect_start,
             'growth.collect_status': growth_handlers.handle_growth_collect_status,
+            'growth.lead_ingest': growth_handlers.handle_growth_lead_ingest,
+            'growth.lead_list': growth_handlers.handle_growth_lead_list,
             'growth.lead_search': growth_handlers.handle_growth_lead_search,
             'growth.lead_get': growth_handlers.handle_growth_lead_get,
             'growth.lead_qualify': growth_handlers.handle_growth_lead_qualify,
@@ -673,12 +665,18 @@ class AiNativeRuntimeGateway:
             'growth.customer_update_profile': growth_handlers.handle_growth_customer_update_profile,
             'growth.activity_log': growth_handlers.handle_growth_activity_log,
             'growth.customer_reassign': growth_handlers.handle_growth_customer_reassign,
+            'growth.outreach_draft': growth_handlers.handle_growth_outreach_draft,
+            'growth.outreach_submit': growth_handlers.handle_growth_outreach_submit,
             'growth.outreach_send': growth_handlers.handle_growth_outreach_send,
             'growth.outreach_status': growth_handlers.handle_growth_outreach_status,
             'growth.opportunity_create': growth_handlers.handle_growth_opportunity_create,
+            'growth.opportunity_list': growth_handlers.handle_growth_opportunity_list,
+            'growth.opportunity_get': growth_handlers.handle_growth_opportunity_get,
             'growth.opportunity_update_stage': growth_handlers.handle_growth_opportunity_update_stage,
             'growth.deal_close': growth_handlers.handle_growth_deal_close,
             'growth.report_funnel': growth_handlers.handle_growth_report_funnel,
+            'growth.report_performance': growth_handlers.handle_growth_report_performance,
+            'growth.review_suggest': growth_handlers.handle_growth_review_suggest,
             # 知识库（AI-Native 重做：工具回归 manifest App 工具，handler 落 knowledge service，
             # RAGFlow 为云端内部处理后端——《知识库AI-Native应用重设计》§2.4/§3）
             'knowledge.search': knowledge_handlers.handle_knowledge_search,

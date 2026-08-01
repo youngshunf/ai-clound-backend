@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -99,6 +99,7 @@ def _committed_facts(origin_session_id: str | None) -> MessageCommittedFacts:
     return MessageCommittedFacts(
         conversation_id='conv-1',
         message_id='1001',
+        conversation_seq=7,
         sender_hasn_id='a_bot',
         content_type=1,
         content_body={'text': '你好，想约个时间'},
@@ -111,17 +112,39 @@ def _committed_facts(origin_session_id: str | None) -> MessageCommittedFacts:
 def test_sync_projection_forks_origin_session_id_by_audience() -> None:
     """consumer 只给发送方 owner 投影溯源，对端 owner 的载荷必须剥除。"""
     facts = _committed_facts(_SESSION)
-    sender_payload = _message_new_payload(facts, facts.origin_session_id)
-    peer_payload = _message_new_payload(facts, None)
+    sender_payload = _message_new_payload(
+        facts,
+        facts.origin_session_id,
+        sender_is_owned=True,
+    )
+    peer_payload = _message_new_payload(
+        facts,
+        None,
+        sender_is_owned=False,
+    )
 
     assert sender_payload['origin_session_id'] == _SESSION
+    assert sender_payload['conversation_seq'] == 7
+    assert sender_payload['sender_is_owned'] is True
     assert 'origin_session_id' not in peer_payload
+    assert peer_payload['sender_is_owned'] is False
 
 
 def test_sync_projection_omits_origin_session_id_when_absent() -> None:
-    """原始事实无溯源时，所有受众投影都保持八字段瘦事件。"""
-    payload = _message_new_payload(_committed_facts(None), None)
+    """原始事实无溯源时仍携带权威顺序与发送方归属，不携带空溯源字段。"""
+    payload = _message_new_payload(
+        _committed_facts(None),
+        None,
+        sender_is_owned=False,
+    )
     assert 'origin_session_id' not in payload
+
+
+def test_sync_projection_rejects_missing_conversation_sequence() -> None:
+    """禁止把缺失权威会话顺序的毒事件继续投递给严格客户端。"""
+    facts = replace(_committed_facts(None), conversation_seq=None)
+    with pytest.raises(ValueError, match='conversation_seq'):
+        _message_new_payload(facts, None, sender_is_owned=False)
 
 
 # ─── E 刀：mission_note 投影裁剪 ───

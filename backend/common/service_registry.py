@@ -120,6 +120,37 @@ _REGISTRY: dict[str, ServiceSpec] = {
             derive_token=True,
             default_timeout=120.0,
         ),
+        # hosting：无头 hasn-node 托管宿主代理（hasn-node-hosting agent，doc「云端节点托管」实施契约 §1/§4）。
+        # 自研、两端受控 → 派生令牌；池化（云端 broker 经 service_http 连接池调用）。
+        # 约定端口 8004：契约初稿写的 8003 与上面的 lead-crawler 撞车，2026-07-31 改判为 8004
+        # （已占：finance/publish 8000、quant 8001、montage 8002、lead-crawler 8003；edge 反代占 8005）。
+        # default_timeout=120：建容器要拉镜像 + 建网络/卷，是可能耗时的同步编排调用。
+        ServiceSpec(
+            name='hosting',
+            title='无头节点托管宿主',
+            default_port=8004,
+            url_attr='HOSTING_AGENT_URL',
+            token_attr='HOSTING_AGENT_TOKEN',
+            timeout_attr='HOSTING_AGENT_TIMEOUT',
+            health_path='/health',
+            pooled=True,
+            derive_token=True,
+            default_timeout=120.0,
+        ),
+        # publish：Growth 公开表单解析站点权威绑定的内部 HTTP 接缝。当前可与主云端同进程部署，
+        # 但 Growth 仍只经 provider 调用收敛接口；令牌显式配置，不允许匿名或派生回落。
+        ServiceSpec(
+            name='publish',
+            title='网页发布服务',
+            default_port=8000,
+            url_attr='PUBLISH_INTERNAL_BASE_URL',
+            token_attr='PUBLISH_INTERNAL_TOKEN',
+            timeout_attr='PUBLISH_INTERNAL_TIMEOUT',
+            health_path=None,
+            pooled=True,
+            derive_token=False,
+            default_timeout=5.0,
+        ),
         # 以下为外部/已部署服务：用各自第三方/bespoke 真实鉴权，绝不派生令牌（derive_token=False）。
         # ragflow/hermes 自有 transport（RSA / 双向 bespoke token）维持原样，目录登记仅供健康可见。
         ServiceSpec(

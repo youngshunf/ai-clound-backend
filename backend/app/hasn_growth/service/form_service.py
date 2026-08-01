@@ -7,13 +7,16 @@
 
 from __future__ import annotations
 
+import html
 import json
+import re
+import unicodedata
 
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 
@@ -24,26 +27,31 @@ from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission
+from backend.app.hasn_growth.model.growth_attribution_event import GrowthAttributionEvent
 from backend.app.hasn_growth.model.growth_project import GrowthProject
+from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.contact_privacy_service import (
     ContactChannelWrite,
     contact_privacy_service,
     ensure_growth_pii_key_write_fence,
 )
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
+from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.pii import redact_pii_value
 from backend.app.hasn_growth.service.pii_keyring import GrowthPiiKeyring, require_growth_pii_keyring
-from backend.app.hasn_growth.service.project_lead_compatibility_service import (
-    project_lead_compatibility_service,
-)
-from backend.app.hasn_publish.model.site import Site
+from backend.app.hasn_publish.provider.client import publish_provider
+from backend.app.hasn_task.model.task import HasnTask
 from backend.common.exception import errors
+from backend.common.response.response_code import StandardResponseCode
 from backend.core.conf import settings
+from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
 
 _FORM_RETENTION_DAYS = 365
 _FORM_UTM_KEYS = ('utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term')
+_HTML_TAG_RE = re.compile(r'<[^>]*>')
 
 
 def _gen_no(prefix: str) -> str:
@@ -53,7 +61,11 @@ def _gen_no(prefix: str) -> str:
 def _clean_optional(value: Any, *, max_length: int) -> str | None:
     if not isinstance(value, str):
         return None
-    cleaned = value.strip()
+    normalized = unicodedata.normalize('NFKC', value)
+    without_controls = ''.join(
+        char for char in normalized if unicodedata.category(char) not in {'Cc', 'Cf'} or char in {'\n', '\t'}
+    )
+    cleaned = _HTML_TAG_RE.sub('', html.unescape(without_controls)).strip()
     return cleaned[:max_length] or None
 
 
@@ -98,28 +110,18 @@ class GrowthFormService:
     """表单回流：门禁 → 去标识提交 → 私有联系人 → 客户。"""
 
     @staticmethod
-    async def _resolve_owner(db: AsyncSession, *, publish_ref: str) -> tuple[int, str, Site]:
-        """按服务端 Growth 绑定解析落地页；普通公开制品不能伪装成获客表单。"""
-        site = (
-            await db.execute(
-                sa.select(Site).where(
-                    Site.slug == publish_ref,
-                    Site.kind == 'page',
-                    Site.source_app == 'growth',
-                    Site.status == 'active',
-                    Site.visibility.in_(('public', 'unlisted')),
-                    Site.deleted_time.is_(None),
-                    sa.or_(Site.expires_at.is_(None), Site.expires_at > timezone.now()),
-                )
-            )
-        ).scalar_one_or_none()
-        if not site:
-            raise errors.NotFoundError(msg='落地页不存在或已下线')
+    async def _resolve_owner(
+        db: AsyncSession,
+        *,
+        binding: dict[str, Any],
+    ) -> tuple[int, str, GrowthProject]:
+        """只按 Publish provider 返回的权威平台项目解析 Growth，绝不信任公开请求体。"""
         project = (
             await db.execute(
                 sa.select(GrowthProject).where(
-                    GrowthProject.landing_site_ref == f'hasn://publish/sites/{site.id}',
-                    GrowthProject.owner_hasn_id == site.owner_id,
+                    GrowthProject.platform_project_id == binding['platform_project_id'],
+                    GrowthProject.landing_site_ref == f'hasn://publish/sites/{binding["site_id"]}',
+                    GrowthProject.owner_hasn_id == binding['owner_hasn_id'],
                     GrowthProject.owner_scope == 'personal',
                     GrowthProject.enterprise_id.is_(None),
                     GrowthProject.status == 'active',
@@ -128,13 +130,16 @@ class GrowthFormService:
             )
         ).scalar_one_or_none()
         if project is None:
-            raise errors.NotFoundError(msg='落地页未绑定可用的获客项目')
+            raise errors.ConflictError(
+                msg='落地页未绑定可用的获客项目',
+                data={'error_code': 'GROWTH_FORM_PROJECT_UNAVAILABLE'},
+            )
         human = (
-            await db.execute(sa.select(HasnHumans).where(HasnHumans.hasn_id == site.owner_id))
+            await db.execute(sa.select(HasnHumans).where(HasnHumans.hasn_id == binding['owner_hasn_id']))
         ).scalar_one_or_none()
         if not human or human.user_id != project.user_id:
             raise errors.NotFoundError(msg='落地页归属主人不存在')
-        return human.user_id, site.owner_id, site
+        return human.user_id, binding['owner_hasn_id'], project
 
     @staticmethod
     async def _find_private_contact_id(
@@ -223,21 +228,229 @@ class GrowthFormService:
                 )
             contact = loaded_contact
 
-        await project_lead_compatibility_service.upsert_reference(
-            db,
-            user_id=user_id,
-            lead_contact_id=contact.id,
-            source='manual',
-            status='qualified',
-            update_source=False,
-        )
         return contact
+
+    @staticmethod
+    async def _ensure_project_lead(
+        db: AsyncSession,
+        *,
+        project: GrowthProject,
+        contact: LeadContact,
+        submission_id: int,
+        source_meta: dict[str, Any],
+    ) -> GrowthProjectLead:
+        """幂等建立项目线索与迁移期旧引用，项目来源事实保持 inbound_form。"""
+        await db.execute(
+            pg_insert(LeadRef)
+            .values(
+                user_id=project.user_id,
+                lead_contact_id=contact.id,
+                source='manual',
+                status='new',
+            )
+            .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
+        )
+        statement = (
+            pg_insert(GrowthProjectLead)
+            .values(
+                growth_project_id=project.id,
+                lead_contact_id=contact.id,
+                user_id=project.user_id,
+                owner_scope='personal',
+                enterprise_id=None,
+                assignee=None,
+                source_kind='inbound_form',
+                source_tool='publish_form',
+                source_ref=f'form_submission:{submission_id}',
+                source_meta=source_meta,
+                status='new',
+            )
+            .on_conflict_do_nothing(constraint='uq_growth_project_lead_contact')
+            .returning(GrowthProjectLead.id)
+        )
+        project_lead_id = (await db.execute(statement)).scalar_one_or_none()
+        if project_lead_id is None:
+            project_lead = (
+                await db.execute(
+                    sa.select(GrowthProjectLead).where(
+                        GrowthProjectLead.growth_project_id == project.id,
+                        GrowthProjectLead.lead_contact_id == contact.id,
+                    )
+                )
+            ).scalar_one()
+        else:
+            loaded = await db.get(GrowthProjectLead, int(project_lead_id))
+            if loaded is None:
+                raise errors.ServerError(msg='项目线索写入后无法读取')
+            project_lead = loaded
+        return project_lead
+
+    @staticmethod
+    async def _ensure_followup_task(
+        db: AsyncSession,
+        *,
+        project: GrowthProject,
+        customer: Customer,
+        submission_id: int,
+    ) -> str | None:
+        """为有效留资建立一次性接续任务；项目未绑定分身时如实保留待恢复状态。"""
+        if not project.owner_agent_id:
+            return None
+        task_uuid = f'growth:inbound:{submission_id}'
+        prompt = (
+            f'跟进获客项目 {project.id} 的新入站客户 {customer.id}。'
+            '先读取客户脱敏详情与同意记录，再给主人提出合规跟进建议；'
+            '任何对外发送必须进入审批流程。'
+        )
+        now = timezone.now()
+        await db.execute(
+            pg_insert(HasnTask)
+            .values(
+                owner_id=project.owner_hasn_id,
+                agent_id=project.owner_agent_id,
+                name='处理新的落地页留资',
+                description='公开表单回流后自动建立的 Owner 接续任务',
+                prompt=prompt,
+                schedule_type='once',
+                schedule_config={'run_at': now.isoformat()},
+                schedule_display='收到留资后立即处理',
+                timezone='Asia/Shanghai',
+                misfire_policy='skip',
+                enabled=True,
+                state='scheduled',
+                next_run_at=now,
+                created_by=project.owner_hasn_id,
+                task_uuid=task_uuid,
+                executor_policy='local_node',
+                task_revision=1,
+                created_by_kind='owner',
+                risk_level='low',
+                project_id=project.platform_project_id,
+                app_id='growth',
+                execution_kind='freeform',
+                execution_spec={'prompt': prompt},
+            )
+            .on_conflict_do_nothing(index_elements=[HasnTask.task_uuid])
+        )
+        if customer.followup_task_id is None:
+            customer.followup_task_id = task_uuid
+        return task_uuid
+
+    @staticmethod
+    async def _record_inbound_attribution(
+        db: AsyncSession,
+        *,
+        project: GrowthProject,
+        contact: LeadContact,
+        customer: Customer,
+        submission: FormSubmission,
+        binding: dict[str, Any],
+    ) -> None:
+        """追加 first/last touch：首次触点固定一次，最近触点按每次提交追加。"""
+        base_metadata = {
+            'publish_site_id': binding['site_id'],
+            'landing_revision_id': binding['revision_id'],
+            'form_ref': binding['form_ref'],
+            'form_submission_id': submission.id,
+            'utm_source_hmac': submission.utm_source,
+            'utm_medium_hmac': submission.utm_medium,
+            'utm_campaign_hmac': submission.utm_campaign,
+            'referrer_origin': submission.referrer,
+        }
+        values = [
+            {
+                'growth_project_id': project.id,
+                'event_type': 'inbound',
+                'lead_contact_id': contact.id,
+                'customer_id': customer.id,
+                'source_kind': 'inbound_form',
+                'source_ref': f'hasn://publish/sites/{binding["site_id"]}',
+                'campaign_ref': submission.utm_campaign,
+                'occurred_time': submission.consent_at,
+                'idempotency_key': f'inbound:first:{customer.id}',
+                'meta_data': {**base_metadata, 'touch_model': 'first_touch'},
+            },
+            {
+                'growth_project_id': project.id,
+                'event_type': 'inbound',
+                'lead_contact_id': contact.id,
+                'customer_id': customer.id,
+                'source_kind': 'inbound_form',
+                'source_ref': f'hasn://publish/sites/{binding["site_id"]}',
+                'campaign_ref': submission.utm_campaign,
+                'occurred_time': submission.consent_at,
+                'idempotency_key': f'inbound:last:{submission.id}',
+                'meta_data': {**base_metadata, 'touch_model': 'last_touch'},
+            },
+        ]
+        for value in values:
+            await db.execute(
+                pg_insert(GrowthAttributionEvent)
+                .values(**value)
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        GrowthAttributionEvent.growth_project_id,
+                        GrowthAttributionEvent.idempotency_key,
+                    ]
+                )
+            )
+
+    @staticmethod
+    async def _enforce_rate_limit(
+        *,
+        publish_ref: str,
+        ip_hmac: str,
+        identity_hmac: str,
+    ) -> None:
+        """按站点+IP 与站点+身份双维固定窗口限流；Redis 故障显式 503。"""
+        window = max(1, settings.GROWTH_FORM_RATE_WINDOW_SECONDS)
+        dimensions = (
+            (f'growth:form:rate:ip:{publish_ref}:{ip_hmac}', max(1, settings.GROWTH_FORM_RATE_IP_MAX)),
+            (
+                f'growth:form:rate:identity:{publish_ref}:{identity_hmac}',
+                max(1, settings.GROWTH_FORM_RATE_IDENTITY_MAX),
+            ),
+        )
+        try:
+            for key, limit in dimensions:
+                count = await redis_client.incr(key)
+                if count == 1:
+                    await redis_client.expire(key, window)
+                if count > limit:
+                    retry_after = await redis_client.ttl(key)
+                    raise errors.HTTPError(
+                        code=429,
+                        msg='提交过于频繁，请稍后重试',
+                        headers={'Retry-After': str(max(1, retry_after))},
+                    )
+        except errors.HTTPError:
+            raise
+        except Exception as exc:
+            raise errors.RequestError(
+                code=StandardResponseCode.HTTP_503,
+                msg='表单安全服务暂时不可用，请稍后重试',
+                data={'error_code': 'GROWTH_FORM_RATE_LIMIT_UNAVAILABLE'},
+            ) from exc
+
+    @staticmethod
+    def _submission_result(
+        submission: FormSubmission,
+        *,
+        keyring: GrowthPiiKeyring,
+    ) -> dict[str, Any]:
+        """公开响应不暴露 CRM/客户 ID；spam 与有效留资返回同形状。"""
+        receipt_input = f'{submission.publish_site_id}:{submission.id}'
+        return {
+            'status': 'received',
+            'receipt_ref': keyring.hmac_for('form_receipt', receipt_input)[:24],
+        }
 
     @staticmethod
     async def _upsert_inbound_customer(
         db: AsyncSession,
         *,
         user_id: int,
+        growth_project_id: str,
         company: str | None,
         lead_contact_id: int,
     ) -> Customer:
@@ -246,6 +459,7 @@ class GrowthFormService:
         insert = pg_insert(Customer).values(
             customer_no=_gen_no('CUS'),
             user_id=user_id,
+            growth_project_id=growth_project_id,
             lead_contact_id=lead_contact_id,
             source_kind='inbound_form',
             company_name=company,
@@ -268,9 +482,12 @@ class GrowthFormService:
             (
                 await db.execute(
                     insert.on_conflict_do_update(
-                        index_elements=[Customer.user_id, Customer.lead_contact_id],
+                        index_elements=[
+                            Customer.growth_project_id,
+                            Customer.lead_contact_id,
+                        ],
                         index_where=sa.and_(
-                            Customer.owner_scope == 'personal',
+                            Customer.growth_project_id.is_not(None),
                             Customer.lead_contact_id.is_not(None),
                         ),
                         set_={
@@ -292,11 +509,13 @@ class GrowthFormService:
         return customer
 
     @classmethod
-    async def submit_form(
+    async def submit_form(  # noqa: C901
         cls,
         db: AsyncSession,
         *,
         publish_ref: str,
+        form_access_token: str,
+        idempotency_key: str,
         data: dict[str, Any],
         client_ip: str | None = None,
         referrer: str | None = None,
@@ -312,14 +531,28 @@ class GrowthFormService:
                 msg='联系人 PII 新写尚未启用',
                 data={'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED'},
             )
+        try:
+            normalized_idempotency_key = str(UUID(idempotency_key.strip()))
+        except (ValueError, AttributeError) as exc:
+            raise errors.RequestError(
+                msg='Idempotency-Key 必须是有效 UUID',
+                data={'error_code': 'GROWTH_FORM_IDEMPOTENCY_KEY_INVALID'},
+            ) from exc
         keyring = require_growth_pii_keyring()
         await ensure_growth_pii_key_write_fence(db, keyring=keyring)
-        user_id, _owner, site = await cls._resolve_owner(db, publish_ref=publish_ref)
+        binding = await publish_provider.resolve_form_access(
+            publish_ref=publish_ref,
+            form_access_token=form_access_token,
+        )
+        user_id, owner_hasn_id, project = await cls._resolve_owner(
+            db,
+            binding=binding,
+        )
 
-        email = _clean_optional(data.get('email'), max_length=255)
-        phone = _clean_optional(data.get('phone'), max_length=50)
-        wechat = _clean_optional(data.get('wechat'), max_length=100)
-        company = _clean_business_metadata(data.get('company_name'), max_length=255)
+        email = _clean_optional(data.get('email'), max_length=254)
+        phone = _clean_optional(data.get('phone'), max_length=32)
+        wechat = _clean_optional(data.get('wechat'), max_length=64)
+        company = _clean_business_metadata(data.get('company_name'), max_length=200)
         contact_name = _clean_optional(data.get('contact_name'), max_length=100)
         message = _clean_optional(data.get('message'), max_length=2000)
         notice_version = _clean_optional(data.get('privacy_notice_version'), max_length=64)
@@ -332,8 +565,8 @@ class GrowthFormService:
             )
         if (
             notice_version != expected_notice_version
-            or consent_purpose != 'sales_followup'
-            or data.get('consent_granted') is not True
+            or consent_purpose != 'sales_contact'
+            or data.get('consent') is not True
         ):
             raise errors.RequestError(
                 msg='表单必须提供有效的隐私说明版本和明确同意',
@@ -353,7 +586,7 @@ class GrowthFormService:
             ('phone', phone),
             ('wechat', wechat),
         )
-        source_ref_pending = f'publish_site:{site.id}'
+        source_ref_pending = f'publish_site:{binding["site_id"]}'
         channels = [
             ContactChannelWrite(
                 channel=channel,
@@ -368,66 +601,146 @@ class GrowthFormService:
         ]
         fingerprint_payload = json.dumps(
             {
-                'site_id': site.id,
+                'site_id': binding['site_id'],
+                'revision_id': binding['revision_id'],
+                'form_ref': binding['form_ref'],
                 'contact_name': contact_name,
                 'email': email,
                 'phone': phone,
                 'wechat': wechat,
                 'company': company,
                 'message': message,
+                'privacy_notice_version': notice_version,
+                'consent_purpose': consent_purpose,
+                'consent': True,
+                'website_url': _clean_optional(data.get('website_url'), max_length=2048),
+                'utm': data.get('utm') if isinstance(data.get('utm'), dict) else {},
             },
             ensure_ascii=False,
             sort_keys=True,
             separators=(',', ':'),
         )
         fingerprint = f'v{keyring.active_hmac_version}:{keyring.hmac_for("form_submission", fingerprint_payload)}'
-        ip_hmac = f'v{keyring.active_hmac_version}:{keyring.hmac_for("ip", client_ip)}' if client_ip else None
-        raw_extra = data.get('extra')
-        extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+
+        existing_submission = (
+            await db.execute(
+                sa.select(FormSubmission).where(
+                    FormSubmission.publish_site_id == binding['site_id'],
+                    FormSubmission.idempotency_key == normalized_idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_submission is not None:
+            if existing_submission.submission_fingerprint != fingerprint:
+                raise errors.ConflictError(
+                    msg='同一 Idempotency-Key 不能提交不同内容',
+                    data={'error_code': 'GROWTH_FORM_IDEMPOTENCY_CONFLICT'},
+                )
+            return cls._submission_result(existing_submission, keyring=keyring)
+
+        normalized_ip = _clean_optional(client_ip, max_length=128) or 'unknown'
+        ip_hmac = f'v{keyring.active_hmac_version}:{keyring.hmac_for("ip", normalized_ip)}'
+        identity_payload = json.dumps(
+            {
+                'email': email.casefold() if email else None,
+                'phone': ''.join(char for char in phone or '' if char.isdigit() or char == '+') or None,
+                'wechat': wechat.casefold() if wechat else None,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        identity_hmac = f'v{keyring.active_hmac_version}:{keyring.hmac_for("form_identity", identity_payload)}'
+        await cls._enforce_rate_limit(
+            publish_ref=publish_ref,
+            ip_hmac=ip_hmac,
+            identity_hmac=identity_hmac,
+        )
+
+        raw_utm = data.get('utm')
+        submitted_utm: dict[str, Any] = raw_utm if isinstance(raw_utm, dict) else {}
+        utm_source_values = {
+            'utm_source': submitted_utm.get('source'),
+            'utm_medium': submitted_utm.get('medium'),
+            'utm_campaign': submitted_utm.get('campaign'),
+            'utm_content': submitted_utm.get('content'),
+            'utm_term': submitted_utm.get('term'),
+        }
         utm = {
             key: _hmac_untrusted_metadata(
                 keyring,
                 field=key,
-                value=extra.get(key),
+                value=utm_source_values.get(key),
                 max_length=255,
             )
             for key in _FORM_UTM_KEYS
         }
 
-        submission = FormSubmission(
-            user_id=user_id,
-            publish_ref=publish_ref,
-            publish_site_id=site.id,
-            submission_fingerprint=fingerprint,
-            payload={'message_received': bool(message)},
-            email=None,
-            phone=None,
-            name=None,
-            company=company,
-            status='spam' if is_spam else 'pending',
-            privacy_notice_version=notice_version,
-            consent_purpose=consent_purpose,
-            consent_source='landing_form',
-            consent_at=consent_at,
-            ip_hmac=ip_hmac,
-            spam_status='blocked' if is_spam else 'clean',
-            spam_reason=spam_reason,
-            utm_source=utm['utm_source'],
-            utm_medium=utm['utm_medium'],
-            utm_campaign=utm['utm_campaign'],
-            utm_content=utm['utm_content'],
-            utm_term=utm['utm_term'],
-            referrer=_referrer_origin(referrer),
-            source_meta={},
-            owner_scope='personal',
-            enterprise_id=None,
-            assignee=None,
+        insert_submission = (
+            pg_insert(FormSubmission)
+            .values(
+                user_id=user_id,
+                growth_project_id=project.id,
+                platform_project_id=project.platform_project_id,
+                publish_ref=publish_ref,
+                publish_site_id=binding['site_id'],
+                idempotency_key=normalized_idempotency_key,
+                submission_fingerprint=fingerprint,
+                payload={'message_received': bool(message)},
+                email=None,
+                phone=None,
+                name=None,
+                company=company,
+                status='spam' if is_spam else 'pending',
+                privacy_notice_version=notice_version,
+                consent_purpose=consent_purpose,
+                consent_source='landing_form',
+                consent_at=consent_at,
+                ip_hmac=ip_hmac,
+                spam_status='blocked' if is_spam else 'clean',
+                spam_reason=spam_reason,
+                utm_source=utm['utm_source'],
+                utm_medium=utm['utm_medium'],
+                utm_campaign=utm['utm_campaign'],
+                utm_content=utm['utm_content'],
+                utm_term=utm['utm_term'],
+                referrer=_referrer_origin(referrer),
+                source_meta={},
+                owner_scope='personal',
+                enterprise_id=None,
+                assignee=None,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    FormSubmission.publish_site_id,
+                    FormSubmission.idempotency_key,
+                ],
+                index_where=sa.text('publish_site_id IS NOT NULL AND idempotency_key IS NOT NULL'),
+            )
+            .returning(FormSubmission.id)
         )
-        db.add(submission)
-        await db.flush()
+        submission_id = (await db.execute(insert_submission)).scalar_one_or_none()
+        if submission_id is None:
+            raced = (
+                await db.execute(
+                    sa.select(FormSubmission).where(
+                        FormSubmission.publish_site_id == binding['site_id'],
+                        FormSubmission.idempotency_key == normalized_idempotency_key,
+                    )
+                )
+            ).scalar_one()
+            if raced.submission_fingerprint != fingerprint:
+                raise errors.ConflictError(
+                    msg='同一 Idempotency-Key 不能提交不同内容',
+                    data={'error_code': 'GROWTH_FORM_IDEMPOTENCY_CONFLICT'},
+                )
+            return cls._submission_result(raced, keyring=keyring)
+        submission = await db.get(FormSubmission, int(submission_id))
+        if submission is None:
+            raise errors.ServerError(msg='表单提交写入后无法读取')
 
         if is_spam:
-            return {'status': 'spam', 'form_submission_id': submission.id, 'customer_id': None}
+            return cls._submission_result(submission, keyring=keyring)
 
         contact = await cls._ensure_contact(
             db,
@@ -465,13 +778,34 @@ class GrowthFormService:
         customer = await cls._upsert_inbound_customer(
             db,
             user_id=user_id,
+            growth_project_id=str(project.id),
             company=company,
             lead_contact_id=contact.id,
         )
+        project_lead = await cls._ensure_project_lead(
+            db,
+            project=project,
+            contact=contact,
+            submission_id=submission.id,
+            source_meta={
+                'publish_site_id': binding['site_id'],
+                'landing_revision_id': binding['revision_id'],
+                'form_ref': binding['form_ref'],
+                'identity_hmac': identity_hmac,
+            },
+        )
+        task_id = await cls._ensure_followup_task(
+            db,
+            project=project,
+            customer=customer,
+            submission_id=submission.id,
+        )
         submission.customer_id = customer.id
         submission.lead_contact_id = contact.id
+        submission.project_lead_id = project_lead.id
         submission.contact_private_profile_id = private['private_profile_id']
         submission.contact_channel_ids = [channel['id'] for channel in private['channels']]
+        submission.task_id = task_id
         submission.status = 'converted'
         await db.flush()
 
@@ -479,18 +813,30 @@ class GrowthFormService:
             db,
             user_id=user_id,
             customer_id=customer.id,
-            kind='reply',
-            content='落地页留资已转化为客户',
+            kind='inbound',
+            content='落地页留资已进入待处理队列',
             actor_kind='owner',
             actor_id=None,
             ref_table='form_submission',
             ref_id=str(submission.id),
         )
-        return {
-            'status': 'converted',
-            'customer_id': customer.id,
-            'form_submission_id': submission.id,
-        }
+        await cls._record_inbound_attribution(
+            db,
+            project=project,
+            contact=contact,
+            customer=customer,
+            submission=submission,
+            binding=binding,
+        )
+        await growth_notification_service.inbound_form_received(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            customer_id=customer.id,
+            project_lead_id=project_lead.id,
+            submission_id=submission.id,
+            task_ready=task_id is not None,
+        )
+        return cls._submission_result(submission, keyring=keyring)
 
 
 growth_form_service = GrowthFormService()

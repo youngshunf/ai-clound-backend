@@ -1,18 +1,16 @@
 """传统业务 Socket.IO 服务器实例及连接事件。"""
-import urllib.parse
 
 import socketio
 
 from backend.common.log import log
 from backend.common.security.jwt import jwt_authentication
+from backend.common.socketio.manager import build_socketio_server_manager
 from backend.core.conf import settings
 from backend.database.redis import redis_client
 
 # 创建 Socket.IO 服务器实例
 sio = socketio.AsyncServer(
-    client_manager=socketio.AsyncRedisManager(
-        f'redis://:{urllib.parse.quote(settings.REDIS_PASSWORD)}@{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DATABASE}',
-    ),
+    client_manager=build_socketio_server_manager(),
     async_mode='asgi',
     cors_allowed_origins=[],
     namespaces=['/ws'],

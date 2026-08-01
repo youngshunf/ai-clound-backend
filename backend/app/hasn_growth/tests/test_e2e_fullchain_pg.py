@@ -249,12 +249,43 @@ async def test_fullchain_single_customer_lifecycle(e2e) -> None:
     assert cust_after['lifecycle_status'] == 'engaged'
 
     # --- 场景6：agent 立商机 → 推进阶段 → 成交登记 → owner 漏斗 won_this_month ---
-    opp = _ok(await c.post(f'{A}/opportunities', json={'customer_id': cid, 'name': '年度 SaaS 订阅', 'amount': 120000}))
+    opp = _ok(
+        await c.post(
+            f'{A}/opportunities',
+            json={
+                'customer_id': cid,
+                'name': '年度 SaaS 订阅',
+                'amount': 120000,
+                'idempotency_key': f'e2e:opportunity:{cid}',
+            },
+        )
+    )
     oid = opp['id']
     assert opp['stage'] == 'contacted'
-    o1 = _ok(await c.patch(f'{A}/opportunities/{oid}/stage', json={'stage': 'proposal', 'note': '发了提案'}))
+    o1 = _ok(
+        await c.patch(
+            f'{A}/opportunities/{oid}/stage',
+            json={
+                'stage': 'proposal',
+                'note': '发了提案',
+                'expected_version': opp['version'],
+                'idempotency_key': f'e2e:stage:{oid}',
+            },
+        )
+    )
     assert o1['stage'] == 'proposal'
-    closed = _ok(await c.post(f'{A}/opportunities/{oid}/close', json={'result': 'won', 'amount': 118000}))
+    closed = _ok(
+        await c.post(
+            f'{A}/opportunities/{oid}/close',
+            json={
+                'result': 'won',
+                'amount': 118000,
+                'currency': 'CNY',
+                'expected_version': o1['version'],
+                'idempotency_key': f'e2e:close:{oid}',
+            },
+        )
+    )
     assert closed['stage'] == 'closed_won'
     funnel = _ok(await c.get(f'{O}/report/funnel'))
     assert funnel['won_this_month']['count'] >= 1 and funnel['won_this_month']['amount'] >= 118000

@@ -17,7 +17,8 @@ hasn_id/event_id 等高基数 ID——守卫测试 `test_observability_metrics.p
 - `hasn_im_idempotency_total{result}`：幂等命中（deduped）/新建（created）计数——append/ensure-direct 处；
 - `hasn_im_integration_event_head`：integration_events 分片头 event_seq（消费者水位对账用）；
 - `hasn_im_consumer_lag{consumer}` / `_failure_total` / `hasn_im_dead_letter_total{consumer}`：消费者框架；
-- `hasn_sync_projection_lag_seconds{producer}` / `hasn_sync_pull_lag_seconds` / `hasn_sync_cursor_expired_total`：sync 内核；
+- `hasn_sync_projection_lag_seconds{producer}` / `hasn_sync_pull_lag_seconds` /
+  `hasn_sync_cursor_expired_total`：sync 内核；
 - `hasn_realtime_delivery_total{result}` / `hasn_push_delivery_total{result}`：best-effort 两消费者；
 - `hasn_producer_outbox_oldest_age_seconds{producer}`：业务 outbox relay；
 - `hasn_unread_reconcile_mismatch_total`：R4 unread reconciler 对账不一致计数。
@@ -101,6 +102,65 @@ HASN_REALTIME_DELIVERY_TOTAL = Counter(
     labelnames=['result'],
 )
 
+# dual 模式离线恢复影子对账；稳定 ID 只在 Redis/PG 内比较，不进入标签。
+HASN_OFFLINE_SHADOW_MESSAGES = Gauge(
+    name='hasn_offline_shadow_messages',
+    documentation='Redis offline 与 PostgreSQL sync 七天影子对账数量·按低基数结果分类',
+    labelnames=['result'],
+)
+
+# realtime wake-up transport 迁移指标；event_id 只进日志和内存对账，不进入 label。
+HASN_REALTIME_WAKEUP_PUBLISH_TOTAL = Counter(
+    name='hasn_realtime_wakeup_publish_total',
+    documentation='realtime wake-up 发布计数·按 transport 与 result',
+    labelnames=['transport', 'result'],
+)
+
+HASN_REALTIME_WAKEUP_CONSUME_TOTAL = Counter(
+    name='hasn_realtime_wakeup_consume_total',
+    documentation='realtime wake-up 消费计数·按 transport 与 result',
+    labelnames=['transport', 'result'],
+)
+
+HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL = Counter(
+    name='hasn_realtime_wakeup_schema_error_total',
+    documentation='realtime wake-up schema 非法计数·按 transport',
+    labelnames=['transport'],
+)
+
+HASN_REALTIME_WAKEUP_LATENCY_SECONDS = Histogram(
+    name='hasn_realtime_wakeup_latency_seconds',
+    documentation='realtime wake-up 从发布到消费的端到端延迟（秒）·按 transport',
+    labelnames=['transport'],
+)
+
+HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL = Counter(
+    name='hasn_rabbitmq_publish_confirm_total',
+    documentation='RabbitMQ publisher confirm 结果计数·按低基数 result',
+    labelnames=['result'],
+)
+
+HASN_RABBITMQ_DELIVERY_ACK_TOTAL = Counter(
+    name='hasn_rabbitmq_delivery_ack_total',
+    documentation='RabbitMQ realtime delivery 最终 ACK 结果计数·按低基数 result',
+    labelnames=['result'],
+)
+
+HASN_RABBITMQ_REDELIVERY_TOTAL = Counter(
+    name='hasn_rabbitmq_redelivery_total',
+    documentation='RabbitMQ realtime redelivery 计数',
+)
+
+REALTIME_WAKEUP_METRICS = (
+    HASN_REALTIME_WAKEUP_PUBLISH_TOTAL,
+    HASN_REALTIME_WAKEUP_CONSUME_TOTAL,
+    HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL,
+    HASN_REALTIME_WAKEUP_LATENCY_SECONDS,
+    HASN_RABBITMQ_PUBLISH_CONFIRM_TOTAL,
+    HASN_RABBITMQ_DELIVERY_ACK_TOTAL,
+    HASN_RABBITMQ_REDELIVERY_TOTAL,
+)
+
 HASN_PUSH_DELIVERY_TOTAL = Counter(
     name='hasn_push_delivery_total',
     documentation='push（离线推送）投递计数·按 result(ok/miss/error)',
@@ -135,6 +195,8 @@ IM_METRICS = (
     HASN_SYNC_PULL_LAG_SECONDS,
     HASN_SYNC_CURSOR_EXPIRED_TOTAL,
     HASN_REALTIME_DELIVERY_TOTAL,
+    HASN_OFFLINE_SHADOW_MESSAGES,
+    *REALTIME_WAKEUP_METRICS,
     HASN_PUSH_DELIVERY_TOTAL,
     HASN_PRODUCER_OUTBOX_OLDEST_AGE_SECONDS,
     HASN_UNREAD_RECONCILE_MISMATCH_TOTAL,

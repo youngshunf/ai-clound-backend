@@ -1,11 +1,11 @@
-"""图坊（imagelab，模块 14 doc30）API 路由聚合。
+"""图坊（imagelab）API 路由聚合。
 
 仅挂载 owner 业务面（对齐 hasn_reel/designsystem：codegen 裸面刻意不挂载）：
-- 用户端（`app`，Owner JWT）：项目云端权威 ID 登记（IMG-P3-cloud）——daemon 派发/分享前经
-  owner 代理 POST /api/v1/hasn_imagelab/app/projects 拿 server_id（本地 ULID 永不进 URI）。
+- 用户端（`app`，Owner JWT）：历史客户端的图坊本地引用兼容登记。当前流程直接使用平台项目 UUID；
+  旧客户端仍可经 POST /api/v1/hasn_imagelab/app/projects 换取兼容 server_id。
 
 刻意不挂载 admin/agent/open 裸 CRUD：图坊业务数据在 daemon 本地 SQLite（本地权威），
-云端只有这张轻登记表；分身走本地 hasn-mcp（图坊引擎本地 sidecar），不经云端 REST。
+云端兼容表不承担应用级项目语义；分身走本地 hasn-mcp（图坊引擎本地 sidecar），不经云端 REST。
 """
 
 from fastapi import APIRouter

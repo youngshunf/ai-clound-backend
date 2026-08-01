@@ -2,9 +2,13 @@
 
 `hasn.owner.coverage.get`：采访分身（规划参谋）开工先读「主人 5 个画像维度还缺哪几维」，
 据此定向采访（缺什么采访什么）——不一次性甩问卷。纯云端只读：直调云端权威
-`OwnerProfileCoverageService.assess_if_stale`（owner_memory 版本领先时惰性重判，否则快读），
-所以采访分身 contribute→合并（owner_memory.version+1）后再调本工具，即拿到重判后的最新缺口
-（写入→合并→重判闭环落在分身定向采访前这一点，无需把 LLM 打分塞进 contribute 热路径）。
+`OwnerProfileCoverageService.assess_if_stale`（owner_memory 版本领先时惰性重判，否则快读）。
+
+⚠️ doc19 §10（2026-07-31）：`hasn.owner.memory.contribute` **不再内联合并**——云端 LLM 合并已
+整体退役，合并由主脑分身在它自己的设备上执行。因此「写入→合并→重判」不再在一次采访轮内闭环：
+contribute 只入贡献流，`owner_memory.version` 要等下一轮记忆整理才推进，coverage 也要到那时才
+重判。**这是显式承认的体验回退**（doc19 §10 缓解手段：主人「立即整理」+ 云端合并待办 §5.5），
+工具描述必须如实告诉分身，不许让它对主人说「已合并」。
 
 owner 身份由 Agent JWT/MCP Key 解析出的 `agent_context.owner_hasn_id` 强制，绝不入请求体
 （CLAUDE.md hasn-mcp/BackendGateway 统一调用 + owner 隔离硬约束）。读类无 scope（只读自己主人数据）。
@@ -16,22 +20,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
+from backend.app.hasn_memory.service.owner_memory_service import (
+    MEMORY_CONTRIBUTE_PENDING_NOTE,
+    owner_memory_service,
+)
 from backend.app.hasn_memory.service.owner_profile_coverage_service import owner_profile_coverage_service
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
-from backend.common.log import log
 from backend.database.db import async_db_session
 
 NAMESPACE = 'hasn.owner'
-
-_MERGE_ERROR_MAX = 200
-
-
-def _short_merge_error(exc: Exception) -> str:
-    """把合并异常收敛成给分身看的短摘要（截断，避免把整段 traceback/堆栈塞回工具返回）。"""
-    msg = str(exc).strip() or exc.__class__.__name__
-    return msg[:_MERGE_ERROR_MAX]
 
 
 class OwnerCoverageGetTool(BaseTool):
@@ -104,15 +102,14 @@ class OwnerMemoryContributeTool(BaseTool):
         return (
             '把采访/相处中了解到的一段主人信息写入 owner 记忆。每问到一段（如某个兴趣、工作角色、'
             '近期目标）就调一次，content 写自然语言的「事实陈述」（如「主人是后端工程师，主攻 Rust 与分布式系统」'
-            '「主人近期目标是三个月内通过 PMP 认证」），落 contribution(pending) 并尽力触发一次 owner 级合并'
-            '（合并进 owner_memory.content，version+1）。合并成功后再调 hasn.owner.coverage.get 即拿到重判后的'
-            '最新缺口（写入→合并→重判闭环）。owner/agent 身份恒取自调用凭证，绝不入参；隐私克制：居住地址只写'
-            '粗粒度（城市/城区级，不写门牌），主人未明说的别替他臆造。'
-            '返回 {accepted, merged, version, merge_deferred, merge_error}：'
-            'merged=true 表示已合并进 owner_memory（version 即新版本）；merged=false 且 merge_deferred=true 表示'
-            '观察已收录但本次合并未成（merge_error 给原因），会自动重试——此时对主人**如实**说「已记下来了，'
-            '正在合并」即可，**绝不能**编造「后台异步合并已完成/稍后翻 sufficient」之类系统里不存在的说法，'
-            '也别声称已合并完成。'
+            '「主人近期目标是三个月内通过 PMP 认证」），落 contribution(pending)。'
+            'owner/agent 身份恒取自调用凭证，绝不入参；隐私克制：居住地址只写粗粒度（城市/城区级，不写门牌），'
+            '主人未明说的别替他臆造。'
+            '返回 {accepted, contribution_id, pending_merge, merge_note, owner_memory_version}：'
+            '**本工具只收录，不当场合并**——合并由主脑分身在它所在的设备上执行，这条观察会在下次记忆整理时'
+            '并入主人档案。对主人就按 merge_note 如实说「已记下来了，下次整理时并入」，'
+            '**绝不能**说「已合并 / 已更新档案」，也别编造「后台异步合并已完成」之类系统里不存在的说法。'
+            'owner_memory_version 是当前档案版本，本次调用不会改变它；它变了才说明整理真的发生过。'
         )
 
     @property
@@ -139,39 +136,25 @@ class OwnerMemoryContributeTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> Any:
         content = str(arguments.get('content') or '').strip()
         if not content:
-            return {'accepted': False, 'merged': False, 'version': None, 'reason': 'empty_content'}
+            return {'accepted': False, 'pending_merge': False, 'reason': 'empty_content'}
         owner_id = require_owner_hasn_id(agent_context)
-        # 复用既有 owner_memory_service（与 Agent REST /memory/contribute 同一服务、同一语义）：
-        # 先落 contribution 并提交（即便合并失败也不丢观察），再尽力合并；合并失败如实延后、零 fake。
+        # 与 Agent REST /memory/contribute 同一服务、同一语义：**只落 contribution，不内联合并**
+        # （doc19 §10，云端 LLM 合并已退役）。合并由主脑分身在它自己的设备上做。
         async with async_db_session() as db:
             accepted = await owner_memory_service.contribute(
                 db, owner_id=owner_id, agent_hasn_id=agent_context.hasn_id, content=content
             )
             if not accepted.get('accepted'):
                 await db.rollback()
-                return {'accepted': False, 'merged': False, 'version': None, 'reason': accepted.get('reason')}
+                return {'accepted': False, 'pending_merge': False, 'reason': accepted.get('reason')}
+            memory = await owner_memory_service.get_owner_memory(db, owner_id=owner_id)
             await db.commit()
-            merged = False
-            version: int | None = None
-            merge_deferred = False
-            merge_error: str | None = None
-            try:
-                outcome = await owner_memory_service.merge_owner_memory(db, owner_id=owner_id)
-                merged = bool(outcome.get('merged'))
-                version = outcome.get('version')
-                await db.commit()
-            except Exception as exc:
-                await db.rollback()
-                merge_deferred = True
-                merge_error = _short_merge_error(exc)
-                log.warning(f'owner memory merge deferred for {owner_id}: {exc}')
             return {
                 'accepted': True,
-                'merged': merged,
-                'version': version,
-                'merge_deferred': merge_deferred,
-                'merge_error': merge_error,
                 'contribution_id': accepted.get('contribution_id'),
+                'pending_merge': True,
+                'merge_note': MEMORY_CONTRIBUTE_PENDING_NOTE,
+                'owner_memory_version': int(memory.get('version') or 0),
             }
 
 

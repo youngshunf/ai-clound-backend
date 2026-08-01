@@ -312,6 +312,17 @@ async def create_storage_export(
     return response_base.success(data=data)
 
 
+@router.get('/exports', summary='列出本人的存储导出作业', dependencies=[DependsJwtAuth])
+async def list_storage_exports(
+    request: Request,
+    db: CurrentSession,
+    limit: Annotated[int, Query(ge=1, le=50, description='返回条数')] = 5,
+) -> ResponseSchemaModel[dict]:
+    """按创建时间倒序列出导出作业，供客户端重开页面后恢复「进行中 / 可下载」状态。"""
+    owner = await _current_owner_hasn_id(db, request.user.id)
+    return response_base.success(data=await _owner_storage.list_exports(owner_hasn_id=owner, limit=limit))
+
+
 @router.get('/exports/{job_id}', summary='读取存储导出进度', dependencies=[DependsJwtAuth])
 async def get_storage_export(
     request: Request,

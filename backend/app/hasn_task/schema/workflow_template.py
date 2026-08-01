@@ -7,6 +7,7 @@
   供首页模板条与画廊卡渲染，无须前端再解析 graph_spec。
 """
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import Field
@@ -47,6 +48,13 @@ class WorkflowTemplatePublic(SchemaBase):
     version: int = Field(1, description='模板版本')
     market_ref: str | None = Field(None, description='市场发布物溯源')
     sku_ref: str | None = Field(None, description='官方付费挂钩（NULL=免费；付费判权归 P7）')
+    package_url: str | None = Field(None, description='官方发布制品下载 URL')
+    file_hash: str | None = Field(None, description='官方发布 ZIP SHA256')
+    content_hash: str | None = Field(None, description='官方发布源文件清单指纹')
+    file_size: int | None = Field(None, description='官方发布 ZIP 字节数')
+    source_repo_path: str | None = Field(None, description='官方 Hub 仓库内相对路径')
+    git_commit_hash: str | None = Field(None, description='官方 Hub 发布 commit')
+    synced_at: datetime | None = Field(None, description='最近一次官方发布同步时间')
     graph_summary: WorkflowTemplateGraphSummary = Field(
         default_factory=WorkflowTemplateGraphSummary, description='图蓝图派生摘要'
     )
@@ -118,3 +126,10 @@ class CreateWorkflowTemplateParam(SchemaBase):
     market_ref: str | None = Field(None, description='市场发布物溯源')
     sku_ref: str | None = Field(None, description='官方付费挂钩')
     version: int = Field(1, description='模板版本')
+    package_url: str | None = Field(None, description='官方发布制品下载 URL')
+    file_hash: str | None = Field(None, description='官方发布 ZIP SHA256')
+    content_hash: str | None = Field(None, description='官方发布源文件清单指纹')
+    file_size: int | None = Field(None, description='官方发布 ZIP 字节数')
+    source_repo_path: str | None = Field(None, description='官方 Hub 仓库内相对路径')
+    git_commit_hash: str | None = Field(None, description='官方 Hub 发布 commit')
+    synced_at: datetime | None = Field(None, description='最近一次官方发布同步时间')

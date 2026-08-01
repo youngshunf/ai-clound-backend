@@ -19,6 +19,12 @@ TASK_STATE_COMMENT = (
 CREATED_BY_KIND_COMMENT = '创建者类别 (owner:主人:blue/agent:分身:violet/builtin:内置:gray)'
 RISK_LEVEL_COMMENT = '风险等级 (low:低风险:green/high:高风险:orange)'
 EXECUTION_KIND_COMMENT = '执行方式 (app_workflow:应用工作流:blue/freeform:自由指令:gray)'
+# doc19 §9 / D-24：内置任务广播语义，从 builtin_catalog.target_scope 透传而来。
+TARGET_SCOPE_COMMENT = (
+    '广播语义 (master_brain:只派绑定分身:gray/all_agents:本节点每个在线分身各一次:violet)：'
+    '来自 builtin_catalog.target_scope 透传；all_agents 的扇出由本地 task_scheduler 完成，'
+    '云端不因此多播任务行（受 uq_task_owner_builtin_key 唯一索引约束）'
+)
 
 
 class HasnTask(HasnTaskAppBase):
@@ -123,6 +129,11 @@ class HasnTask(HasnTaskAppBase):
         sa.BIGINT(),
         default=None,
         comment='内置任务已同步的 catalog.revision；用于检测官方是否有更新（用户任务为 NULL）',
+    )
+    target_scope: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='master_brain',
+        comment=TARGET_SCOPE_COMMENT,
     )
     workflow_uuid: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='所属工作流稳定 UUID（NULL=独立任务，非工作流节点，W3）'

@@ -20,8 +20,13 @@ from typing import TYPE_CHECKING
 from sqlalchemy import and_, or_, select
 
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
-from backend.app.hasn.model import HasnEnterpriseMemberRole, HasnEnterpriseMembership, HasnResourceShare
-from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
+from backend.app.hasn.model import (
+    HasnAgents,
+    HasnEnterpriseMemberRole,
+    HasnEnterpriseMembership,
+    HasnHumans,
+    HasnResourceShare,
+)
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -246,8 +251,63 @@ class ResourceShareService:
     # ---------- 共享名单管理 ----------
 
     @staticmethod
+    async def _attach_grantee_identity(db: AsyncSession, rows: list[dict]) -> list[dict]:
+        """给共享名单逐行补 grantee 展示身份（就地写入 `grantee_name/avatar/profession/owner_name`）。
+
+        协作面板要回答「谁有这份权限」，但看名单的人**不一定认识名单里的主体**：库主人授权的
+        其他协作者不在他的通讯录里，他自己更不在自己的通讯录里——客户端解析不出来就只能渲染裸
+        `h_xxxxxxxx-...` 一串 id。身份取权威，故在这里一次批量解析回带。
+
+        主体查不到（已注销、脏数据）时留 `None`，由客户端回落 hasn_id，不造假名字。
+        `enterprise`/`role` 档不在此解析（协作面板只渲染人与分身）。
+        """
+        if not rows:
+            return rows
+        agent_ids = {r['grantee_id'] for r in rows if r['grantee_type'] == 'agent'}
+        human_ids = {r['grantee_id'] for r in rows if r['grantee_type'] == 'human'}
+
+        agents: dict[str, HasnAgents] = {}
+        if agent_ids:
+            agents = {
+                a.hasn_id: a
+                for a in (await db.execute(select(HasnAgents).where(HasnAgents.hasn_id.in_(agent_ids))))
+                .scalars()
+                .all()
+            }
+            # 分身副行要显示「主人:xxx」，把它们的主人一并纳入这一轮 humans 查询。
+            human_ids |= {a.owner_id for a in agents.values() if a.owner_id}
+
+        humans: dict[str, HasnHumans] = {}
+        if human_ids:
+            humans = {
+                h.hasn_id: h
+                for h in (await db.execute(select(HasnHumans).where(HasnHumans.hasn_id.in_(human_ids))))
+                .scalars()
+                .all()
+            }
+
+        for r in rows:
+            gid = r['grantee_id']
+            if r['grantee_type'] == 'agent':
+                agent = agents.get(gid)
+                if agent is None:
+                    continue
+                owner = humans.get(agent.owner_id) if agent.owner_id else None
+                r['grantee_name'] = agent.display_name or agent.agent_name or None
+                r['grantee_avatar'] = agent.avatar
+                r['grantee_profession'] = agent.profession
+                r['grantee_owner_name'] = (owner.nickname or None) if owner else None
+            elif r['grantee_type'] == 'human':
+                human = humans.get(gid)
+                if human is None:
+                    continue
+                r['grantee_name'] = human.nickname or None
+                r['grantee_avatar'] = human.avatar
+        return rows
+
+    @staticmethod
     async def list_shares(db: AsyncSession, *, resource_type: str, resource_id: str) -> list[dict]:
-        """某产物当前全部 active 共享行（共享面板用）。"""
+        """某产物当前全部 active 共享行（共享面板用），逐行带 grantee 展示身份。"""
         rows = (
             (
                 await db.execute(
@@ -263,17 +323,25 @@ class ResourceShareService:
             .scalars()
             .all()
         )
-        return [
-            {
-                'id': r.id,
-                'grantee_type': r.grantee_type,
-                'grantee_id': r.grantee_id,
-                'permission': r.permission,
-                'granted_by': r.granted_by,
-                'created_time': r.created_time,
-            }
-            for r in rows
-        ]
+        return await ResourceShareService._attach_grantee_identity(
+            db,
+            [
+                {
+                    'id': r.id,
+                    'grantee_type': r.grantee_type,
+                    'grantee_id': r.grantee_id,
+                    'permission': r.permission,
+                    'granted_by': r.granted_by,
+                    'created_time': r.created_time,
+                    # 展示身份缺省位（下方按主体权威填充；查不到留 None，客户端回落 hasn_id）。
+                    'grantee_name': None,
+                    'grantee_avatar': None,
+                    'grantee_profession': None,
+                    'grantee_owner_name': None,
+                }
+                for r in rows
+            ],
+        )
 
     @staticmethod
     async def upsert_share(
@@ -303,6 +371,9 @@ class ResourceShareService:
         # finance 策略含可执行代码，服务端永不允许分享（doc38 §6 / 05 §6 · C5）——先于 fail-closed 判。
         if resource_type in _NON_SHAREABLE_RESOURCE_TYPES:
             raise errors.ForbiddenError(msg='策略含可执行代码，不支持分享')
+        # 延迟导入打断 authz 包初始化时的 resource_gate → 本服务反向环；注册表只在写分享行时使用。
+        from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
+
         # fail-closed：注册表无此 resource_type 的 adapter → 拒绝建行（能分享必能判·doc33 S2-5）。
         if resource_type not in resource_kind_registry.registered_types():
             raise errors.ServerError(
@@ -352,9 +423,29 @@ class ResourceShareService:
 
     @staticmethod
     async def revoke_share(
-        db: AsyncSession, *, resource_type: str, resource_id: str, grantee_type: str, grantee_id: str
+        db: AsyncSession,
+        *,
+        resource_type: str,
+        resource_id: str,
+        grantee_type: str,
+        grantee_id: str,
+        subject_owner_hasn_id: str | None = None,
+        resource_owner_hasn_id: str | None = None,
     ) -> bool:
-        """撤销一条授权（status→revoked）。返回是否命中。"""
+        """撤销一条授权（status→revoked）。返回是否命中。
+
+        **自我撤销门（fail-closed）**：传入 `subject_owner_hasn_id` 时，禁止操作者把**自己**从名单里
+        撤掉——被授 `manager` 的协作者点一下移除，撤掉的就是自己赖以访问这份产物的唯一授权，产物当场
+        从他名下消失，而且只有产物主人能加回来、他自己无法自助恢复。产物主人不受此限（主人的权限来自
+        owner_grant 不是 share 行，撤名单里别人的行本就是他的职责）。
+        """
+        if (
+            subject_owner_hasn_id
+            and grantee_type == 'human'
+            and grantee_id == subject_owner_hasn_id
+            and resource_owner_hasn_id != subject_owner_hasn_id
+        ):
+            raise errors.ForbiddenError(msg='不能移除自己的协作权限；如需退出协作，请让资源主人移除你')
         existing = (
             await db.execute(
                 select(HasnResourceShare).where(

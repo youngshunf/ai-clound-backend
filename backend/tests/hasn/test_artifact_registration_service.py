@@ -156,6 +156,139 @@ async def test_resource_replay_uses_contribution_idempotency_key() -> None:
             await db.rollback()
 
 
+async def test_imagelab_composite_dispatch_id_persists_without_truncation() -> None:
+    """图坊真实派发 ID 与输出 ID 组合后超过 64 字符，当前态和参与记录必须原样保存。"""
+    owner = _id('owner')
+    agent = _id('agent')
+    dispatch_id = (
+        f'work_disp_{uuid4().hex[:26]}:'
+        f'ilab_out_{uuid4().hex[:26]}'
+    )
+    assert 64 < len(dispatch_id) <= 128
+
+    async with async_db_session() as db:
+        try:
+            result = await artifact_registration_service.register(
+                db,
+                _resource_mutation(
+                    owner=owner,
+                    agent=agent,
+                    action='create',
+                    dispatch_id=dispatch_id,
+                    session_id=_id('session'),
+                    project_id=str(uuid4()),
+                    title='图坊真实扩图产物',
+                ),
+            )
+
+            artifact = (
+                await db.execute(
+                    select(HasnArtifacts).where(
+                        HasnArtifacts.artifact_id == result.artifact_id
+                    )
+                )
+            ).scalar_one()
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(
+                        HasnArtifactContributions.artifact_id == result.artifact_id
+                    )
+                )
+            ).scalar_one()
+            assert artifact.dispatch_id == dispatch_id
+            assert contribution.dispatch_id == dispatch_id
+        finally:
+            await db.rollback()
+
+
+async def test_resource_metadata_counters_accumulate_once_per_contribution() -> None:
+    """批次摘要按新参与原子累加；同一 dispatch 重放不能重复计数。"""
+    owner = _id('owner')
+    agent = _id('agent')
+
+    def mutation(
+        *,
+        dispatch_id: str,
+        inserted: int,
+        updated: int,
+        skipped: int,
+        error_count: int,
+    ) -> ArtifactMutation:
+        return ArtifactMutation.model_validate({
+            'owner_hasn_id': owner,
+            'agent_hasn_id': agent,
+            'action': 'update',
+            'source_kind': 'app_write',
+            'resource_uri': 'hasn://growth/leads/project-s6-counter',
+            'resource_kind': 'growth.leads',
+            'resource_app_id': 'growth',
+            'dispatch_id': dispatch_id,
+            'title': '获客线索批次',
+            'metadata': {
+                'inserted': inserted,
+                'updated': updated,
+                'skipped': skipped,
+                'error_count': error_count,
+            },
+            'accumulate_metadata_keys': [
+                'inserted',
+                'updated',
+                'skipped',
+                'error_count',
+            ],
+        })
+
+    async with async_db_session() as db:
+        try:
+            first = mutation(
+                dispatch_id='growth-s6-batch-1',
+                inserted=2,
+                updated=1,
+                skipped=0,
+                error_count=1,
+            )
+            await artifact_registration_service.register(db, first)
+            await artifact_registration_service.register(db, first)
+            await artifact_registration_service.register(
+                db,
+                mutation(
+                    dispatch_id='growth-s6-batch-2',
+                    inserted=3,
+                    updated=0,
+                    skipped=4,
+                    error_count=0,
+                ),
+            )
+
+            artifact = (
+                await db.execute(
+                    select(HasnArtifacts).where(
+                        HasnArtifacts.owner_hasn_id == owner
+                    )
+                )
+            ).scalar_one()
+            assert artifact.meta_data == {
+                'inserted': 5,
+                'updated': 1,
+                'skipped': 4,
+                'error_count': 1,
+            }
+            contributions = (
+                (
+                    await db.execute(
+                        select(HasnArtifactContributions).where(
+                            HasnArtifactContributions.owner_hasn_id == owner
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(contributions) == 2
+        finally:
+            await db.rollback()
+
+
 async def test_query_returns_contextual_latest_contribution_without_local_path() -> None:
     """查询必须按筛选上下文选择最新参与记录，且读模型不泄露本地绝对路径。"""
     owner = _id('owner')
@@ -200,6 +333,7 @@ async def test_query_returns_contextual_latest_contribution_without_local_path()
             assert page.total == 1
             item = page.items[0]
             assert item.title == '终稿'
+            assert item.latest_contribution is not None
             assert item.latest_contribution.agent_hasn_id == agent_two
             assert item.latest_contribution.action == 'update'
             assert item.project_relation is not None
@@ -876,5 +1010,78 @@ async def test_list_rejects_broken_cursor() -> None:
             for bad in ('not-a-cursor', '2026-01-01|', '|art_x', 'garbage|art_x'):
                 with pytest.raises(errors.RequestError):
                     await artifact_query_service.list(db, owner_hasn_id=owner, cursor=bad)
+        finally:
+            await db.rollback()
+
+
+async def test_contributionless_history_row_surfaces_with_honest_lost_mark() -> None:
+    """A15：历史回填无法恢复参与事实的行必须出现在全量列表里，latest_contribution 合法
+    留空并透 migration_lost_history——INNER JOIN 静默吞行或伪填占位分身都违反诚实原则。"""
+    owner = _id('owner')
+
+    async with async_db_session() as db:
+        try:
+            db.add(
+                HasnArtifacts(
+                    artifact_id=_id('art'),
+                    owner_hasn_id=owner,
+                    agent_hasn_id='',
+                    artifact_key=f'legacy:{_id("key")}',
+                    artifact_kind='document',
+                    kind='document',
+                    body='无法考证发起者的历史正文',
+                    status='active',
+                    meta_data={'migration_lost_history': True},
+                )
+            )
+            await db.flush()
+
+            page = await artifact_query_service.list(db, owner_hasn_id=owner, size=10)
+
+            assert page.total == 1
+            item = page.items[0]
+            assert item.latest_contribution is None, '无参与记录可考时如实留空，不伪填'
+            assert item.migration_lost_history is True
+            assert item.agent_identity is None
+            assert item.body_preview is not None, '产物本体仍正常呈现'
+        finally:
+            await db.rollback()
+
+
+async def test_contributionless_row_excluded_from_contribution_axis_but_not_owner_list() -> None:
+    """A15 补充：按分身/会话等参与轴筛选时，无参与记录的行天然不可能命中（INNER JOIN 语义）；
+    未打标记的缺参与行也不吞——照常在全量列表透出（登记链路缺陷由 service warn 显式告警）。"""
+    owner = _id('owner')
+
+    async with async_db_session() as db:
+        try:
+            db.add(
+                HasnArtifacts(
+                    artifact_id=_id('art'),
+                    owner_hasn_id=owner,
+                    agent_hasn_id='',
+                    artifact_key=f'legacy:{_id("key")}',
+                    artifact_kind='document',
+                    kind='document',
+                    body='缺参与且未打标记的异常行',
+                    status='active',
+                )
+            )
+            await db.flush()
+
+            by_session = await artifact_query_service.list(
+                db, owner_hasn_id=owner, work_session_id=_id('ws'), size=10
+            )
+            assert by_session.total == 0, '会话轴筛选下无参与记录的行不得混入'
+
+            by_agent = await artifact_query_service.list(
+                db, owner_hasn_id=owner, agent_hasn_id=_id('agent'), size=10
+            )
+            assert by_agent.total == 0, '分身轴筛选下无参与记录的行不得混入'
+
+            unfiltered = await artifact_query_service.list(db, owner_hasn_id=owner, size=10)
+            assert unfiltered.total == 1, '全量列表不吞缺参与行（缺陷显式透出而非隐藏）'
+            assert unfiltered.items[0].latest_contribution is None
+            assert unfiltered.items[0].migration_lost_history is False
         finally:
             await db.rollback()

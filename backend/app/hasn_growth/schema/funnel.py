@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -84,12 +84,59 @@ class SendOutreachParam(SchemaBase):
     opportunity_id: int | None = Field(default=None)
 
 
+class DraftOutreachParam(SendOutreachParam):
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=200,
+        description='调用方稳定幂等键；重试必须复用',
+    )
+
+
+class SubmitOutreachParam(SchemaBase):
+    expected_content_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
 class ApproveOutreachParam(SchemaBase):
     edited_content: str | None = Field(default=None, description='改话术后批（留痕）')
+    expected_content_version: int | None = Field(default=None, ge=1)
+
+
+class VersionedApproveOutreachParam(SchemaBase):
+    """项目化审批必须显式携带用户看到的内容版本。"""
+
+    edited_content: str | None = Field(default=None, description='改话术后批（留痕）')
+    expected_content_version: int = Field(ge=1)
 
 
 class RejectOutreachParam(SchemaBase):
     reason: str = Field(min_length=1, max_length=500)
+    expected_content_version: int | None = Field(default=None, ge=1)
+
+
+class VersionedRejectOutreachParam(SchemaBase):
+    """项目化拒绝必须显式携带用户看到的内容版本。"""
+
+    reason: str = Field(min_length=1, max_length=500)
+    expected_content_version: int = Field(ge=1)
+
+
+class EditOutreachParam(SchemaBase):
+    expected_content_version: int = Field(ge=1)
+    content: str = Field(min_length=1)
+    subject: str | None = Field(default=None, max_length=200)
+    channel: OutreachChannel | None = None
+    content_assets: dict[str, Any] | None = None
+
+
+class ManualAttestOutreachParam(SchemaBase):
+    expected_content_version: int = Field(ge=1)
+    channel_actual: OutreachChannel
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    proof: dict[str, Any] = Field(
+        default_factory=dict,
+        description='人工操作证明元数据，不得含联系方式明文',
+    )
 
 
 class MarkSentParam(SchemaBase):
@@ -100,42 +147,58 @@ class CreateOpportunityParam(SchemaBase):
     customer_id: int
     name: str = Field(min_length=1, max_length=200)
     amount: float | None = Field(default=None, ge=0)
-    currency: str = Field(default='CNY', max_length=8)
-    stage: str = Field(default='contacted')
+    currency: str = Field(default='CNY', pattern=r'^[A-Z]{3}$')
+    stage: Literal['contacted', 'replied', 'proposal', 'negotiation'] = 'contacted'
     probability: float | None = Field(default=None, ge=0, le=1)
+    idempotency_key: str = Field(min_length=1, max_length=150)
 
 
 class UpdateStageParam(SchemaBase):
-    stage: str = Field(description='contacted/replied/proposal/negotiation')
-    note: str | None = Field(default=None, max_length=500)
+    stage: Literal['contacted', 'replied', 'proposal', 'negotiation']
+    note: str = Field(min_length=1, max_length=500)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=150)
 
 
 class CloseDealParam(SchemaBase):
-    result: str = Field(pattern='^(won|lost)$', description='成交/流失')
-    amount: float | None = Field(default=None, ge=0)
+    result: Literal['won', 'lost']
+    amount: float | None = Field(default=None, gt=0)
+    currency: str | None = Field(default=None, pattern=r'^[A-Z]{3}$')
     close_note: str | None = Field(default=None, max_length=2000)
-    lost_reason: str | None = Field(default=None, max_length=500)
+    lost_reason: str | None = Field(default=None, min_length=1, max_length=500)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=150)
+
+    @model_validator(mode='after')
+    def validate_close_facts(self) -> CloseDealParam:
+        if self.result == 'won' and (self.amount is None or self.currency is None):
+            raise ValueError('成交必须填写金额和币种')
+        if self.result == 'lost' and not (self.lost_reason or '').strip():
+            raise ValueError('流失必须填写结构化原因')
+        return self
 
 
 class FormSubmitParam(SchemaBase):
     """落地页表单回流（open，无鉴权）。"""
 
-    company_name: str | None = Field(default=None, max_length=255)
+    model_config = ConfigDict(extra='forbid')
+
+    company_name: str | None = Field(default=None, max_length=200)
     contact_name: str | None = Field(default=None, max_length=100)
-    email: str | None = Field(default=None, max_length=255)
-    phone: str | None = Field(default=None, max_length=50)
-    wechat: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=32)
+    wechat: str | None = Field(default=None, max_length=64)
     message: str | None = Field(default=None, max_length=2000)
-    extra: dict[str, Any] = Field(default_factory=dict)
+    utm: dict[str, str] = Field(default_factory=dict)
     privacy_notice_version: str = Field(
         min_length=1,
         max_length=64,
         pattern=r'^[A-Za-z0-9][A-Za-z0-9._-]*$',
     )
-    consent_purpose: Literal['sales_followup']
-    consent_granted: Literal[True]
+    consent_purpose: Literal['sales_contact']
+    consent: Literal[True]
     # 蜜罐字段：人类不可见，被填充即判 spam（反滥用，§8.4）。
-    website_url: str | None = Field(default=None, description='蜜罐字段，正常用户应留空')
+    website_url: str | None = Field(default=None, max_length=2048, description='蜜罐字段，正常用户应留空')
 
 
 class OptoutParam(SchemaBase):

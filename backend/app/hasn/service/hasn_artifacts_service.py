@@ -18,7 +18,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 
-from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnSessions
+from backend.app.hasn.model import HasnAgents, HasnArtifacts
 from backend.app.hasn.schema.artifact_contract import ArtifactListItem, ArtifactMutation
 from backend.app.hasn.schema.hasn_artifacts import (
     ArtifactDetail,
@@ -29,48 +29,11 @@ from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
 from backend.common.exception import errors
-from backend.common.log import log
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
-
-
-async def coalesce_legacy_work_session_id(
-    db: AsyncSession,
-    *,
-    owner_hasn_id: str,
-    session_id: str,
-) -> str | None:
-    """过渡兼容：旧节点只发混合语义的 `session_id`，按「确实在册的工作会话」收窄回落。
-
-    旧节点工作会话派发发真实工作会话 id、主会话派发发运行时逻辑会话 id，两者同形无法
-    从值区分；但运行时/interactive 会话**不是** `hasn_sessions` 的 task 行，主会话派发的
-    值在这里查无 → 绝不进工作会话列（设计 §4.3：`work_session_id` 只接受工作会话 ID）。
-    旧节点的工作会话派发不受此限——其 session_id 本就是在册 task 会话，照常回落绑上。
-
-    模块级公共函数：产物登记（`HasnArtifactsService.record`）与两个 MCP 分发入口
-    （`mcp/server.py`、`ai_native_runtime_gateway.py` 的 ContextVar 回填）共用同一收窄判据。
-    """
-    found = (
-        await db.execute(
-            select(HasnSessions.session_id)
-            .where(
-                HasnSessions.session_id == session_id,
-                HasnSessions.owner_id == owner_hasn_id,
-                HasnSessions.session_kind == 'task',
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if found is None:
-        log.warning(
-            '产物登记的 session_id 不是在册工作会话，按运行时溯源处理：owner=%s session_id=%s',
-            owner_hasn_id,
-            session_id,
-        )
-    return found
 
 
 class HasnArtifactsService:
@@ -118,16 +81,11 @@ class HasnArtifactsService:
 
         身份由调用方注入（取自 Agent JWT），绝不信任 body 里的 agent/owner。
         """
-        # 工作会话轴与运行时 session 分流（设计 §4.3）：显式 `work_session_id` 直接采信；
-        # 缺省时 `session_id` 只在确为在册工作会话（task）时才回落——旧节点主会话派发灌进来的
-        # 运行时逻辑会话 id 从此只能进 metadata 溯源，不再污染工作会话列。
+        # 工作会话轴与运行时 session 分流（设计 §4.3，P2-8d 起旧回落退役）：只采信显式
+        # `work_session_id`；`session_id` 一律视为运行时溯源 id 挪 metadata，绝不再经
+        # 「在册 task 收窄」回落占用工作会话列——现行节点全部显式直发 work_session_id，
+        # 回落只服务混合语义时期的旧节点，留着只会让新写点继续误用 session_id 通道。
         work_session_id = params.work_session_id
-        if work_session_id is None and params.session_id:
-            work_session_id = await coalesce_legacy_work_session_id(
-                db,
-                owner_hasn_id=owner_hasn_id,
-                session_id=params.session_id,
-            )
         metadata = dict(params.metadata)
         if params.session_id and params.session_id != work_session_id:
             # 运行时 session 是溯源元数据，不是工作会话——进 metadata，绝不占工作会话列。
@@ -233,6 +191,8 @@ class HasnArtifactsService:
         dispatch_id: str | None = None,
         project_id: str | None = None,
         action: Literal['create', 'update'] = 'create',
+        metadata: dict[str, object] | None = None,
+        accumulate_metadata_keys: list[str] | None = None,
     ) -> ArtifactRegistration:
         """据 descriptor 登记一条**应用资源产物**（deck/webpage 等，走 `resource_uri` 指针，无 asset 本体）。
 
@@ -276,7 +236,8 @@ class HasnArtifactsService:
             dispatch_id=effective_dispatch_id,
             title=title or None,
             summary=summary or None,
-            metadata={'origin_ref': origin_ref},
+            metadata={**(metadata or {}), 'origin_ref': origin_ref},
+            accumulate_metadata_keys=accumulate_metadata_keys or [],
         )
         registered = await artifact_registration_service.register(db, mutation)
         assert registered.resource_uri is not None
@@ -289,6 +250,11 @@ class HasnArtifactsService:
     def _legacy_item(item: ArtifactListItem) -> ArtifactItem:
         """供尚未迁移的 MCP 调用方读取统一 DTO；HTTP API 已直接返回 ArtifactListItem。"""
         asset_id = item.asset_uri.rsplit('/', 1)[-1] if item.asset_uri else None
+        # A15：无参与记录的历史行 latest_contribution 合法为 None。本适配面只服务
+        # agent/session 参与轴筛选（轴激活时查询走 INNER JOIN，None 实际不可达），这里
+        # 防御性如实填空——不编造分身、工具或动作；source_kind 只能取 external_import
+        # （系统外来源，是唯一不含虚构发起者的桶）。
+        contribution = item.latest_contribution
         return ArtifactItem(
             artifact_id=item.artifact_id,
             kind=item.artifact_kind,
@@ -305,15 +271,15 @@ class HasnArtifactsService:
             node_id=item.local_entry.node_id if item.local_entry else None,
             origin_ref=None,
             # doc97：把「哪个分身产的」透出来——项目内跨分身查产物时，分身要据它判断这条是哪一环的产出。
-            agent_hasn_id=item.latest_contribution.agent_hasn_id,
+            agent_hasn_id=contribution.agent_hasn_id if contribution else None,
             conversation_id=None,
             message_id=None,
-            session_id=item.latest_contribution.work_session_id,
-            source_tool=item.latest_contribution.source_tool,
-            source_app_id=item.latest_contribution.source_app_id,
-            source_kind=item.latest_contribution.source_kind,
-            action=item.latest_contribution.action,
-            source_link=item.latest_contribution.source_link,
+            session_id=contribution.work_session_id if contribution else None,
+            source_tool=contribution.source_tool if contribution else None,
+            source_app_id=contribution.source_app_id if contribution else None,
+            source_kind=contribution.source_kind if contribution else 'external_import',
+            action=contribution.action if contribution else 'create',
+            source_link=contribution.source_link if contribution else None,
             display_url=item.preview_url,
             created_time=item.created_time,
         )

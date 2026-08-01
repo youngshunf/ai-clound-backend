@@ -37,3 +37,4 @@ repos:
           - '-o'
           - 'requirements.txt'
           - '--no-hashes'
+          - '--no-default-groups'

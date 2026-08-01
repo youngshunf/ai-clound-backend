@@ -207,12 +207,14 @@ def _load_hasn_publish() -> None:
     from backend.app.hasn_publish.api.router import agent as publish_agent
     from backend.app.hasn_publish.api.router import app as publish_app
     from backend.app.hasn_publish.api.router import hosting as publish_hosting
+    from backend.app.hasn_publish.api.router import internal as publish_internal
     from backend.app.hasn_publish.api.router import open_meta as publish_open_meta
 
     router.include_router(publish_app)            # 发布 用户端 API（Owner JWT）
     router.include_router(publish_agent)          # 发布 Agent API（Agent JWT，publish:read/write）
     router.include_router(publish_hosting)        # 发布 公开查看面 /s/{slug}（无鉴权外壳 + CSP sandbox）
     router.include_router(publish_open_meta)      # 发布 公开元数据面（website /s/{slug} 查看器判定态）
+    router.include_router(publish_internal)       # Growth 等云端模块调用的收敛内部 HTTP
 
 
 def _load_notification() -> None:
@@ -307,8 +309,8 @@ def _load_hasn_reel() -> None:
 
 
 def _load_hasn_imagelab() -> None:
-    # 图坊（hasn_imagelab，模块 14 doc30）：owner 业务面 = 项目云端权威 ID 登记（IMG-P3-cloud）。
-    # 图坊业务数据在 daemon 本地 SQLite（本地权威），云端只有轻登记表（server_id 源）。
+    # 图坊（hasn_imagelab）：仅保留历史本地引用兼容登记；当前流程直接使用平台项目 UUID。
+    # 图坊业务数据在 daemon 本地 SQLite（本地权威），云端这里只保留历史引用兼容表。
     from backend.app.hasn_imagelab.api.router import app as hasn_imagelab_app
 
     router.include_router(hasn_imagelab_app)
@@ -362,6 +364,18 @@ def _load_hasn_project() -> None:
     router.include_router(hasn_project_app)
 
 
+def _load_hasn_hosting() -> None:
+    # 无头 hasn-node 托管（hasn_hosting，doc「云端节点托管」）：Owner 面 + 节点面 + 内部面。
+    # 不挂 codegen 的 admin/agent/open 裸 CRUD——授权码是凭据表，通用 CRUD 暴露即越权大洞。
+    from backend.app.hasn_hosting.api.router import app as hasn_hosting_app
+    from backend.app.hasn_hosting.api.router import internal as hasn_hosting_internal
+    from backend.app.hasn_hosting.api.router import node as hasn_hosting_node
+
+    router.include_router(hasn_hosting_app)       # 云端节点 用户端 API（Owner JWT）
+    router.include_router(hasn_hosting_node)      # 节点面（授权码兑换 / grant 校验）
+    router.include_router(hasn_hosting_internal)  # edge / hosting-agent 内部面（Bearer 服务令牌）
+
+
 # 应用名 → loader。改 FBA_DEV_APPS 时用这里的 key（左列）。
 _APP_LOADERS: dict[str, Callable[[], None]] = {
     'task': _load_task,
@@ -394,6 +408,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_stock': _load_hasn_stock,
     'hasn_release': _load_hasn_release,
     'hasn_project': _load_hasn_project,
+    'hasn_hosting': _load_hasn_hosting,
 }
 
 for _name, _loader in _APP_LOADERS.items():

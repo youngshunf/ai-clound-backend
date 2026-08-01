@@ -6,20 +6,6 @@ from backend.app.task.utils.tzcrontab import TzAwareCrontab
 
 # 参考：https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html
 LOCAL_BEAT_SCHEDULE = {
-    '测试同步任务': {
-        'task': 'task_demo',
-        'schedule': schedule(30),
-    },
-    '测试异步任务': {
-        'task': 'task_demo_async',
-        'schedule': TzAwareCrontab('1'),
-    },
-    '测试传参任务': {
-        'task': 'task_demo_params',
-        'schedule': TzAwareCrontab('1'),
-        'args': ['你好，'],
-        'kwargs': {'world': '世界'},
-    },
     '清理操作日志': {
         'task': 'backend.app.task.tasks.db_log.tasks.delete_db_opera_log',
         'schedule': TzAwareCrontab('0', '0', day_of_week='6'),
@@ -70,6 +56,11 @@ LOCAL_BEAT_SCHEDULE = {
         # 提交后即时唤醒失败时，每分钟扫描一次持久命令，保证控制边最终落入 IM 关系域。
         'schedule': TzAwareCrontab('*'),
     },
+    'HASN 离线恢复影子对账': {
+        'task': 'hasn_offline_shadow_reconcile',
+        # 仅 dual 模式执行真实 Redis/PG 集合对账；其余模式任务显式 no-op。
+        'schedule': TzAwareCrontab('*/5'),
+    },
     '履约对账': {
         'task': 'credit_outbox_reconcile',
         # 每 15 分钟核对死信事件在 NewAPI 侧的真实结果，收敛「其实成功了只是回执丢了」的事件。
@@ -115,10 +106,16 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天 3:30 以数据库对象行逐 Owner 核实真实对象与计数器，不依赖桶前缀遍历。
         'schedule': TzAwareCrontab('30', '3'),
     },
+    '云端节点生命周期 sweep': {
+        'task': 'cloud_node_retention_sweep',
+        # 每天 04:20（低峰，且排在 2:05 商业化 sweep 之后——订阅 status 先收敛成 expired，
+        # 本任务再据此判「订阅到期」）：进 30 天保留期 → 续订恢复 → 逾期销毁 → 到期前 7/3/1 天提醒。
+        # 托管设计 §7 生命周期表 / D-14。
+        'schedule': TzAwareCrontab('20', '4'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
-        # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；
-        # 磁盘硬闸 MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB）——clawhub 目录占用达上限即暂停下载。
+        # 每 3 天增量同步一次（真 72h 间隔）。只读取元数据与文件清单，技能 ZIP 由 ClawHub 分发。
         'schedule': schedule(timedelta(days=3)),
     },
     '技能市场-公共技能共享目录 reconcile': {
@@ -132,24 +129,19 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'growth_dispatch_approved_outreach',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）
     },
+    '获客-采集 pending 作业恢复投递': {
+        'task': 'lead_automation_reconcile_pending',
+        # early ACK 后若 worker 在事务提交前退出，作业仍为 pending；每 5 分钟按数据库权威状态重投。
+        'schedule': TzAwareCrontab('*/5'),
+    },
     '获客-项目开通恢复对账': {
         'task': 'growth_project_provision_reconcile',
         # 到期失败与 worker 崩溃留下的 running 每 5 分钟重投；步骤写点自身保持幂等。
         'schedule': TzAwareCrontab('*/5'),
     },
-    'Owner 记忆 pending 合并兜底重试': {
-        'task': 'owner_memory_retry_pending_merges',
-        # 每 10 分钟扫一次滞留 pending（同步内联合并失败的兜底重试）。只重试最老 pending 已超
-        # 120s 的 owner，避开刚 contribute 的内联路径；网关恢复后下一轮即合并下发，杜绝采访完
-        # coverage 永不更新。
-        'schedule': TzAwareCrontab('*/10'),
-    },
-    'Peer 画像合成 worker': {
-        'task': 'peer_portrait_sweep',
-        # 每 10 分钟扫一次「有新 peer 事实但画像未追上」的 (owner, peer) 对（doc17 PEERSYN-P4）。
-        # peer 事实上游来源为分身主动 hasn.memory.save（doc18 退役自动提取后单一来源）。方案B 脏判定
-        # MAX(peer 事实.updated_at) > 画像.last_synthesized_at；逐对独立事务，跨全部分身聚合合成一份，
-        # 合成后发 memory.peer_portrait.upserted 下行 daemon。
-        'schedule': TzAwareCrontab('5-59/10'),
-    },
+    # doc19 §10 退役（2026-07-31）：'owner_memory_retry_pending_merges' 与 'peer_portrait_sweep'
+    # 两条记忆语义处理调度已随云端 LLM 合并/画像合成整体删除。合并改由**主脑分身在自己的设备上**
+    # 执行（§5.1 判断力应在分身身上、可向主人汇报、成本归位），整轮结果经云端合并闸
+    # `POST /api/v1/hasn/memory/agent/merge/apply` 提交；触发源改为 daemon `task_scheduler` 的
+    # 内置定时任务 `memory_review`（§9）。云端不再有任何记忆语义处理（§8.5）。
 }

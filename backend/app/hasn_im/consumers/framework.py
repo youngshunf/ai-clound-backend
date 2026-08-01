@@ -21,13 +21,18 @@ from __future__ import annotations
 
 import logging
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.hasn_im.consumers import store
-from backend.app.hasn_im.consumers.base import ConsumerClass, EventConsumer
+from backend.app.hasn_im.consumers.base import ConsumerClass, EventConsumer, IntegrationEvent
 from backend.app.hasn_im.observability import metrics
+from backend.common.observability.otel import (
+    integration_event_consume_span,
+    mark_messaging_span,
+)
 
 log = logging.getLogger(__name__)
 
@@ -101,9 +106,7 @@ class ConsumerRunner:
         # 2) 读 cursor + 取一批（独立事务读）。
         async with self._sm() as db:
             cursor = await store.get_cursor(db, self.name)
-            events = await store.fetch_after(
-                db, after_seq=cursor, shard_key=self._shard_key, limit=batch_limit
-            )
+            events = await store.fetch_after(db, after_seq=cursor, shard_key=self._shard_key, limit=batch_limit)
         stats.fetched = len(events)
         if not events:
             return stats
@@ -117,13 +120,30 @@ class ConsumerRunner:
 
     # ---------- durable：同事务 + 顺序 park ----------
 
-    async def _run_durable(self, events, stats: ConsumerTickStats) -> None:
+    async def _handle_with_span(self, event: IntegrationEvent, db: AsyncSession) -> None:
+        """在低基数 integration event span 内调用具体消费者。"""
+        with integration_event_consume_span(
+            consumer=self.name,
+            event_type=event.event_type,
+            consumer_class=self._consumer.consumer_class.value,
+        ) as span:
+            try:
+                await self._consumer.handle(event, db)
+            except Exception as exc:
+                mark_messaging_span(span, result='error', error=exc)
+                raise
+            else:
+                mark_messaging_span(span, result='ok')
+
+    async def _run_durable(
+        self,
+        events: Sequence[IntegrationEvent],
+        stats: ConsumerTickStats,
+    ) -> None:
         for event in events:
             failure = None
             async with self._sm() as db:
-                failure = await store.get_failure(
-                    db, consumer_name=self.name, event_seq=event.event_seq
-                )
+                failure = await store.get_failure(db, consumer_name=self.name, event_seq=event.event_seq)
             if failure and failure.dead_lettered:
                 # 未决 dead letter → park（须显式 resolve 才能推进·§7.2）
                 if failure.resolution is None:
@@ -132,9 +152,7 @@ class ConsumerRunner:
                 # 确认跳过：直接推进 cursor 越过本事件、不 handle（§7.2 授权跳过）
                 if failure.resolution == 'skipped':
                     async with self._sm() as db:
-                        await store.advance_cursor(
-                            db, consumer_name=self.name, to_seq=event.event_seq
-                        )
+                        await store.advance_cursor(db, consumer_name=self.name, to_seq=event.event_seq)
                         await db.commit()
                     stats.skipped += 1
                     continue
@@ -145,14 +163,15 @@ class ConsumerRunner:
                 return
 
             prev_attempts = failure.attempts if failure else 0
+            # 消费者任意异常都进退避/dead letter，绝不静默跳过。
             try:
                 # 处理 + cursor 推进同事务提交（§7.2）
                 async with self._sm() as db:
-                    await self._consumer.handle(event, db)
+                    await self._handle_with_span(event, db)
                     await store.advance_cursor(db, consumer_name=self.name, to_seq=event.event_seq)
                     await db.commit()
                 stats.processed += 1
-            except Exception as exc:  # noqa: BLE001 消费者任意异常都进退避/dead letter，绝不静默跳过
+            except Exception as exc:
                 parked = await self._record_durable_failure(event.event_seq, prev_attempts, exc, stats)
                 # durable 顺序消费：本事件未成功、cursor 未推进 → 停止本 tick（park）
                 stats.parked = True
@@ -171,52 +190,62 @@ class ConsumerRunner:
                 )
                 await db.commit()
                 stats.dead_lettered += 1
-                metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(
-                    consumer=self.name
-                ).inc()
-                metrics.HASN_IM_DEAD_LETTER_TOTAL.labels(
-                    consumer=self.name
-                ).inc()
+                metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(consumer=self.name).inc()
+                metrics.HASN_IM_DEAD_LETTER_TOTAL.labels(consumer=self.name).inc()
                 # dead letter = 永久卡住须人介入 → error（warn/error 铁律：终局不可恢复）
                 log.error(
                     'IM 消费者事件进 dead letter（consumer=%s event_seq=%d attempts=%d）：%r',
-                    self.name, event_seq, attempts, exc,
+                    self.name,
+                    event_seq,
+                    attempts,
+                    exc,
                 )
                 return True
             backoff = _backoff_seconds(attempts, self._backoff)
             await store.record_retry(
-                db, consumer_name=self.name, event_seq=event_seq,
-                attempts=attempts, backoff_seconds=backoff, error=repr(exc),
+                db,
+                consumer_name=self.name,
+                event_seq=event_seq,
+                attempts=attempts,
+                backoff_seconds=backoff,
+                error=repr(exc),
             )
             await db.commit()
             stats.retried += 1
-            metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(
-                consumer=self.name
-            ).inc()
+            metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(consumer=self.name).inc()
             # 会退避重试 / 自愈 → warn（warn/error 铁律：可恢复不提级）
             log.warning(
                 'IM 消费者事件处理失败将退避重试（consumer=%s event_seq=%d attempts=%d next=+%ds）：%r',
-                self.name, event_seq, attempts, backoff, exc,
+                self.name,
+                event_seq,
+                attempts,
+                backoff,
+                exc,
             )
             return False
 
     # ---------- best-effort：已尝试即推进，不重试不 DLQ ----------
 
-    async def _run_best_effort(self, events, stats: ConsumerTickStats) -> None:
+    async def _run_best_effort(
+        self,
+        events: Sequence[IntegrationEvent],
+        stats: ConsumerTickStats,
+    ) -> None:
         for event in events:
+            # best-effort 已尝试即算，记 metric 后仍推进 cursor。
             try:
                 async with self._sm() as db:
-                    await self._consumer.handle(event, db)
+                    await self._handle_with_span(event, db)
                     await db.commit()
-            except Exception as exc:  # noqa: BLE001 best-effort：已尝试即算，记 metric 后仍推进
+            except Exception as exc:
                 stats.best_effort_failed += 1
-                metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(
-                    consumer=self.name
-                ).inc()
+                metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(consumer=self.name).inc()
                 # 不重试、不进 DLQ、不阻塞 retention（§7.2）→ warn（预期可丢失、sync pull 兜底）
                 log.warning(
                     'IM best-effort 消费者投递失败（consumer=%s event_seq=%d，不重试·sync pull 兜底）：%r',
-                    self.name, event.event_seq, exc,
+                    self.name,
+                    event.event_seq,
+                    exc,
                 )
             # 成败均推进 cursor（独立事务，与 handle 解耦）
             async with self._sm() as db:

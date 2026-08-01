@@ -5,7 +5,7 @@
 - `hasn.stock.download`：把选中素材下载进 owner 私有桶 + 双登记（asset + artifact），下载后即可被
   `hasn.artifact.search` 搜回。SSRF 白名单由 provider 目录 `download_domains` 并集驱动。
 
-身份恒由 `agent_context` 注入；`session_id` 取系统注入的 `_hasn_session_id`（work_session_id）。
+身份恒由 `agent_context` 注入；`work_session_id` 取分发入口两级权威落定的 ContextVar。
 不外发、不动钱 → `required_scopes=[]`（出厂 Allow）。
 """
 
@@ -177,9 +177,9 @@ class StockDownloadTool(BaseTool):
             url=raw.strip(),
             title=(arguments.get('title') or None),
             description=(arguments.get('description') or None),
-            # 会话轴分流（设计 02 §4.3）：工作会话权威取 ContextVar（三级权威已落）+ auth 绑定
-            # 字段兜底；`agent_context.session_id` 是运行时/逻辑会话语义，不再直传工作会话锚。
-            session_id=get_current_work_session_id() or agent_context.work_session_id,
+            # 会话轴分流（设计 02 §4.3）：工作会话权威取 ContextVar（两级权威已落）+ auth 绑定
+            # 字段兜底；`agent_context.session_id` 是运行时/逻辑会话语义，不作工作会话锚。
+            work_session_id=get_current_work_session_id() or agent_context.work_session_id,
         )
 
 

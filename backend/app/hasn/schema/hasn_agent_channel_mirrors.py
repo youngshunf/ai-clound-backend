@@ -12,7 +12,8 @@ class HasnAgentChannelMirrorsSchemaBase(SchemaBase):
     agent_hasn_id: str = Field(description='Agent hasn_id，varchar(40) 对齐 hasn_agents.hasn_id')
     channel: str = Field(description='渠道类型 (feishu:飞书:blue/weixin:微信:green/qq:QQ:purple/wecom:企业微信:orange/webhook:Webhook:gray)')
     origin_node_id: str = Field(description='上报来源 Node ID（哪台设备的 daemon 上报）')
-    runtime_location: str = Field(description='运行位置快照 (local:本地桌面端:blue/cloud:云端:purple/remote:远端:green)')
+    # 保留读：cloud 取值已随 H8 云端沙箱形态退役，存量镜像行仍可能是 cloud，读路径不做拦截。
+    runtime_location: str = Field(description='运行位置快照 (local:本地桌面端:blue/remote:远端:green)；cloud 已退役')
     status: str = Field(description='渠道状态快照 (unbound:未绑:gray/bound:已绑:green/expired:过期:orange/failed:失败:red/unknown:未知:gray)')
     bound_account_display: str | None = Field(None, description='脱敏绑定账号展示：飞书=昵称[@domain]/微信=昵称或****后4位/QQ=昵称或****后4位；禁原始 open_id/user_id/user_openid')
     metadata_json: dict = Field(description='脱敏元数据；禁 SECRET_KEYS/_secret/_token，写库前过 _safe_json')
@@ -52,7 +53,7 @@ class UpsertChannelMirrorRequest(SchemaBase):
     agent_hasn_id: str = Field(description='Agent hasn_id')
     channel: str = Field(description='渠道类型 feishu/weixin/qq/wecom/webhook')
     origin_node_id: str = Field(description='上报来源 Node ID（哪台设备的 daemon 上报）')
-    runtime_location: str = Field('local', description='运行位置快照 local/cloud/remote')
+    runtime_location: str = Field('local', description='运行位置快照 local/remote（cloud 已随 H8 退役）')
     status: str = Field('unbound', description='渠道状态快照 unbound/bound/expired/failed/unknown')
     bound_account_display: str | None = Field(None, description='脱敏绑定账号展示（§3.3 格式）')
     metadata_json: dict = Field(default_factory=dict, description='脱敏元数据（写库前再过 safe_json 兜底）')

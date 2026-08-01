@@ -92,7 +92,35 @@ _BUILTIN_UPDATABLE_FIELDS = (
     'version',
     'source',
     'builtin_key',
+    'package_url',
+    'file_hash',
+    'content_hash',
+    'file_size',
+    'source_repo_path',
+    'git_commit_hash',
+    'synced_at',
 )
+
+_BUILTIN_RELEASE_FIELDS = frozenset(
+    {
+        'package_url',
+        'file_hash',
+        'content_hash',
+        'file_size',
+        'source_repo_path',
+        'git_commit_hash',
+        'synced_at',
+    }
+)
+
+
+def apply_builtin_template_updates(existing: Any, data: dict[str, Any]) -> None:
+    """更新内置模板派生字段，并防止旧 seed 扫描清空发布元数据。"""
+    for field in _BUILTIN_UPDATABLE_FIELDS:
+        value = data.get(field)
+        if field in _BUILTIN_RELEASE_FIELDS and value is None:
+            continue
+        setattr(existing, field, value)
 
 
 def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
@@ -133,6 +161,13 @@ def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
         'market_ref': raw.get('market_ref') or None,
         'sku_ref': raw.get('sku_ref') or None,
         'version': int(raw.get('version') or 1),
+        'package_url': raw.get('package_url') or None,
+        'file_hash': raw.get('file_hash') or None,
+        'content_hash': raw.get('content_hash') or None,
+        'file_size': raw.get('file_size') or None,
+        'source_repo_path': raw.get('source_repo_path') or None,
+        'git_commit_hash': raw.get('git_commit_hash') or None,
+        'synced_at': raw.get('synced_at') or None,
     }
 
 
@@ -312,6 +347,13 @@ def _to_public(tpl: HasnWorkflowTemplate, *, include_graph_spec: bool) -> dict[s
         version=tpl.version,
         market_ref=tpl.market_ref,
         sku_ref=tpl.sku_ref,
+        package_url=tpl.package_url,
+        file_hash=tpl.file_hash,
+        content_hash=tpl.content_hash,
+        file_size=tpl.file_size,
+        source_repo_path=tpl.source_repo_path,
+        git_commit_hash=tpl.git_commit_hash,
+        synced_at=tpl.synced_at,
         graph_summary=derive_graph_summary(tpl.graph_spec),
         graph_spec=(tpl.graph_spec if include_graph_spec else None),
     )
@@ -797,6 +839,13 @@ class WorkflowTemplateService:
                 market_ref=data['market_ref'],
                 sku_ref=data['sku_ref'],
                 version=data['version'],
+                package_url=data.get('package_url'),
+                file_hash=data.get('file_hash'),
+                content_hash=data.get('content_hash'),
+                file_size=data.get('file_size'),
+                source_repo_path=data.get('source_repo_path'),
+                git_commit_hash=data.get('git_commit_hash'),
+                synced_at=data.get('synced_at'),
             )
             db.add(tpl)
             await db.flush()
@@ -811,8 +860,7 @@ class WorkflowTemplateService:
             return 'skipped'
 
         # 内置行：原地更新派生字段（SQLAlchemy Unit of Work；template_uuid/owner_id 恒不动）
-        for field in _BUILTIN_UPDATABLE_FIELDS:
-            setattr(existing, field, data[field])
+        apply_builtin_template_updates(existing, data)
         existing.is_builtin = True  # 再确认内置标记
         await db.flush()
         return 'updated'

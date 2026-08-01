@@ -28,6 +28,8 @@ class GrowthProjectLead(HasnGrowthAppBase):
     source_tool: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     source_ref: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment=None)
     source_meta: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    ingest_batch_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
+    ingest_client_ref: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     status: Mapped[str] = mapped_column(sa.String(16), default='new', comment=None)
     dismiss_reason: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     note: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)

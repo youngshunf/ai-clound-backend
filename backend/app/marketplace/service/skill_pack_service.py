@@ -21,6 +21,7 @@ import yaml
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.marketplace.model.marketplace_skill_version import MarketplaceSkillVersion
 from backend.app.marketplace.schema.skill_pack import SkillPackCreateRequest
 from backend.common.exception import errors
 
@@ -54,6 +55,80 @@ def member_skill_ids(hermes_yaml: str) -> list[str]:
         if sid and sid not in out:
             out.append(sid)
     return out
+
+
+async def resolve_member_skill_snapshots(
+    db: AsyncSession,
+    members: list[str],
+    version_constraints: Any = None,
+) -> list[dict[str, str]]:
+    """把技能包成员解析成不可变 ``skill_id + version + content_hash`` 快照。
+
+    ``version_constraints`` 兼容历史 ``{skill_id: "*"}``：星号只在本次启动事务解析一次，
+    返回值随工作会话持久化；精确版本则按指定版本读取。任何成员缺版本或真实摘要都整体失败，
+    禁止包版本固定但成员继续跟随 latest。
+    """
+    constraints = version_constraints if isinstance(version_constraints, dict) else {}
+    snapshots: list[dict[str, str]] = []
+    for skill_id in members:
+        raw_constraint = constraints.get(skill_id)
+        if isinstance(raw_constraint, dict):
+            requested = str(raw_constraint.get('version') or '').strip()
+            requested_hash = str(raw_constraint.get('content_hash') or '').strip()
+            if not requested or not requested_hash:
+                raise errors.RequestError(
+                    msg=f'runtime_skill_hash_mismatch: {skill_id} 的冻结快照不完整'
+                )
+        else:
+            requested = str(raw_constraint or '*').strip()
+            requested_hash = ''
+        stmt = sa.select(
+            MarketplaceSkillVersion.version,
+            sa.func.coalesce(
+                MarketplaceSkillVersion.content_hash,
+                MarketplaceSkillVersion.file_hash,
+            ).label('content_hash'),
+        ).where(MarketplaceSkillVersion.skill_id == skill_id)
+        if requested and requested != '*':
+            stmt = stmt.where(MarketplaceSkillVersion.version == requested)
+        else:
+            stmt = stmt.where(MarketplaceSkillVersion.is_latest.is_(True))
+        row = (
+            await db.execute(
+                stmt.order_by(MarketplaceSkillVersion.id.desc()).limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            raise errors.NotFoundError(msg=f'runtime_skill_not_found: {skill_id}@{requested}')
+        version = str(row.version or '').strip()
+        hash_value = str(row.content_hash or '').strip()
+        if not version or not hash_value:
+            raise errors.RequestError(msg=f'runtime_skill_hash_mismatch: {skill_id} 缺少不可变内容指纹')
+        if requested_hash and requested_hash != hash_value:
+            raise errors.RequestError(
+                msg=f'runtime_skill_hash_mismatch: {skill_id}@{version} 的内容指纹已漂移'
+            )
+        snapshots.append(
+            {
+                'skill_id': skill_id,
+                'version': version,
+                'content_hash': hash_value,
+            }
+        )
+    return snapshots
+
+
+def _frozen_member_constraints(
+    snapshots: list[dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """把逐成员快照转换为版本行持久化格式。"""
+    return {
+        snapshot['skill_id']: {
+            'version': snapshot['version'],
+            'content_hash': snapshot['content_hash'],
+        }
+        for snapshot in snapshots
+    }
 
 
 def _validate_bundle_structure(payload: SkillPackCreateRequest) -> dict[str, Any]:
@@ -173,6 +248,13 @@ async def upsert_skill_pack(
     """
     normalized_yaml, hash_value = await validate_and_normalize_bundle(db, payload, strict=strict_members)
     template_id = payload.template_id or template_id_for(payload.namespace, payload.bundle_slug)
+    normalized_member_ids = member_skill_ids(normalized_yaml)
+    member_snapshots = await resolve_member_skill_snapshots(
+        db,
+        normalized_member_ids,
+        payload.skill_dependencies_versioned,
+    )
+    frozen_dependencies = _frozen_member_constraints(member_snapshots)
 
     template_params: dict[str, Any] = {
         'template_id': template_id,
@@ -277,7 +359,7 @@ async def upsert_skill_pack(
         {
             'template_id': template_id,
             'version': payload.version,
-            'skill_dependencies_versioned': _json_text(payload.skill_dependencies_versioned),
+            'skill_dependencies_versioned': _json_text(frozen_dependencies),
             'bundle_slug': payload.bundle_slug,
             'command_key': payload.command_key,
             'hermes_bundle_json': _json_text(payload.hermes_bundle_json),
@@ -298,5 +380,6 @@ async def upsert_skill_pack(
         'hermes_yaml': normalized_yaml,
         'content_hash': hash_value,
         'file_hash': hash_value.removeprefix('sha256:'),
-        'skill_ids': member_skill_ids(normalized_yaml),
+        'skill_ids': normalized_member_ids,
+        'member_skills': member_snapshots,
     }

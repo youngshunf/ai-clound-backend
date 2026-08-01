@@ -1,6 +1,7 @@
 """已发布制品根表（hasn_publish.site）。"""
 
 from datetime import datetime
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -31,6 +32,11 @@ class Site(PublishAppBase):
     slug: Mapped[str] = mapped_column(sa.String(32), default='', comment='不可枚举短码，分享路径 /s/{slug}')
     source_app: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment='来源应用（deck 等，可空）')
     source_ref: Mapped[str | None] = mapped_column(sa.String(80), default=None, comment='来源实体 id（如 deck_id，可空）')
+    platform_project_id: Mapped[str | UUID | None] = mapped_column(
+        sa.UUID(),
+        default=None,
+        comment='挂靠的平台项目云端权威 UUID（可空；项目只提供联邦归集视角）',
+    )
     current_revision_id: Mapped[int | None] = mapped_column(
         sa.BIGINT(), default=None, comment='当前对外版本指针（引用 hasn_publish.revision.id，可空）'
     )

@@ -190,6 +190,18 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         # https://github.com/encode/starlette/discussions/1933
         content_type = request.headers.get('Content-Type', '').split(';')
 
+        # 大文件上传（模型包 / 引擎包动辄数百 MB）不得读进操作日志：`body()` 会把整个请求体
+        # 缓冲进内存，非 JSON 分支还会再 decode 出一份等长字符串，随后的 `form()` 又要再解析一遍。
+        # 这一切发生在路由之前，端点侧的分块读取与提前释放事务因此完全失效，单次发布就能把
+        # worker 撑爆。这里只记录形状，不记录内容。
+        try:
+            content_length = int(request.headers.get('Content-Length') or 0)
+        except ValueError:
+            content_length = 0
+        if 'multipart/form-data' in content_type or content_length > settings.OPERA_LOG_MAX_BODY_BYTES:
+            args['data'] = f'[BODY OMITTED: {content_type[0] or "unknown"}, {content_length} bytes]'
+            return args
+
         # 请求体
         body_data = await request.body()
         if body_data:

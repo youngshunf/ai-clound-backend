@@ -200,7 +200,7 @@ async def _h_inspection_publish(db: Any, ctx: AgentContext, args: dict[str, Any]
 
 async def _h_report_publish(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """由当前工作会话分身把本周正文登记为项目 document 产物。"""
-    # 会话轴分流（设计 02 §4.3）：工作会话归属取权威轴（ContextVar 三级权威已落，
+    # 会话轴分流（设计 02 §4.3）：工作会话归属取权威轴（ContextVar 两级权威已落，
     # auth 绑定字段兜底）；`ctx.session_id` 是运行时/逻辑会话语义，不再直传。
     return await report_service.publish(
         db,

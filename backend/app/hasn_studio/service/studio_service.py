@@ -910,7 +910,7 @@ class StudioService:
                         kind='video',
                         title=artifact.title,
                         asset_id=stored.asset_id,
-                        session_id=job.work_session_id,
+                        work_session_id=job.work_session_id,
                         source_tool='hasn.studio.run_pipeline',
                         # 与 hasn.image.generate / voice.synthesize 同族：工具产出的媒体资产。
                         # 不能写 'app'——I4 钉死 source_kind='app' ⟺ artifact_kind='resource'，

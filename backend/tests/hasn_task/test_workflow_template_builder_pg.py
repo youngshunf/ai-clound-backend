@@ -41,6 +41,7 @@ NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(e
 ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
 WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 TEMPLATE_SQL = (_SQL_DIR / '2026-07-14-workflow-template.sql').read_text(encoding='utf-8')
+SOURCE_RELEASE_SQL = (_SQL_DIR / '2026-07-29-workflow-template-source-release.sql').read_text(encoding='utf-8')
 
 
 def _uid() -> str:
@@ -74,6 +75,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(ADVANCE_MODE_SQL)
     await _run_sql(WORKFLOW_HISTORY_SQL)
     await _run_sql(TEMPLATE_SQL)
+    await _run_sql(SOURCE_RELEASE_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     try:

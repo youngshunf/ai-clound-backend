@@ -23,6 +23,18 @@ CREATE TABLE IF NOT EXISTS app_release (
     is_latest boolean NOT NULL DEFAULT false,
     source varchar(16) NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'github')),
     github_run_id varchar(64),
+    release_tag varchar(64),
+    previous_release_tag varchar(64),
+    source_commit varchar(64),
+    tag_status varchar(16) NOT NULL DEFAULT 'not_required'
+        CHECK (tag_status IN ('not_required', 'pending', 'ready')),
+    tag_created_time timestamptz,
+    required_platforms jsonb NOT NULL DEFAULT '[]'::jsonb,
+    completed_platforms jsonb NOT NULL DEFAULT '[]'::jsonb,
+    release_commits jsonb NOT NULL DEFAULT '[]'::jsonb,
+    release_notes_status varchar(16) NOT NULL DEFAULT 'manual'
+        CHECK (release_notes_status IN ('manual', 'pending', 'ready', 'failed')),
+    release_notes_error text,
     published_time timestamptz,
     created_time timestamptz NOT NULL DEFAULT now(),
     updated_time timestamptz DEFAULT now()
@@ -36,9 +48,23 @@ COMMENT ON COLUMN app_release.status IS '状态 (draft:草稿:gray/published:已
 COMMENT ON COLUMN app_release.is_latest IS '是否当前 channel 最新（置新版时把同 channel 旧版落 false）';
 COMMENT ON COLUMN app_release.source IS '来源 (manual:手动上传:blue/github:GitHub构建:purple)';
 COMMENT ON COLUMN app_release.github_run_id IS '关联 GitHub Actions run id（source=github 时）';
+COMMENT ON COLUMN app_release.release_tag IS '云端锁定的 Git release tag，如 v0.3.1';
+COMMENT ON COLUMN app_release.previous_release_tag IS '生成更新说明时使用的上一个真实 Git release tag';
+COMMENT ON COLUMN app_release.source_commit IS 'release tag 锁定的 hasn-node Git commit';
+COMMENT ON COLUMN app_release.tag_status IS 'tag 状态 (not_required:旧流程/pending:待推送/ready:已核验)';
+COMMENT ON COLUMN app_release.tag_created_time IS 'release tag 经云端核验的时间';
+COMMENT ON COLUMN app_release.required_platforms IS '正式发布要求的平台目标 JSON 数组';
+COMMENT ON COLUMN app_release.completed_platforms IS 'installer 与 updater 均已上传的平台目标 JSON 数组';
+COMMENT ON COLUMN app_release.release_commits IS '上一个 release tag 到本次 tag 的 Git 提交摘要';
+COMMENT ON COLUMN app_release.release_notes_status IS '更新说明状态 (manual:人工/pending:待生成/ready:已生成/failed:生成失败)';
+COMMENT ON COLUMN app_release.release_notes_error IS 'LLM 更新说明生成失败原因';
 COMMENT ON COLUMN app_release.published_time IS '发布时刻（status 转 published 时写入）';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_app_release_version_channel ON app_release (version, channel);
 CREATE INDEX IF NOT EXISTS idx_app_release_latest ON app_release (channel, is_latest, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_release_release_tag ON app_release (release_tag) WHERE release_tag IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_release_active_batch_channel
+    ON app_release (channel)
+    WHERE status = 'draft' AND release_tag IS NOT NULL;
 
 -- ========== (2) release_asset — 平台资产（一版本多平台 × 两种包） ==========
 CREATE TABLE IF NOT EXISTS release_asset (

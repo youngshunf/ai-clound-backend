@@ -140,7 +140,7 @@ class StockDownloadService:
         url: str,
         title: str | None = None,
         description: str | None = None,
-        session_id: str | None = None,
+        work_session_id: str | None = None,
     ) -> dict[str, Any]:
         """执行五步下载落桶双登记。身份由调用方（AgentContext）注入。
 
@@ -166,7 +166,7 @@ class StockDownloadService:
             url=url,
             title=title,
             description=description,
-            session_id=session_id,
+            work_session_id=work_session_id,
         )
 
     async def _store_and_register(
@@ -179,7 +179,7 @@ class StockDownloadService:
         url: str,
         title: str | None = None,
         description: str | None = None,
-        session_id: str | None = None,
+        work_session_id: str | None = None,
     ) -> dict[str, Any]:
         """下载后半程：已取到的字节 → 落 owner 私有桶 → 双登记 → 组装出参。
 
@@ -216,7 +216,7 @@ class StockDownloadService:
                     # （search 命中 title OR summary；素材文件名/标题常无意义，summary 才承载可检索语义）。
                     summary=(description or None),
                     asset_id=stored.asset_id,
-                    session_id=session_id,
+                    work_session_id=work_session_id,
                     source_tool='hasn.stock.download',
                     # 外部取材（doc35 §5.2 点名 hasn.stock.download 就是 external_tool 的典型产出者）。
                     # 旧值 'external' 语义相同但不在 6 枚举内，Literal 收敛后会 422。

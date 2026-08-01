@@ -20,6 +20,8 @@ class GrowthProjectLeadSchemaBase(SchemaBase):
     source_tool: str | None = Field(None, description='None')
     source_ref: str | None = Field(None, description='None')
     source_meta: dict = Field(description='None')
+    ingest_batch_id: str | None = Field(None, description='None')
+    ingest_client_ref: str | None = Field(None, description='None')
     status: str = Field(description='None')
     dismiss_reason: str | None = Field(None, description='None')
     note: str | None = Field(None, description='None')

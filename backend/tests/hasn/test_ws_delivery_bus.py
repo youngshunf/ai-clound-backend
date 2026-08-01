@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from typing import Any
@@ -40,6 +41,7 @@ class FakeRedis:
         self.sets: dict[str, set[Any]] = {}
         self.hash: dict[str, dict[str, Any]] = {}
         self.lists: dict[str, list[Any]] = {}
+        self.expires: dict[str, int] = {}
         self.published: list[tuple[str, str]] = []
         self.fail_publish = fail_publish
 
@@ -56,7 +58,7 @@ class FakeRedis:
         values = self.lists.get(key, [])
         return list(values[start:] if end == -1 else values[start : end + 1])
 
-    async def eval(self, _script: str, numkeys: int, *args: Any) -> Any:
+    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
         if numkeys == 2:
             source = str(args[0])
             destination = str(args[1])
@@ -69,6 +71,18 @@ class FakeRedis:
 
         assert numkeys == 1
         key = str(args[0])
+        if 'RPUSH' in script:
+            # 离线入队脚本：追加、按上限裁剪最旧、重置 TTL，返回被裁剪条数
+            payload, ttl, max_length = args[1], int(args[2]), int(args[3])
+            values = self.lists.setdefault(key, [])
+            values.append(payload)
+            trimmed = 0
+            if max_length > 0 and len(values) > max_length:
+                trimmed = len(values) - max_length
+                del values[:trimmed]
+            self.expires[key] = ttl
+            return trimmed
+
         claimed = list(args[1:])
         values = self.lists.setdefault(key, [])
         if values[: len(claimed)] != claimed:
@@ -105,7 +119,7 @@ class FakeRedis:
         return removed
 
     async def expire(self, key: str, ttl: int) -> None:
-        pass
+        self.expires[key] = ttl
 
     async def publish(self, channel: str, message: str) -> int:
         if self.fail_publish:
@@ -242,9 +256,11 @@ async def test_publish_then_deliver_full_loop(monkeypatch: pytest.MonkeyPatch) -
     """确定性模拟跨 worker：worker-A publish → worker-B（持有连接）_deliver_local 下发。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn_im.adapters.routing import node_session_service as rmod
+    from backend.app.hasn_im.adapters.routing import redis_realtime_wakeup_bus as wakeupmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
+    monkeypatch.setattr(wakeupmod, 'redis_client', redis)
     rmod._ws_connections.clear()
     rmod._ws_connection_ids.clear()
     rmod._ws_ready_connection_ids.clear()
@@ -258,7 +274,7 @@ async def test_publish_then_deliver_full_loop(monkeypatch: pytest.MonkeyPatch) -
     await busmod.WsDeliveryBus.publish_to_node('node-x', 'PAYLOAD')
     assert len(redis.published) == 1
     channel, message = redis.published[0]
-    assert channel == busmod.WS_DELIVERY_CHANNEL
+    assert channel == wakeupmod.WS_DELIVERY_CHANNEL
 
     # 「持有连接的 worker」订阅者收到该帧 → 下发
     await busmod.WsDeliveryBus._deliver_local(json.loads(message))
@@ -275,9 +291,11 @@ async def test_publish_persists_payload_when_pubsub_wakeup_fails(
 ) -> None:
     """目标 worker 订阅短暂中断时，消息仍留在 node 待投队列等待周期重试。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import redis_realtime_wakeup_bus as wakeupmod
 
     redis = FakeRedis(fail_publish=True)
     monkeypatch.setattr(busmod, 'redis_client', redis)
+    monkeypatch.setattr(wakeupmod, 'redis_client', redis)
 
     queued = await busmod.WsDeliveryBus.publish_to_node('node-x', 'PAYLOAD')
 
@@ -430,20 +448,30 @@ async def test_push_to_human_online_via_bus_else_offline(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy)
     router = module.NodeSessionService()
+    online_frame = json.dumps({
+        'hasn': 'hasn/0.2',
+        'method': 'hasn.message.new',
+        'params': {'message_id': 'msg-online'},
+    })
+    offline_frame = json.dumps({
+        'hasn': 'hasn/0.2',
+        'method': 'hasn.message.new',
+        'params': {'message_id': 'msg-offline'},
+    })
 
     # 在线（presence 有节点，但都不在本 worker）→ 经总线投递，**不**入离线
     redis.sets[f'{module.USER_NODES_PREFIX}:h_u'] = {'node-1', 'node-2'}
-    ok = await router._push_to_human('h_u', 'MSG')
+    ok = await router._push_to_human('h_u', online_frame)
     assert ok is True
     assert {n for n, _ in published} == {'node-1', 'node-2'}
     assert f'{module.OFFLINE_PREFIX}:h_u' not in redis.lists  # 在线不入离线队列
 
     # 离线（presence 无节点）→ 入离线队列，不经总线
     published.clear()
-    off = await router._push_to_human('h_off', 'MSG2')
+    off = await router._push_to_human('h_off', offline_frame)
     assert off is False
     assert published == []
-    assert redis.lists[f'{module.OFFLINE_PREFIX}:h_off'] == ['MSG2']
+    assert redis.lists[f'{module.OFFLINE_PREFIX}:h_off'] == [offline_frame]
 
     module._ws_connections.clear()
 
@@ -463,19 +491,29 @@ async def test_push_to_entity_online_via_bus_else_offline(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy)
     router = module.NodeSessionService()
+    online_frame = json.dumps({
+        'hasn': 'hasn/0.2',
+        'method': 'hasn.task.exec',
+        'params': {'dispatch_id': 'task:run:1:exec'},
+    })
+    offline_frame = json.dumps({
+        'hasn': 'hasn/0.2',
+        'method': 'hasn.task.exec',
+        'params': {'dispatch_id': 'task:run:2:exec'},
+    })
 
     # Agent 在线（entity_node 有路由，连接不在本 worker）→ 经总线
     redis.hash[module.ENTITY_NODE_KEY] = {'a_x': 'node-7'}
-    ok = await router._push_to_entity('a_x', 'TOOL')
+    ok = await router._push_to_entity('a_x', online_frame)
     assert ok is True
-    assert published == [('node-7', 'TOOL')]
+    assert published == [('node-7', online_frame)]
 
     # Agent 离线（无路由）→ 入离线
     published.clear()
-    off = await router._push_to_entity('a_off', 'TOOL2')
+    off = await router._push_to_entity('a_off', offline_frame)
     assert off is False
     assert published == []
-    assert redis.lists[f'{module.OFFLINE_PREFIX}:a_off'] == ['TOOL2']
+    assert redis.lists[f'{module.OFFLINE_PREFIX}:a_off'] == [offline_frame]
 
     module._ws_connections.clear()
 
@@ -500,7 +538,14 @@ async def test_route_falls_back_offline_when_durable_node_queue_write_fails(
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _failed_publish)
 
-    delivered = await module.NodeSessionService().push_message_to('a_x', {'body': 'retry-me'})
+    delivered = await module.NodeSessionService().push_message_to(
+        'a_x',
+        {
+            'hasn': 'hasn/0.2',
+            'method': 'hasn.message.new',
+            'params': {'message_id': 'msg-retry'},
+        },
+    )
 
     assert delivered is False
     assert redis.lists[f'{module.OFFLINE_PREFIX}:a_x']
@@ -531,3 +576,34 @@ async def test_push_self_sync_excludes_sender_node(monkeypatch: pytest.MonkeyPat
     assert not any(k.startswith(module.OFFLINE_PREFIX) for k in redis.lists)
 
     module._ws_connections.clear()
+
+
+@pytest.mark.asyncio
+async def test_stop_listener_reclaims_retry_task_even_if_transport_stop_fails() -> None:
+    """transport 停止失败不得漏掉周期 drain 任务和单例引用，也不得盖掉原始异常。"""
+    from backend.app.hasn_im.adapters.routing.delivery_bus import WsDeliveryBus
+
+    class _FailingWakeupBus:
+        def start(self, _handler: object) -> None:
+            return None
+
+        async def stop(self) -> None:
+            raise RuntimeError('transport 停止失败')
+
+    async def _idle() -> None:
+        await asyncio.sleep(3600)
+
+    previous_bus = WsDeliveryBus._wakeup_bus
+    previous_task = WsDeliveryBus._retry_task
+    retry_task = asyncio.create_task(_idle())
+    WsDeliveryBus._wakeup_bus = _FailingWakeupBus()  # type: ignore[assignment]
+    WsDeliveryBus._retry_task = retry_task
+    try:
+        await WsDeliveryBus.stop_listener()
+
+        assert WsDeliveryBus._wakeup_bus is None
+        assert WsDeliveryBus._retry_task is None
+        assert retry_task.cancelled() or retry_task.done()
+    finally:
+        WsDeliveryBus._wakeup_bus = previous_bus
+        WsDeliveryBus._retry_task = previous_task

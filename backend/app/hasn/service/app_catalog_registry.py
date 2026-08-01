@@ -131,7 +131,7 @@ class AppCatalogRegistry:
         from backend.app.hasn_reel.manifest import build_reel_app
 
         registry.register(build_reel_app())
-        # 图像处理 imagelab（图坊，local_tool AI-Native 自研本地引擎，模块 14 doc30；
+        # 图像处理 imagelab（图坊，local_tool AI-Native 自研本地引擎；
         # install_policy=manual 非默认挂载——引擎按需装，任意分身可操作，默认承接
         # 内容创作分身 content_operator）。延迟导入避免循环依赖。
         from backend.app.hasn_imagelab.manifest import build_imagelab_app

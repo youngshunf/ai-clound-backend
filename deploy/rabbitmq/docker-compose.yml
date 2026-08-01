@@ -1,0 +1,46 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.3.4-management@sha256:656e8ab6b06fb4f84a8a3d90fe80c4f151c4e731bf3e87a50477774b3d7c08b3
+    container_name: huanxing-rabbitmq
+    hostname: huanxing-rabbitmq
+    network_mode: host
+    user: "999:999"
+    restart: unless-stopped
+    stop_grace_period: 60s
+    read_only: true
+    init: true
+    environment:
+      RABBITMQ_NODENAME: rabbit@huanxing-rabbitmq
+      ERL_EPMD_ADDRESS: 127.0.0.1
+    volumes:
+      - ${RABBITMQ_DATA_DIR:-/data2/huanxing-rabbitmq}/data:/var/lib/rabbitmq
+      - ${RABBITMQ_DATA_DIR:-/data2/huanxing-rabbitmq}/logs:/var/log/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=999,gid=999
+      - /var/run/rabbitmq:rw,noexec,nosuid,nodev,size=16m,uid=999,gid=999
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 1.5
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - check_running
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"

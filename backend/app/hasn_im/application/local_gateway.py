@@ -43,6 +43,7 @@ from backend.app.hasn_im.ports.dto import (
     MessagePage,
     ReadCursorCommand,
     RecallMessageCommand,
+    ResolvedTarget,
     SendMessageCommand,
     SendMessageResult,
     ServicePrincipal,
@@ -139,6 +140,19 @@ class PythonLocalImGateway:
                 session_factory=self.session_factory,
                 bound_session=self.bound_ensure_session,
             )
+
+    async def resolve_target(self, target: str) -> ResolvedTarget | None:
+        """通过 IM 受限事务解析消息目标，返回纯值引用。"""
+        async with self.session_factory() as db:
+            resolved = await message_service.resolve_target(db, target)
+        if resolved is None:
+            return None
+        conversation_id = resolved.get('conversation_id')
+        return ResolvedTarget(
+            hasn_id=str(resolved['hasn_id']),
+            entity_type=str(resolved['entity_type']),
+            conversation_id=str(conversation_id) if conversation_id is not None else None,
+        )
 
     async def _effective_sender(self, principal: ServicePrincipal) -> str:
         """校验认证主体与受限代发关系，返回权威有效发送方。"""

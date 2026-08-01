@@ -421,21 +421,30 @@ class OwnerStorageMaintenanceService:
             )
 
         trashed = 0
+        # 逐主人汇总本轮被清理的文件名，扫描结束后每人只发一条聚合通知（见 _notify_unbound_trashed）。
+        trashed_by_owner: dict[str, list[str]] = {}
         for asset_id in asset_ids:
-            if await self._trash_unbound_asset(str(asset_id), cutoff=cutoff):
-                trashed += 1
+            outcome = await self._trash_unbound_asset(str(asset_id), cutoff=cutoff)
+            if outcome is None:
+                continue
+            trashed += 1
+            owner_hasn_id, display_name = outcome
+            trashed_by_owner.setdefault(owner_hasn_id, []).append(display_name)
+        for owner, names in trashed_by_owner.items():
+            await self._notify_unbound_trashed(owner_hasn_id=owner, names=names)
         return {'checked': len(asset_ids), 'trashed': trashed}
 
-    async def _trash_unbound_asset(self, asset_id: str, *, cutoff: Any) -> bool:
-        """在通知与垃圾箱状态的同一事务内处理单个未绑定资产。"""
-        from backend.app.notification.service.notification_service import NotificationService
+    async def _trash_unbound_asset(self, asset_id: str, *, cutoff: Any) -> tuple[str, str] | None:
+        """把单个未绑定资产移入垃圾箱；命中时返回 (主人, 展示名)，未命中返回 None。
 
+        只负责权威状态变更，不发通知——通知按批次聚合，避免一次扫描清理 N 个文件就发 N 条。
+        """
         async with self._sessions.begin() as db:
             asset = (
                 await db.execute(
                     text(
                         """
-                        SELECT a.asset_id, a.owner_hasn_id, a.original_name, a.category
+                        SELECT a.asset_id, a.owner_hasn_id, a.original_name
                         FROM hasn_assets AS a
                         JOIN hasn_storage_entries AS e ON e.asset_id = a.asset_id
                         WHERE a.asset_id = :asset_id
@@ -456,7 +465,7 @@ class OwnerStorageMaintenanceService:
                 )
             ).mappings().one_or_none()
             if asset is None:
-                return False
+                return None
             now = timezone.now()
             await db.execute(
                 text(
@@ -471,24 +480,54 @@ class OwnerStorageMaintenanceService:
                 ),
                 {'asset_id': asset_id, 'now': now},
             )
-            await NotificationService.emit(
-                db,
-                recipient_id=str(asset['owner_hasn_id']),
-                source={'kind': 'system', 'id': 'owner_storage'},
-                category='system',
-                type='storage_unbound_asset_trashed',
-                title='未使用的云端附件已移入垃圾箱',
-                body=f'“{asset["original_name"] or asset_id!s}”超过保留期且未被任何内容使用，'
-                '已移入垃圾箱。垃圾箱中的文件仍占用存储空间。',
-                payload={
-                    'asset_id': asset_id,
-                    'category': str(asset['category']),
-                    'target': {'id': asset_id},
-                    'primary_action': {'uri': 'hasn://storage/trash'},
-                },
-                dedupe_key=f'storage_unbound_asset_trashed:{asset_id}',
+            return str(asset['owner_hasn_id']), str(asset['original_name'] or asset_id)
+
+    async def _notify_unbound_trashed(self, *, owner_hasn_id: str, names: list[str]) -> None:
+        """本轮清理结束后给主人发一条聚合通知（存储维护属于告知，不该刷屏）。
+
+        承载只留通知中心：显式关掉卡片消息/toast/系统推送，避免同一件事在消息列表再开一个
+        服务号会话、又弹一次系统通知（主人反馈「只需要有一个」）。通知发送失败不回滚已完成的
+        垃圾箱状态变更——资产状态是权威，告知是 best-effort，下轮扫描不会重复处理已 trashed 的行。
+        """
+        from backend.app.notification.service.notification_service import NotificationService
+
+        if not names:
+            return
+        quoted = '、'.join(f'“{name}”' for name in names[:3])
+        summary = quoted if len(names) <= 3 else f'{quoted}等 {len(names)} 个文件'
+        # dedupe/group 键按天取：同一天重复扫描收敛成一条，跨天的清理各自成条不互相覆盖。
+        sweep_day = timezone.now().strftime('%Y-%m-%d')
+        dedupe_key = f'storage_unbound_asset_trashed:{owner_hasn_id}:{sweep_day}'
+        try:
+            async with self._sessions.begin() as db:
+                await NotificationService.emit(
+                    db,
+                    recipient_id=owner_hasn_id,
+                    source={'kind': 'system', 'id': 'owner_storage', 'display_name': '云存储'},
+                    category='system',
+                    type='storage_unbound_asset_trashed',
+                    title=f'已清理 {len(names)} 个未使用的云端附件',
+                    body=f'{summary}超过保留期且未被任何内容使用，已移入垃圾箱。'
+                    '垃圾箱中的文件仍占用存储空间。',
+                    payload={
+                        'trashed_count': len(names),
+                        'trashed_names': names[:20],
+                        # 跳转键必须是 `link`：卡片投影 build_card_body 只认它（旧写法 payload
+                        # `primary_action` 既不产出卡片按钮也不产出通知 link，一直是死字段）。
+                        'link': 'hasn://storage/trash',
+                    },
+                    priority='normal',
+                    dedupe_key=dedupe_key,
+                    group_key=dedupe_key,
+                    delivery_hint={
+                        'channels': {'card_message': False, 'toast': False, 'push': False}
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 - 告知失败不该拖垮已完成的清理
+            log.warning(
+                f'云存储无引用清理通知发送失败: owner={owner_hasn_id} count={len(names)} '
+                f'{type(exc).__name__}: {exc!s}'
             )
-            return True
 
     async def sweep_expired_exports(
         self,

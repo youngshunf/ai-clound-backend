@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_growth.model.growth_profile_suggestion import GrowthProfileSuggestion
 from backend.app.hasn_growth.model.growth_profile_version import GrowthProfileVersion
 from backend.app.hasn_growth.model.growth_project import GrowthProject

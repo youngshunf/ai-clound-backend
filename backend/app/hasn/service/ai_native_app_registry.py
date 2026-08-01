@@ -41,6 +41,7 @@ from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_project.manifest import PROJECT_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.service import resource_adapter as _plan_resource_adapter  # noqa: F401
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_publish.service import project_linkage as _publish_project_linkage  # noqa: F401
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
 from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST
@@ -95,7 +96,7 @@ class AINativeAppRegistry:
             'film': FILM_AI_NATIVE_MANIFEST,
             # 短视频合成应用（app_id=reel，源自 MoneyPrinterTurbo，模块 14 doc19；local_tool，reel-P4 铸 scope）。
             'reel': REEL_AI_NATIVE_MANIFEST,
-            # 图像处理应用（app_id=imagelab，图坊，自研本地引擎，模块 14 doc30；local_tool，P3 铸 scope。
+            # 图像处理应用（app_id=imagelab，图坊，自研本地引擎；local_tool，铸七个 scope。
             # hasn.imagelab.* 工具在本地 hasn-mcp（imagelab.rs，P3 待落）经 ImageLabBroker → 自研引擎处理图片，
             # 云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
             'imagelab': IMAGELAB_AI_NATIVE_MANIFEST,

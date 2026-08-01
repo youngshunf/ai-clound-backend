@@ -24,8 +24,11 @@ KIND_LLM_TIER = 'llm_tier'  # LLM 订阅（升级订阅档 + 发放月度积分�
 KIND_CREDIT_PACK = 'credit_pack'  # 积分充值包（一次性入账）
 KIND_APP = 'app'  # AI-Native 应用购买（owner 维度权益）
 KIND_SEAT = 'seat'  # 企业席位购买（累加 seats_total）
-KIND_FEATURE_PLAN = 'feature_plan'  # 通用 feature 订阅/买断（MK-2 通用路预留）
+KIND_FEATURE_PLAN = 'feature_plan'  # 通用 feature 订阅/买断（MK-2 通用路；首个商品 cloud:node）
 KIND_LEAD_PACK = 'lead_pack'  # 获客线索包（hasn_growth 额度）
+
+#: feature_plan 类商品的下单 order_type（与 kind 同名：这一类没有历史 order_type 包袱）。
+ORDER_TYPE_FEATURE_PLAN = 'feature_plan'
 
 # order_type（存量下单分支）→ offering.kind（发货轴）的唯一映射。
 ORDER_TYPE_TO_KIND: dict[str, str] = {
@@ -34,6 +37,7 @@ ORDER_TYPE_TO_KIND: dict[str, str] = {
     'app_purchase': KIND_APP,
     'app_seat': KIND_SEAT,
     'lead_pack': KIND_LEAD_PACK,
+    ORDER_TYPE_FEATURE_PLAN: KIND_FEATURE_PLAN,
 }
 
 # 履约处理器：offering.kind -> async handler(order)

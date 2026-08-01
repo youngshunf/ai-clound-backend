@@ -103,7 +103,7 @@ async def _register_deck_artifact(
         resource_kind='deck.presentation',
         server_id=str(deck_id),
         # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`ctx.session_id` 是运行时/逻辑会话
-        # 语义，直传会绕过在册收窄把工作会话列污染；缺省走 ContextVar 三级权威。
+        # 语义，直传会污染工作会话列；缺省走 ContextVar 两级权威。
         agent_hasn_id=ctx.agent_hasn_id,
         owner_hasn_id=_owner_hasn_id(ctx),
         title=resolved_title or '演示文稿',

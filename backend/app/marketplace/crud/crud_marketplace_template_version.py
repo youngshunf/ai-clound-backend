@@ -111,7 +111,12 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param template_id: 模板 ID
         :return: 更新的行数
         """
-        return await self.update_model_by_column(db, {'is_latest': False}, template_id=template_id)
+        return await self.update_model_by_column(
+            db,
+            {'is_latest': False},
+            allow_multiple=True,
+            template_id=template_id,
+        )
 
 
 marketplace_template_version_dao: CRUDMarketplaceTemplateVersion = CRUDMarketplaceTemplateVersion(

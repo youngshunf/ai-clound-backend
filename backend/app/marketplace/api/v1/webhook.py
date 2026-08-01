@@ -1,8 +1,4 @@
-"""
-GitHub Webhook API for Marketplace
-
-Receives GitHub push events and triggers sync for skills and templates.
-"""
+"""技能市场 GitHub Webhook API。"""
 import hashlib
 import hmac
 
@@ -11,16 +7,10 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Header, Request
 from pydantic import BaseModel
 
-from backend.app.marketplace.service.github_app_sync_service import github_app_sync_service
-from backend.app.marketplace.service.github_sync_service import (
-    collect_changed_paths,
-    full_resync_requested,
-    github_sync_service,
-)
+from backend.app.marketplace.service.github_sync_service import collect_changed_paths
 from backend.common.log import log
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.core.conf import settings
-from backend.database.db import async_db_session
 
 router = APIRouter()
 
@@ -33,15 +23,33 @@ class WebhookResponse(BaseModel):
 
 
 def has_skill_source_changes(commits: list[dict]) -> bool:
-    """Return true when push payload touches managed skill source roots."""
-    for commit in commits:
-        changed = commit.get('modified', []) + commit.get('added', []) + commit.get('removed', [])
-        if any(
-            path == '.gitmodules' or path == 'common-skills.yaml' or path == 'common-bundles.yaml' or path.startswith(('huanxing-skills/', 'bundles/', 'github/')) or path == 'github'
-            for path in changed
-        ):
-            return True
-    return False
+    """判断推送是否要求在可信工作区执行 AstraHub 发布。"""
+    return source_release_required(commits)
+
+
+def source_release_required(commits: list[dict]) -> bool:
+    """判断推送是否需要从可信本地仓库发布官方 Hub 制品。"""
+    return any(
+        path == '.gitmodules'
+        or path in {'common-skills.yaml', 'common-bundles.yaml'}
+        or path == 'github'
+        or path.startswith(
+            (
+                'huanxing-skills/',
+                'github/',
+                'bundles/',
+                'templates/',
+                'workflow-templates/',
+            )
+        )
+        for path in collect_changed_paths(commits)
+    )
+
+
+def bundle_source_changes(commits: list[dict]) -> set[str]:
+    """兼容旧调用；服务器仓库同步已退役，始终返回空集。"""
+    del commits
+    return set()
 
 
 def verify_github_signature(payload: bytes, signature: str) -> bool:
@@ -78,43 +86,6 @@ def verify_github_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(calculated_signature, expected_signature)
 
 
-async def _run_skill_sync_background(changed_paths: set[str] | None = None, force: bool = False) -> None:
-    """后台执行技能同步（自带 DB 会话）。
-
-    webhook 接口验签+闸门后立即返回，git pull + 扫描 + 翻译在这里跑——GitHub webhook
-    期望 ~10s 内 2xx，同步耗时长不能阻塞响应。两种模式：
-
-    - **force=True（手动全量重扫）**：trigger_webhook.py 注入全量哨兵触发——扫全部技能、
-      补半落 / 缺失的版本行、全表对账 is_common。修「库里有技能目录但缺 version 行 →
-      download 404 / fingerprint 空」这类残缺（增量同步碰不到未变更的技能，补不了旧残缺）。
-    - **force=False（真实 GitHub push 增量）**：只处理 changed_paths 命中的技能、跳过子模块
-      刷新、变更门控翻译，避免每次全量重译造成巨大且无谓的 LLM 消耗。
-    """
-    try:
-        # 用 .begin() 事务上下文：成功自动 commit、异常自动 rollback。
-        # sync_from_github 只 flush 不 commit，普通 async_db_session() 不自动提交，
-        # 会让同步「看似成功（synced>0）实则回滚不落库」。
-        async with async_db_session.begin() as db:
-            if force:
-                result = await github_sync_service.sync_from_github(db, force=True)
-            else:
-                result = await github_sync_service.sync_from_github(db, changed_paths=changed_paths or set())
-        log.info(f"[Webhook] 后台技能同步完成（{'全量重扫' if force else '增量'}）: {result}")
-    except Exception as exc:
-        log.error(f"[Webhook] 后台技能同步失败: {exc}")
-
-
-async def _run_template_sync_background() -> None:
-    """后台执行模板全量同步（自带 DB 会话）。"""
-    try:
-        # 同上：.begin() 事务上下文确保同步结果真正 commit 落库（见技能同步注释）。
-        async with async_db_session.begin() as db:
-            result = await github_app_sync_service.sync_from_github(db, force=True)
-        log.info(f"[Webhook] 后台模板同步完成: {result}")
-    except Exception as exc:
-        log.error(f"[Webhook] 后台模板同步失败: {exc}")
-
-
 @router.post(
     '/github/skills',
     summary='GitHub Webhook for Skills',
@@ -122,7 +93,7 @@ async def _run_template_sync_background() -> None:
 )
 async def github_webhook_skills(
     request: Request,
-    background_tasks: BackgroundTasks,
+    _background_tasks: BackgroundTasks,
     x_hub_signature_256: Annotated[str | None, Header(alias='X-Hub-Signature-256')] = None,
     x_github_event: Annotated[str | None, Header(alias='X-GitHub-Event')] = None,
 ) -> ResponseModel | ResponseSchemaModel[WebhookResponse]:
@@ -152,26 +123,19 @@ async def github_webhook_skills(
             ))
 
         commits = payload.get('commits', [])
-        if not has_skill_source_changes(commits):
+        release_required = source_release_required(commits)
+        if not release_required:
             log.info("No skill changes detected, skipping sync")
             return response_base.success(data=WebhookResponse(
                 message="No skill changes detected"
             ))
 
-        # 异步触发：立即返回，同步在后台跑。
-        # - 手动全量哨兵（trigger_webhook.py 无真实改动时注入）→ force 全量重扫，补齐残缺技能；
-        # - 真实 GitHub push（真实技能路径）→ 增量，只处理改动技能，避免全量重译的 LLM 浪费。
-        changed_paths = collect_changed_paths(commits)
-        force_full = full_resync_requested(changed_paths)
-        background_tasks.add_task(
-            _run_skill_sync_background,
-            None if force_full else changed_paths,
-            force_full,
+        log.warning(
+            "检测到官方 Hub 源码变更，服务器仓库扫描已退役；"
+            "必须在可信 huanxing-hub 工作区运行 astrahub publish all"
         )
-        mode = "全量重扫" if force_full else f"增量（{len(changed_paths)} changed paths）"
-        log.info(f"Queued background skill sync from GitHub webhook（{mode}）")
         return response_base.success(data=WebhookResponse(
-            message=f"Skill sync queued (running in background, {'full resync' if force_full else 'incremental'})"
+            message='Official Hub release required via astrahub publish all'
         ))
 
     except HTTPException:
@@ -192,7 +156,7 @@ async def github_webhook_skills(
 )
 async def github_webhook_templates(
     request: Request,
-    background_tasks: BackgroundTasks,
+    _background_tasks: BackgroundTasks,
     x_hub_signature_256: Annotated[str | None, Header(alias='X-Hub-Signature-256')] = None,
     x_github_event: Annotated[str | None, Header(alias='X-GitHub-Event')] = None,
 ) -> ResponseModel | ResponseSchemaModel[WebhookResponse]:
@@ -237,11 +201,12 @@ async def github_webhook_templates(
                 message="No template changes detected"
             ))
 
-        # 异步触发：立即返回，繁重同步在后台跑
-        background_tasks.add_task(_run_template_sync_background)
-        log.info("Queued background template sync from GitHub webhook")
+        log.warning(
+            '检测到模板源码变更，服务器仓库扫描已退役；'
+            '必须在可信 huanxing-hub 工作区运行 astrahub publish all'
+        )
         return response_base.success(data=WebhookResponse(
-            message="Template sync queued (running in background)"
+            message='Official Hub release required via astrahub publish all'
         ))
 
     except HTTPException:

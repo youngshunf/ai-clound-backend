@@ -21,23 +21,38 @@ from backend.app.hasn_growth.schema.funnel import (
     CreateLeadParam,
     CreateOpportunityParam,
     DismissLeadParam,
+    EditOutreachParam,
     LogActivityParam,
+    ManualAttestOutreachParam,
     MarkSentParam,
     OptoutParam,
     QualifyLeadParam,
     RejectOutreachParam,
     RequestLeadsParam,
     UpdateStageParam,
+    VersionedApproveOutreachParam,
+    VersionedRejectOutreachParam,
 )
 from backend.app.hasn_growth.schema.project_app import EnableGrowthProjectBody
+from backend.app.hasn_growth.schema.project_lead import (
+    ProjectLeadAssignBody,
+    ProjectLeadBatchBody,
+    ProjectLeadStatusBody,
+)
 from backend.app.hasn_growth.schema.project_profile import (
     AdoptGrowthPlaybookBody,
     BindGrowthKnowledgeBody,
     ReviewGrowthProfileSuggestionBody,
 )
+from backend.app.hasn_growth.schema.project_review import (
+    ReviewGrowthReviewSuggestionBody,
+    UpdateGrowthProjectPolicyBody,
+    UpdateGrowthReviewScheduleBody,
+)
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.growth_landing_service import growth_landing_service
 from backend.app.hasn_growth.service.growth_profile_service import (
     growth_profile_service,
 )
@@ -50,7 +65,12 @@ from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_qu
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.playbook_service import playbook_service
+from backend.app.hasn_growth.service.project_customer_service import (
+    project_customer_service,
+)
+from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_growth.service.scope_context import resolve_growth_scope
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -284,6 +304,131 @@ async def get_growth_project_overview(
     )
 
 
+@router.get(
+    '/projects/{growth_project_id}/review/suggestions',
+    summary='[Owner] 读取下一周期 ICP、渠道与打法建议',
+    dependencies=[DependsJwtAuth],
+)
+async def list_growth_review_suggestions(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.list_suggestions(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/review/suggestions/{suggestion_id}',
+    summary='[Owner] 接受或拒绝下一周期建议',
+    dependencies=[DependsJwtAuth],
+)
+async def review_growth_review_suggestion(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    suggestion_id: int,
+    obj: ReviewGrowthReviewSuggestionBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.review_suggestion(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        owner_user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        suggestion_id=suggestion_id,
+        decision=obj.decision,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/review/schedule',
+    summary='[Owner] 读取周期经营复盘任务状态',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_review_schedule(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.get_review_schedule(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/review/schedule',
+    summary='[Owner] 显式启用或暂停周期经营复盘',
+    dependencies=[DependsJwtAuth],
+)
+async def update_growth_review_schedule(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    obj: UpdateGrowthReviewScheduleBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.set_review_schedule(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+        enabled=obj.enabled,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/policy',
+    summary='[Owner] 读取项目渠道、静默时段、频控与预算策略',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_policy(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.get_policy(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/policy',
+    summary='[Owner] 更新项目渠道、静默时段、频控与预算策略',
+    dependencies=[DependsJwtAuth],
+)
+async def update_growth_project_policy(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    obj: UpdateGrowthProjectPolicyBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    proposal = obj.model_dump(exclude={'expected_policy_version'})
+    data = await growth_review_service.update_policy(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+        expected_policy_version=obj.expected_policy_version,
+        proposal=proposal,
+    )
+    return response_base.success(data=data)
+
+
 @router.put(
     '/projects/{growth_project_id}/knowledge',
     summary='[Owner] 绑定或改绑同项目 Knowledge',
@@ -318,6 +463,44 @@ async def reconcile_growth_project_knowledge(
 ) -> ResponseModel:
     owner_hasn_id = await _resolve_owner_hasn_id(db, request)
     data = await growth_profile_service.reconcile_knowledge_binding(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/landing',
+    summary='[Owner] 读取落地页依赖、站点、绑定与留资状态',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_landing(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_landing_service.status(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/landing/reconcile',
+    summary='[Owner] 对账并绑定该 Growth 来源的 Publish 站点',
+    dependencies=[DependsJwtAuth],
+)
+async def reconcile_growth_project_landing(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_landing_service.reconcile(
         db,
         owner_hasn_id=owner_hasn_id,
         growth_project_id=growth_project_id,
@@ -378,7 +561,151 @@ async def reveal_contact_channel(
     return response_base.success(data=data)
 
 
-# ---------------- 线索池（主人看自己池子，可手动晋级/淘汰，默认脱敏） ----------------
+# ---------------- 项目线索（项目关联行是状态、评分与来源的权威） ----------------
+
+
+@router.post(
+    '/projects/{growth_project_id}/leads/import',
+    summary='[Owner] 稳定批次导入项目线索',
+    dependencies=[DependsJwtAuth],
+)
+async def import_project_leads(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: ProjectLeadBatchBody,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await project_lead_service.ingest_batch(
+        db,
+        growth_project_id=growth_project_id,
+        batch_id=obj.batch_id,
+        items=obj.items,
+        scope=scope,
+        actor_kind='owner',
+        actor_id=scope.owner_hasn_id or str(request.user.id),
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/leads',
+    summary='[Owner] 分页读取项目线索',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_leads(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+    status: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    min_score: Annotated[float | None, Query(ge=0, le=100)] = None,
+    freshness: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
+    assignee: Annotated[str | None, Query(max_length=40)] = None,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(
+        db,
+        user_id=request.user.id,
+        view=view,
+    )
+    data = await project_lead_service.list_project_leads(
+        db,
+        growth_project_id=growth_project_id,
+        scope=scope,
+        page=page,
+        size=size,
+        status=status,
+        query=q,
+        min_score=min_score,
+        freshness=freshness,
+        assignee=assignee,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/qualify',
+    summary='[Owner] 项目线索晋级客户并建立接续任务',
+    dependencies=[DependsJwtAuth],
+)
+async def qualify_project_lead(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: QualifyLeadParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    if not scope.owner_hasn_id:
+        raise errors.ForbiddenError(msg='当前账号尚未绑定主人身份')
+    data = await project_lead_service.qualify_project_lead(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        scope=scope,
+        profile=obj.profile,
+        intent_score=obj.intent_score,
+        actor_kind='owner',
+        actor_id=scope.owner_hasn_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/status',
+    summary='[Owner] 忽略或恢复项目线索',
+    dependencies=[DependsJwtAuth],
+)
+async def change_project_lead_status(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: ProjectLeadStatusBody,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await project_lead_service.change_lead_status(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        action=obj.action,
+        reason=obj.reason,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/assignee',
+    summary='[Owner] 分配项目线索负责人（仅企业经理）',
+    dependencies=[DependsJwtAuth],
+)
+async def assign_project_lead(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: ProjectLeadAssignBody,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(
+        db,
+        user_id=request.user.id,
+        view='team',
+    )
+    data = await project_lead_service.assign_lead(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        assignee=obj.assignee,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+# ---------------- 兼容线索池（旧调用面，项目页不再使用） ----------------
 
 
 @router.get('/leads', summary='[Owner] 线索池检索', dependencies=[DependsJwtAuth])
@@ -488,6 +815,76 @@ async def dismiss_lead(
 # ---------------- CRM 读（主人看自己数据，默认脱敏） ----------------
 
 
+@router.get(
+    '/projects/{growth_project_id}/customers',
+    summary='[Owner] 项目客户分页列表',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_customers(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    lifecycle_status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
+    data = await project_customer_service.list_customers(
+        db,
+        growth_project_id=growth_project_id,
+        scope=scope,
+        page=page,
+        size=size,
+        lifecycle_status=lifecycle_status,
+        assignee=assignee,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers/{customer_id}',
+    summary='[Owner] 项目客户脱敏详情',
+    dependencies=[DependsJwtAuth],
+)
+async def get_project_customer(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await project_customer_service.get_customer(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers/{customer_id}/detail',
+    summary='[Owner] 项目客户接续详情',
+    dependencies=[DependsJwtAuth],
+)
+async def get_project_customer_detail(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await project_customer_service.get_customer_detail(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
 @router.get('/customers', summary='[Owner] 客户列表', dependencies=[DependsJwtAuth])
 async def list_customers(
     request: Request,
@@ -567,6 +964,187 @@ async def reassign_customer(
 # ---------------- 触达审批队列（§8.2，业务态，不走 ask_gate） ----------------
 
 
+@router.get(
+    '/projects/{growth_project_id}/outreach/pending',
+    summary='[Owner] 项目待审批触达队列',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_pending(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.list_pending_approvals(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        limit=limit,
+        offset=offset,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/outreach/team-overview',
+    summary='[Owner] 项目团队待审批聚合（仅企业经理）',
+    dependencies=[DependsJwtAuth],
+)
+async def project_team_approval_overview(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(
+        db,
+        user_id=request.user.id,
+        view='team',
+    )
+    data = await growth_outreach_service.team_approval_overview(
+        db,
+        user_id=request.user.id,
+        scope=scope,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/approve',
+    summary='[Owner] 按内容版本批准项目触达',
+    dependencies=[DependsJwtAuth],
+)
+async def approve_project_outreach(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: VersionedApproveOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.approve_outreach(
+        db,
+        user_id=request.user.id,
+        message_id=message_id,
+        approver_user_id=request.user.id,
+        edited_content=obj.edited_content,
+        expected_content_version=obj.expected_content_version,
+        growth_project_id=growth_project_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.patch(
+    '/projects/{growth_project_id}/outreach/{message_id}',
+    summary='[Owner] 改稿并使旧批准失效',
+    dependencies=[DependsJwtAuth],
+)
+async def edit_project_outreach(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: EditOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.edit_outreach(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        message_id=message_id,
+        expected_content_version=obj.expected_content_version,
+        content=obj.content,
+        subject=obj.subject,
+        channel=obj.channel,
+        content_assets=obj.content_assets,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/reject',
+    summary='[Owner] 按内容版本拒绝项目触达',
+    dependencies=[DependsJwtAuth],
+)
+async def reject_project_outreach(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: VersionedRejectOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.reject_outreach(
+        db,
+        user_id=request.user.id,
+        message_id=message_id,
+        approver_user_id=request.user.id,
+        reason=obj.reason,
+        expected_content_version=obj.expected_content_version,
+        growth_project_id=growth_project_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/outreach/{message_id}/send-material',
+    summary='[Owner] 读取已冻结的人工发送素材',
+    dependencies=[DependsJwtAuth],
+)
+async def project_send_material(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    message_id: int,
+    expected_content_version: Annotated[int, Query(ge=1)],
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.build_send_material(
+        db,
+        user_id=request.user.id,
+        message_id=message_id,
+        expected_content_version=expected_content_version,
+        growth_project_id=growth_project_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/manual-attest',
+    summary='[Owner] 记录人工发送证明（不等于渠道送达）',
+    dependencies=[DependsJwtAuth],
+)
+async def attest_project_manual_send(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: ManualAttestOutreachParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    actor_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_outreach_service.attest_manual_send(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        message_id=message_id,
+        expected_content_version=obj.expected_content_version,
+        actor_id=actor_id,
+        channel_actual=obj.channel_actual,
+        proof=obj.proof,
+        idempotency_key=obj.idempotency_key,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
 @router.get('/outreach/pending', summary='[Owner] 待审批触达队列', dependencies=[DependsJwtAuth])
 async def list_pending(
     request: Request,
@@ -614,6 +1192,7 @@ async def approve_outreach(
         message_id=message_id,
         approver_user_id=request.user.id,
         edited_content=obj.edited_content,
+        expected_content_version=obj.expected_content_version,
         scope=scope,
     )
     return response_base.success(data=data)
@@ -630,6 +1209,7 @@ async def reject_outreach(
         message_id=message_id,
         approver_user_id=request.user.id,
         reason=obj.reason,
+        expected_content_version=obj.expected_content_version,
         scope=scope,
     )
     return response_base.success(data=data)
@@ -664,6 +1244,172 @@ async def mark_sent(
 # ---------------- 商机 / 成交（主人也可手动） ----------------
 
 
+@router.post(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Owner] 项目内立商机',
+    dependencies=[DependsJwtAuth],
+)
+async def create_project_opportunity(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: CreateOpportunityParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.create_opportunity(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        customer_id=obj.customer_id,
+        name=obj.name,
+        amount=obj.amount,
+        currency=obj.currency,
+        stage=obj.stage,
+        probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
+        created_by_kind='owner',
+        actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Owner] 项目商机列表',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_opportunities(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: Annotated[int | None, Query()] = None,
+    stage: Annotated[str | None, Query()] = None,
+    open_only: Annotated[bool, Query()] = False,  # noqa: FBT002
+    view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
+    data = await growth_opportunity_service.list_opportunities(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        stage=stage,
+        open_only=open_only,
+        assignee=assignee,
+        limit=limit,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}',
+    summary='[Owner] 项目商机摘要',
+    dependencies=[DependsJwtAuth],
+)
+async def get_project_opportunity(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.get_opportunity(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/detail',
+    summary='[Owner] 项目商机接续详情',
+    dependencies=[DependsJwtAuth],
+)
+async def get_project_opportunity_detail(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.get_opportunity_detail(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.patch(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/stage',
+    summary='[Owner] 项目商机阶段变更',
+    dependencies=[DependsJwtAuth],
+)
+async def update_project_opportunity_stage(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: UpdateStageParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.update_stage(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        stage=obj.stage,
+        note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='owner',
+        actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/close',
+    summary='[Owner] 项目商机成交或流失登记',
+    dependencies=[DependsJwtAuth],
+)
+async def close_project_deal(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: CloseDealParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.close_deal(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=obj.amount,
+        currency=obj.currency,
+        close_note=obj.close_note,
+        lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='owner',
+        actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
 @router.post('/opportunities', summary='[Owner] 立商机', dependencies=[DependsJwtAuth])
 async def create_opportunity(
     request: Request, db: CurrentSessionTransaction, obj: CreateOpportunityParam
@@ -678,6 +1424,7 @@ async def create_opportunity(
         currency=obj.currency,
         stage=obj.stage,
         probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
         created_by_kind='owner',
         actor_id=str(request.user.id),
         scope=scope,
@@ -690,7 +1437,7 @@ async def list_opportunities(
     request: Request,
     db: CurrentSession,
     customer_id: Annotated[int | None, Query()] = None,
-    open_only: Annotated[bool, Query()] = False,
+    open_only: Annotated[bool, Query()] = False,  # noqa: FBT002
     view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
     assignee: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -739,6 +1486,8 @@ async def update_stage(
         opportunity_id=opportunity_id,
         stage=obj.stage,
         note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='owner',
         actor_id=str(request.user.id),
         scope=scope,
@@ -757,8 +1506,11 @@ async def close_deal(
         opportunity_id=opportunity_id,
         result=obj.result,
         amount=obj.amount,
+        currency=obj.currency,
         close_note=obj.close_note,
         lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='owner',
         actor_id=str(request.user.id),
         scope=scope,

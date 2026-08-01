@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn_knowledge.model import Document, Folder, Kb
 from backend.app.hasn_knowledge.service.knowledge_service import Subject, knowledge_service
 from backend.common.exception import errors
@@ -344,3 +345,91 @@ async def test_manager_can_manage_shares(session) -> None:
     # C(viewer) 不可管理
     with pytest.raises(errors.ForbiddenError):
         await knowledge_service.list_shares(session, subject=c, kb_id=kb.id)
+
+
+async def test_manager_collaborator_cannot_revoke_self(session) -> None:
+    """自我撤销门：被授 manager 的协作者不得撤掉自己那条（撤了库当场从他名下消失且无法自助恢复）。
+
+    主人不受此限；协作者撤别人仍可以；文档级同口径。
+    """
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')  # 库主人
+    b = Subject.human(f'h_b_{tag}')  # 被授 manager 的协作者
+    c = Subject.human(f'h_c_{tag}')  # 另一位协作者
+    kb = await _make_kb(session, a.hasn_id, name='自我撤销门')
+    await knowledge_service.add_share(
+        session, subject=a, kb_id=kb.id, grantee_type='human', grantee_id=b.hasn_id, permission='manager'
+    )
+    await knowledge_service.add_share(
+        session, subject=a, kb_id=kb.id, grantee_type='human', grantee_id=c.hasn_id, permission='viewer'
+    )
+
+    # B 撤自己 → 拒
+    with pytest.raises(errors.ForbiddenError):
+        await knowledge_service.revoke_share(
+            session, subject=b, kb_id=kb.id, grantee_type='human', grantee_id=b.hasn_id
+        )
+    # B 仍然看得到这个库（授权没被撤掉）
+    assert await knowledge_service.authorize_kb(session, subject=b, kb_id=kb.id, need='manager') is not None
+
+    # B 撤别人 → 放行
+    assert await knowledge_service.revoke_share(
+        session, subject=b, kb_id=kb.id, grantee_type='human', grantee_id=c.hasn_id
+    ) is True
+
+    # 主人撤 B → 放行（主人自身的权限来自 owner_grant，不在名单里）
+    assert await knowledge_service.revoke_share(
+        session, subject=a, kb_id=kb.id, grantee_type='human', grantee_id=b.hasn_id
+    ) is True
+
+    # 文档级同口径
+    doc = await _make_doc(session, kb)
+    await knowledge_service.add_doc_share(
+        session, subject=a, doc_id=doc.id, grantee_type='human', grantee_id=b.hasn_id, permission='manager'
+    )
+    with pytest.raises(errors.ForbiddenError):
+        await knowledge_service.revoke_doc_share(
+            session, subject=b, doc_id=doc.id, grantee_type='human', grantee_id=b.hasn_id
+        )
+
+
+async def test_list_shares_carries_grantee_identity(session) -> None:
+    """共享名单回带 grantee 展示身份（人=昵称/头像，分身=显示名/专家名/主人昵称）。
+
+    客户端的通讯录覆盖不到「主人授权的其他协作者」和「看名单的人自己」，没有这几个字段
+    面板只能渲染裸 hasn_id。查不到的主体留 None（不造假），由客户端回落 hasn_id。
+    """
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b_id = f'h_b_{tag}'
+    agent_id = f'a_x_{tag}'
+    ghost_id = f'h_ghost_{tag}'  # 名单里有、主体表查不到
+
+    uid = int(tag, 16)  # hasn_humans.user_id 有唯一索引，用 tag 派生避开真实行
+    session.add(HasnHumans(hasn_id=b_id, star_id=f's{tag}', user_id=uid, nickname='菌子',
+                           avatar='http://x/b.png', status='active'))
+    session.add(HasnHumans(hasn_id=f'h_owner_{tag}', star_id=f'so{tag}', user_id=uid + 1, nickname='分身主人',
+                           status='active'))
+    session.add(HasnAgents(hasn_id=agent_id, star_id=f'sa{tag}', owner_id=f'h_owner_{tag}',
+                           display_name='小唤', agent_name='xiaohuan', profession='资料整理专家',
+                           avatar='http://x/a.png', type='desktop', status='active'))
+    await session.flush()
+
+    kb = await _make_kb(session, a.hasn_id, name='身份回带')
+    for gt, gid in (('human', b_id), ('agent', agent_id), ('human', ghost_id)):
+        await knowledge_service.add_share(
+            session, subject=a, kb_id=kb.id, grantee_type=gt, grantee_id=gid, permission='viewer'
+        )
+
+    by_id = {s['grantee_id']: s for s in (await knowledge_service.list_shares(
+        session, subject=a, kb_id=kb.id))['shares']}
+
+    assert by_id[b_id]['grantee_name'] == '菌子'
+    assert by_id[b_id]['grantee_avatar'] == 'http://x/b.png'
+
+    assert by_id[agent_id]['grantee_name'] == '小唤'
+    assert by_id[agent_id]['grantee_profession'] == '资料整理专家'
+    assert by_id[agent_id]['grantee_owner_name'] == '分身主人'
+
+    # 查不到的主体：字段在但为 None，客户端据此回落 hasn_id
+    assert 'grantee_name' in by_id[ghost_id] and by_id[ghost_id]['grantee_name'] is None

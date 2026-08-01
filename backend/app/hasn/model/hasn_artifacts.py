@@ -43,6 +43,6 @@ class HasnArtifacts(Base):
     source_app_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='来源应用 ID (hasn_app_catalog.app_id，如 deck/imagelab/knowledge；UI 据此显示应用图标，非应用产出为空)')
     source_kind: Mapped[str] = mapped_column(sa.String(16), default='', comment='产出来源·怎么来的 (app:应用产出:violet/platform_tool:平台工具:blue/external_tool:外部取材:orange/runtime_file:运行时文件:gray/agent_note:分身自撰:cyan/upload:主人上传:default)')
     action: Mapped[str] = mapped_column(sa.String(16), default='create', comment='产出动作 (create:新增:green/update:修改:blue)')
-    dispatch_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='派发关联 (审计/去重)')
+    dispatch_id: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='派发关联 (审计/去重)')
     meta_data: Mapped[dict] = mapped_column('metadata', postgresql.JSONB(), default_factory=dict, comment='元数据 (mime/size/width/height 冗余 + 工具上下文快照)')
     status: Mapped[str] = mapped_column(sa.String(16), default='active', comment='状态 (active:正常:green/deleted:已删:red)')

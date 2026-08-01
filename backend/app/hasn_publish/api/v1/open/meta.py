@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Header, Request
+from pydantic import BaseModel, Field
 
 from backend.app.hasn_publish.api.v1.open.hosting import (
     _PROBE_MAX,
@@ -22,6 +25,12 @@ from backend.common.response.response_schema import ResponseModel, response_base
 from backend.database.db import CurrentSession
 
 router = APIRouter()
+
+
+class FormAccessRequest(BaseModel):
+    """表单访问令牌签发请求；口令站点需携带 unlock 后取得的访问票。"""
+
+    view_ticket: str | None = Field(default=None, max_length=4096)
 
 
 @router.get('/sites/{slug}/meta', summary='分享公开元数据（查看器判定渲染态）')
@@ -51,3 +60,21 @@ async def get_share_meta(request: Request, db: CurrentSession, slug: str) -> Res
             'available': (not expired) and site.current_revision_id is not None,
         }
     )
+
+
+@router.post('/sites/{slug}/forms/{form_ref}/access-token', summary='签发公开表单短时访问令牌')
+async def issue_form_access_token(
+    db: CurrentSession,
+    slug: str,
+    form_ref: str,
+    obj: FormAccessRequest,
+    x_publish_view_ticket: Annotated[str | None, Header()] = None,
+) -> ResponseModel:
+    """slug 仅定位站点；口令站点必须先解锁并提交访问票，private 站点不签发。"""
+    data = await publish_service.issue_form_access_token(
+        db,
+        slug=slug,
+        form_ref=form_ref,
+        view_ticket=x_publish_view_ticket or obj.view_ticket,
+    )
+    return response_base.success(data=data)

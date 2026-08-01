@@ -68,7 +68,7 @@ async def _h_get_node_result(db: Any, ctx: AgentContext, args: dict[str, Any]) -
 
 async def _h_run_artifacts(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前**工作会话**反查所属 run。会话轴分流
-    # （设计 02 §4.3）：工作会话权威取 ContextVar（三级权威已落）+ auth 绑定字段兜底——
+    # （设计 02 §4.3）：工作会话权威取 ContextVar（两级权威已落）+ auth 绑定字段兜底——
     # `ctx.session_id` 是运行时/逻辑会话语义，工作会话派发经 `_hasn_work_session_id` 进 ContextVar。
     run_uuid = args.get('workflow_run_uuid')
     return await agent_workflow_service.run_artifacts(

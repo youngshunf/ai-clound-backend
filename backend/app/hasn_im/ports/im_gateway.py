@@ -22,6 +22,7 @@ from backend.app.hasn_im.ports.dto import (
     MessagePage,
     ReadCursorCommand,
     RecallMessageCommand,
+    ResolvedTarget,
     SendMessageCommand,
     SendMessageResult,
     ServicePrincipal,
@@ -32,6 +33,10 @@ from backend.app.hasn_im.ports.dto import (
 @runtime_checkable
 class ImGateway(Protocol):
     """通信域对外唯一写/读入口。"""
+
+    async def resolve_target(self, target: str) -> ResolvedTarget | None:
+        """经 IM 受限连接解析 HASN/Star/群目标，不向调用方暴露数据库会话。"""
+        ...
 
     async def ensure_direct_conversation(
         self,

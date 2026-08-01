@@ -67,6 +67,15 @@ def test_is_agent_token_classifies_correctly() -> None:
     assert is_agent_token('') is False
 
 
+def test_agent_mcp_key_bypasses_owner_jwt_middleware() -> None:
+    request = _make_request(
+        f'{settings.FASTAPI_API_V1_PATH}/marketplace/agent/personal-skills/demo/download',
+        'Bearer hasn_amk_cloud_runtime_key',
+    )
+
+    assert JwtAuthMiddleware.extract_token(request) is None
+
+
 def test_extract_token_bypasses_agent_bearer_on_any_path() -> None:
     """Agent Bearer 在任意非公开路径都放行（返回 None），无需逐条路径白名单。
 

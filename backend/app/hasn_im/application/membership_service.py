@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model import HasnConversationMemberships, HasnMessages, HasnUnreadProjection
@@ -67,6 +67,7 @@ async def join_epoch(
         read_seq=membership_domain.rejoin_read_seq(effective_joined),
         state='active',
         joined_at=timezone.now(),
+        history_complete_from_seq=effective_joined,
     )
     db.add(row)
     await db.flush()
@@ -141,9 +142,7 @@ async def advance_read_seq(
     return new_read
 
 
-async def compute_unread(
-    db: AsyncSession, conversation_id: str, member_hasn_id: str
-) -> int:
+async def compute_unread(db: AsyncSession, conversation_id: str, member_hasn_id: str) -> int:
     """权威未读计数（§4.3 谓词）——只从 message.conversation_seq + membership 序号重算：
 
     ``conversation_seq > read_seq AND 位于活动周期可见区间 AND 未撤回 AND sender != 本成员``
@@ -203,21 +202,23 @@ async def rebuild_unread_projection(
     return unread
 
 
-async def list_visible_message_seqs(
-    db: AsyncSession, conversation_id: str, member_hasn_id: str
-) -> list[int]:
+async def list_visible_message_seqs(db: AsyncSession, conversation_id: str, member_hasn_id: str) -> list[int]:
     """列出某成员**所有周期**可见的消息序号（跨闭合+活动周期的并集·§4.2）。
 
     用于「两段可见区间」验收：退出→重入产生两段区间，中间段（离开期间）的消息不可见。
     """
     epochs = (
-        await db.execute(
-            select(HasnConversationMemberships).where(
-                HasnConversationMemberships.conversation_id == conversation_id,
-                HasnConversationMemberships.member_hasn_id == member_hasn_id,
+        (
+            await db.execute(
+                select(HasnConversationMemberships).where(
+                    HasnConversationMemberships.conversation_id == conversation_id,
+                    HasnConversationMemberships.member_hasn_id == member_hasn_id,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not epochs:
         return []
     epoch_clauses = [
@@ -228,10 +229,14 @@ async def list_visible_message_seqs(
         for e in epochs
     ]
     rows = (
-        await db.execute(
-            select(HasnMessages.conversation_seq)
-            .where(HasnMessages.conversation_id == conversation_id, or_(*epoch_clauses))
-            .order_by(HasnMessages.conversation_seq)
+        (
+            await db.execute(
+                select(HasnMessages.conversation_seq)
+                .where(HasnMessages.conversation_id == conversation_id, or_(*epoch_clauses))
+                .order_by(HasnMessages.conversation_seq)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [int(s) for s in rows]

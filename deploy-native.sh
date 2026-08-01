@@ -372,11 +372,13 @@ EOF
     # Celery Worker 配置
     sudo tee /etc/supervisor/conf.d/${SERVICE_NAME}-worker.conf > /dev/null << EOF
 [program:${SERVICE_NAME}-worker]
-command=$VENV_DIR/bin/celery -A backend.app.task.celery:celery_app worker -l info -c 4 -Q celery
+command=$VENV_DIR/bin/celery -A backend.app.task.celery:celery_app worker -l info -c 4 --hostname=huanxing@%%h
 directory=$PROJECT_DIR
 user=$SERVICE_USER
 autostart=true
 autorestart=true
+stopasgroup=true
+killasgroup=true
 redirect_stderr=true
 stdout_logfile=$LOG_DIR/worker.log
 stdout_logfile_maxbytes=50MB
@@ -412,7 +414,7 @@ EOF
     # Celery Flower 配置
     sudo tee /etc/supervisor/conf.d/${SERVICE_NAME}-flower.conf > /dev/null << EOF
 [program:${SERVICE_NAME}-flower]
-command=$VENV_DIR/bin/celery -A backend.app.task.celery:celery_app flower --port=$FLOWER_PORT --basic-auth=admin:123456
+command=$VENV_DIR/bin/python -m backend.app.task.flower --port=$FLOWER_PORT
 directory=$PROJECT_DIR
 user=$SERVICE_USER
 autostart=true
@@ -496,10 +498,10 @@ stop_existing_services() {
     if systemctl is-active --quiet supervisor; then
         log_info "停止现有的应用服务..."
         
-        # 停止所有相关服务
-        sudo supervisorctl stop ${SERVICE_NAME}-api 2>/dev/null || true
-        sudo supervisorctl stop ${SERVICE_NAME}-worker 2>/dev/null || true
+        # 先停 Beat，避免停止窗口继续发布周期任务；通用更新不承担 broker 排空。
         sudo supervisorctl stop ${SERVICE_NAME}-beat 2>/dev/null || true
+        sudo supervisorctl stop ${SERVICE_NAME}-worker 2>/dev/null || true
+        sudo supervisorctl stop ${SERVICE_NAME}-api 2>/dev/null || true
         sudo supervisorctl stop ${SERVICE_NAME}-flower 2>/dev/null || true
         
         log_info "等待服务完全停止..."
@@ -533,10 +535,10 @@ start_services() {
     # 等待配置更新完成
     sleep 2
     
-    # 启动所有服务
+    # 先启动消费者和生产者，再恢复周期发布。
     log_info "启动应用服务..."
-    sudo supervisorctl start ${SERVICE_NAME}-api || log_warn "API 服务启动失败"
     sudo supervisorctl start ${SERVICE_NAME}-worker || log_warn "Worker 服务启动失败"
+    sudo supervisorctl start ${SERVICE_NAME}-api || log_warn "API 服务启动失败"
     sudo supervisorctl start ${SERVICE_NAME}-beat || log_warn "Beat 服务启动失败"
     sudo supervisorctl start ${SERVICE_NAME}-flower || log_warn "Flower 服务启动失败"
     
@@ -617,10 +619,12 @@ check_services() {
         fi
     done
     
-    # 测试 Flower
+    # 测试 Flower：启用 Basic Auth 后，未认证访问返回 401 即代表监听和鉴权均正常。
     local flower_attempts=0
     while [ $flower_attempts -lt 3 ]; do
-        if curl -s -f http://localhost:$FLOWER_PORT > /dev/null 2>&1; then
+        local flower_http_code
+        flower_http_code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$FLOWER_PORT 2>/dev/null || true)
+        if [ "$flower_http_code" = "401" ]; then
             log_info "✅ Flower 监控正常 (http://localhost:$FLOWER_PORT)"
             break
         else
@@ -633,6 +637,31 @@ check_services() {
             fi
         fi
     done
+}
+
+# 在停止任何现有服务前校验 Flower 凭据，避免缺失密钥导致更新后无法启动。
+validate_flower_basic_auth() {
+    (
+        set -a
+        # shellcheck disable=SC1091
+        source backend/.env.prod
+        set +a
+
+        if [[ "${FLOWER_BASIC_AUTH:-}" != *:* ]]; then
+            log_error "FLOWER_BASIC_AUTH 必须使用 username:password 格式"
+            exit 1
+        fi
+        local flower_username="${FLOWER_BASIC_AUTH%%:*}"
+        local flower_password="${FLOWER_BASIC_AUTH#*:}"
+        if [[ ! "$flower_username" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_error "FLOWER_BASIC_AUTH 用户名格式不合法"
+            exit 1
+        fi
+        if [ ${#flower_password} -lt 24 ]; then
+            log_error "FLOWER_BASIC_AUTH 密码长度必须至少为 24 位"
+            exit 1
+        fi
+    )
 }
 
 # 显示部署信息
@@ -867,6 +896,8 @@ update_service() {
         log_error "虚拟环境不存在，请先运行 --init 初始化环境"
         exit 1
     fi
+
+    validate_flower_basic_auth
     
     # 停止服务
     stop_existing_services

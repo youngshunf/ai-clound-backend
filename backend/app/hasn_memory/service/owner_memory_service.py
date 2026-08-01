@@ -1,59 +1,54 @@
-"""Owner 记忆合并服务（ADR 2026-05-30 §5.4）。
+"""Owner 记忆（USER.md 合并态）云端存储服务。
 
-各 Agent 把本地 USER.md 观察上传为 contribution(pending)；合并 worker 取该 owner
-所有 pending contribution + 当前 owner_memory，调 LLM 做「合并 + 结构化压缩」，写新
-owner_memory(version++)，把贡献标 merged，并把该 owner 所有 Agent 的 user_md 覆盖为
-新内容、bump profile_revision —— Runtime 轮询 revision 变化后重新拉取下发。
+**doc19 §10 退役（2026-07-31）**：云端 LLM 内联合并整条下线——`merge_owner_memory`、
+`sweep_pending_merges`、合并提示词 `_merge_messages` 与 `owner_memory_retry_pending_merges`
+celery beat 全部删除。理由见 doc19 §5.1（福仔拍板）：合并需要判断力，判断力应该在分身身上；
+主脑合并完会用人话向主人汇报；成本归位到主人自己的 LLM 额度。
 
-零 mock 零 fake：默认走真实 new-api 网关（统一 backend.common.llm 客户端）；
-LLM 失败则保留 contribution=pending、不动 owner_memory（不产生假合并）。
+现在的分工：
 
-ADR-15 收编：本 service 从 `app/hasn/service/owner_memory_service.py` 迁入 `app/hasn_memory`；
-身份表 HasnAgents 仍在 app/hasn（跨模块引用），记忆两表已迁入 app/hasn_memory.model。
+- **合并在主脑分身的设备上做**，整轮结果经云端合并闸 `merge_gate_service.apply` 提交；
+- 本 service 退为「贡献流入 + 合并态读出」：`contribute` 只落 contribution(pending)，
+  **不再内联合并**；`get_owner_memory` / `list_contributions` 是纯读；
+- `owner_memory` 表继续作为合并态存储与 MEMPUSH（→ 各 Agent user_md）下发源，写者换成合并闸。
+
+**显式承认的体验回退**（doc19 §10）：一条贡献进 USER.md 由「即时」变成「最长至下次整理」
+（主脑离线更久）。缓解手段是主人「立即整理」+ 云端合并待办（§5.5），**不是**在响应里假装
+已经合并——`contribute` 返回 `pending_merge=True` 如实说明，零 fake。
+
+`_ensure_identity_lines` 保留：它是**合并闸**写 `owner_memory` 前的身份兜底（称呼 / Owner
+HASN ID 从权威来源补回），与谁在跑 LLM 无关，纯函数。
 """
 
 from __future__ import annotations
 
 import re
 
-from collections.abc import Awaitable, Callable
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
-from backend.common.log import log
-from backend.database.db import async_db_session
-from backend.database.result import affected_rows
-from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# 注入式 LLM completion：messages -> 合并后的 USER.md 文本。便于单测打桩。
-LlmComplete = Callable[[list[dict[str, str]]], Awaitable[str]]
-
-_MERGE_MAX_TOKENS = 2000
-# pending 合并兜底重试 sweeper（MEMFIX-3）：只重试「最老 pending 已超过此秒数」的 owner，
-# 避开刚 contribute 的同步内联合并（决策「保持同步内联，只加重试兜底」）。
-_SWEEP_MIN_AGE_SECONDS = 120
-_SWEEP_MAX_OWNERS = 50  # 单轮最多处理 owner 数（防一轮 sweep 跑太久占住 celery worker）
-
-
-async def _default_llm_complete(messages: list[dict[str, str]]) -> str:
-    """默认 LLM completion：走统一 new-api 客户端（默认模型 settings.LLM_DEFAULT_MODEL）。"""
-    from backend.common.llm import llm_client
-
-    return await llm_client.complete(messages, max_tokens=_MERGE_MAX_TOKENS)
+#: 贡献入流后给主人的**唯一**如实说法。REST `/memory/contribute` 与 MCP
+#: `hasn.owner.memory.contribute` 共用一份，避免两处措辞漂移出「已合并」之类的假承诺。
+MEMORY_CONTRIBUTE_PENDING_NOTE = (
+    '已记录这条观察，会在下次记忆整理时并入主人档案（整理由主脑分身在它所在的设备上执行）。'
+)
 
 
 class OwnerMemoryService:
     async def contribute(self, db: AsyncSession, *, owner_id: str, agent_hasn_id: str, content: str) -> dict[str, Any]:
-        """Agent 上传一条 USER.md 观察，落 contribution(pending)。"""
+        """Agent 上传一条 USER.md 观察，落 contribution(pending)。
+
+        **只落贡献，不合并**（doc19 §5.1 / §10）：合并由主脑分身在它自己的设备上做。调用方须
+        对主人如实说「已记下来了，会在下次整理时并入」，禁止编造「已合并 / 后台异步合并完成」。
+        """
         text = (content or '').strip()
         if not text:
             return {'accepted': False, 'reason': 'empty_content'}
@@ -67,6 +62,39 @@ class OwnerMemoryService:
         await db.flush()
         return {'accepted': True, 'contribution_id': contribution.id}
 
+    async def mark_owner_edited(self, db: AsyncSession, *, owner_id: str) -> None:
+        """标记「主人手工改过档案正文」（doc19 §4.6 正文直编逃生口 · D-20）。
+
+        **只有主人手工写入才调这里**。判据不是「谁改了 `hasn_agents.user_md`」，而是
+        「这次写入是不是主人自己敲的正文」——三条系统写入路径都**不得**置位：
+
+        - **MEMPUSH 下发**：合并 apply 成功后 `merge_gate_service._apply_owner_memory`
+          用一条 bulk UPDATE 覆盖该 owner 全部分身的 `user_md`，不经本方法；
+        - **合并 apply 写回**：同上，且它在落新正文时**复位**本标位（手工版本已被本轮
+          重算消费）；
+        - **系统兜底改写**：`hasn_agents_service.refresh_seeded_agent_display_names` 的
+          昵称刷新、建档播种（`register_hasn_agent` / 模板物化 / `create_agent_cloud_first`）
+          都直接改 ORM 字段或走建档路径，同样不经本方法。
+
+        置反了的代价是**单向不可逆**：每轮合并后都被误标成「主人改过」，下一轮重算 prompt
+        就永久携带「保留主人手工表述」的强调段，且再也复位不掉——档案从此被一版旧正文钉死。
+
+        **绝不动 `version`**：它是提交云端合并闸的 CAS 基线，而基线取自主脑那台设备的本地
+        `owner_portraits.version`（`hasn-mcp/src/memory.rs::compute_plan`）。这里一动，主脑
+        下一轮提交必然 409 `version_conflict`，症状只表现成「主脑很久没整理了」。建行分支给
+        `version=0`（= 尚未合并过），与本地 `mark_owner_portrait_edited` 的建行值同口径。
+
+        也**不写 `content`**：云端这一列是合并态（MEMPUSH 下发源），主人手改的正文权威副本在
+        `hasn_agents.user_md`；把手改正文塞进合并态会让「正文变了但 version 没动」的行出现，
+        破坏合并态与轮次水位的对应关系。
+        """
+        await db.execute(
+            pg_insert(HasnOwnerMemory)
+            .values(owner_id=owner_id, content=None, version=0, owner_edited=True)
+            .on_conflict_do_update(index_elements=['owner_id'], set_={'owner_edited': True})
+        )
+        await db.flush()
+
     async def get_owner_memory(self, db: AsyncSession, *, owner_id: str) -> dict[str, Any]:
         """读取该 owner 当前合并记忆（下发给 Agent）。"""
         row = (
@@ -74,14 +102,17 @@ class OwnerMemoryService:
         ).scalar_one_or_none()
         if row is None:
             return {'content': None, 'version': 0}
-        return {'content': row.content, 'version': int(row.version or 1)}
+        # `version=0` 如实返回 0（= 尚未合并过），不折成 1：主人先手工直编、还没整理过时行就是
+        # 这个状态（`mark_owner_edited` 的建行分支），谎报成 1 会让完整度判定误以为画像前进了一版。
+        return {'content': row.content, 'version': int(row.version or 0)}
 
     async def list_contributions(self, db: AsyncSession, *, owner_id: str, limit: int = 50) -> dict[str, Any]:
         """列出该 owner 的记忆贡献流（owner 透明视图，按时间倒序）。"""
         rows = list(
             (
                 await db.execute(
-                    sa.select(HasnOwnerMemoryContribution)
+                    sa
+                    .select(HasnOwnerMemoryContribution)
                     .where(HasnOwnerMemoryContribution.owner_id == owner_id)
                     .order_by(HasnOwnerMemoryContribution.id.desc())
                     .limit(max(1, min(int(limit), 200)))
@@ -92,7 +123,8 @@ class OwnerMemoryService:
         )
         pending_count = (
             await db.execute(
-                sa.select(sa.func.count())
+                sa
+                .select(sa.func.count())
                 .select_from(HasnOwnerMemoryContribution)
                 .where(
                     HasnOwnerMemoryContribution.owner_id == owner_id,
@@ -113,233 +145,18 @@ class OwnerMemoryService:
         ]
         return {'items': items, 'pending_count': int(pending_count or 0)}
 
-    async def _existing_user_md(self, db: AsyncSession, *, owner_id: str) -> str:
-        """取该 owner 现有 USER.md 作首次合并基线：选最完整（最长非空）的一份。
 
-        同一 owner 的各 Agent 在建档时 user_md 都是同一份 USER.md 模板（含 称呼/Owner HASN ID
-        身份行）；取最长一份即可拿到含身份与已积累事实的基线，喂给 LLM 防止初始化信息被抹掉。
-        """
-        rows = (
-            await db.execute(sa.select(HasnAgents.user_md).where(HasnAgents.owner_id == owner_id))
-        ).scalars().all()
-        candidates = [(r or '').strip() for r in rows]
-        candidates = [c for c in candidates if c]
-        return max(candidates, key=len) if candidates else ''
-
-    async def merge_owner_memory(
-        self, db: AsyncSession, *, owner_id: str, llm_complete: LlmComplete | None = None
-    ) -> dict[str, Any]:
-        """合并该 owner 的所有 pending contribution，产出新 owner_memory 并下发。
-
-        返回 {merged: bool, version, contributions_merged, agents_updated}。
-        无 pending 时直接返回 merged=False。LLM 失败抛错（调用方决定是否吞）。
-        """
-        pending = list(
-            (
-                await db.execute(
-                    sa
-                    .select(HasnOwnerMemoryContribution)
-                    .where(
-                        HasnOwnerMemoryContribution.owner_id == owner_id,
-                        HasnOwnerMemoryContribution.status == 'pending',
-                    )
-                    .order_by(HasnOwnerMemoryContribution.id.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not pending:
-            return {'merged': False, 'version': None, 'contributions_merged': 0, 'agents_updated': 0}
-
-        existing = (
-            await db.execute(sa.select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == owner_id).limit(1))
-        ).scalar_one_or_none()
-        # 合并基线 = 现有 owner_memory；首次合并时它还是空的，此时回退到该 owner 现有 USER.md
-        # （主人档案，含建档身份行 称呼/Owner HASN ID 与已积累事实）作基线喂给 LLM。否则 LLM 仅凭
-        # 新观察重写 user_md，会把昵称/HASN_ID 等初始化信息整段抹掉（本次修复的数据丢失 bug）。
-        current_content = existing.content if existing and existing.content else ''
-        if not current_content:
-            current_content = await self._existing_user_md(db, owner_id=owner_id)
-        observations = [c.content.strip() for c in pending if c.content and c.content.strip()]
-
-        complete = llm_complete or _default_llm_complete
-        merged_content = (await complete(_merge_messages(current_content, observations))).strip()
-        if not merged_content:
-            raise ValueError('owner memory merge produced empty content')
-
-        # 身份兜底：LLM 合并仍可能漏掉建档身份事实（称呼/Owner HASN ID）。从权威来源
-        # （HasnHumans.nickname + owner_id）补回，确保主人昵称/HASN_ID 永不因合并丢失；
-        # 对已被旧逻辑抹掉身份的存量 owner，下一次合并即自动补回（自愈）。
-        nickname = (
-            await db.execute(sa.select(HasnHumans.nickname).where(HasnHumans.hasn_id == owner_id).limit(1))
-        ).scalar_one_or_none()
-        merged_content = _ensure_identity_lines(merged_content, nickname=nickname or '', owner_id=owner_id)
-
-        now = timezone.now()
-        new_version = (int(existing.version) if existing else 0) + 1
-        await db.execute(
-            pg_insert(HasnOwnerMemory)
-            .values(
-                owner_id=owner_id,
-                content=merged_content,
-                version=new_version,
-                token_count=_estimate_tokens(merged_content),
-                last_merged_time=now,
-            )
-            .on_conflict_do_update(
-                index_elements=['owner_id'],
-                set_={
-                    'content': merged_content,
-                    'version': new_version,
-                    'token_count': _estimate_tokens(merged_content),
-                    'last_merged_time': now,
-                },
-            )
-        )
-
-        contribution_ids = [c.id for c in pending]
-        await db.execute(
-            sa
-            .update(HasnOwnerMemoryContribution)
-            .where(HasnOwnerMemoryContribution.id.in_(contribution_ids))
-            .values(status='merged', merged_into_version=new_version)
-        )
-
-        # 下发：覆盖该 owner 所有 Agent 的 user_md，并 bump profile_revision
-        # （Runtime 轮询 /profile/revision 变化后重新拉取覆盖本地 USER.md）。
-        result = await db.execute(
-            sa
-            .update(HasnAgents)
-            .where(HasnAgents.owner_id == owner_id)
-            .values(
-                user_md=merged_content,
-                profile_revision=HasnAgents.profile_revision + 1,
-            )
-        )
-        agents_updated = affected_rows(result)
-        await db.flush()
-
-        # 画像下行 WSPUSH（KIND_AGENTS）：覆盖 user_md + bump profile_revision 后，主动推该 owner
-        # 在线节点「agents 维度变了」→ daemon 收到即全量重拉 agents 镜像（刷新本地 USER.md/SOUL.md）
-        # 并把新 USER.md 写进在线 hermes 工作区，不等下次派发即生效。best-effort：推送失败不拖垮合并
-        # （离线设备靠重连握手 + Runtime 轮询 profile_revision 兜底追平）。
-        try:
-            from backend.app.hasn.service.sync_invalidate_service import KIND_AGENTS, bump_owner
-
-            await bump_owner(KIND_AGENTS, db, owner_id)
-        except Exception as exc:  # 推送 best-effort，不拖垮合并下发
-            log.warning(f'owner memory merge: WSPUSH agents invalidate failed owner={owner_id}: {exc}')
-
-        log.info(
-            f'owner memory merged: owner={owner_id} version={new_version} '
-            f'contributions={len(contribution_ids)} agents_updated={agents_updated}'
-        )
-        return {
-            'merged': True,
-            'version': new_version,
-            'contributions_merged': len(contribution_ids),
-            'agents_updated': agents_updated,
-        }
-
-    async def sweep_pending_merges(
-        self,
-        *,
-        min_age_seconds: int = _SWEEP_MIN_AGE_SECONDS,
-        max_owners: int = _SWEEP_MAX_OWNERS,
-        owner_ids: list[str] | None = None,
-        llm_complete: LlmComplete | None = None,
-    ) -> dict[str, Any]:
-        """扫描有滞留 pending contribution 的 owner，逐个重跑合并（同步内联失败的兜底重试）。
-
-        同步内联合并（contribute 热路径）若因 LLM 网关挂/余额不足失败，贡献留 pending。本
-        sweeper 由 celery beat 周期触发，把这些滞留贡献重新合并下发——配合 failover 模型链，
-        网关恢复后下一轮即合并成功，杜绝「采访完 coverage 永不更新」。
-
-        只挑「最老 pending 已超过 ``min_age_seconds``」的 owner，避开刚 contribute、同步内联
-        正在处理的同一批观察（防与热路径双合并）。逐 owner 独立事务：单个 owner 合并失败（LLM
-        仍挂）不影响其余、pending 留到下轮再试（零 fake，不产生假合并）。
-
-        ``owner_ids`` 可选：限定只扫这些 owner（用于运维定向补合并 / 测试隔离，不波及其他 owner
-        的真实数据）；缺省扫全部有滞留 pending 的 owner。
-
-        返回 {candidates, merged, no_pending, failed}。
-        """
-        cutoff = timezone.now() - timedelta(seconds=max(0, min_age_seconds))
-        async with async_db_session() as db:
-            candidate_query = (
-                sa.select(HasnOwnerMemoryContribution.owner_id)
-                .where(HasnOwnerMemoryContribution.status == 'pending')
-                .group_by(HasnOwnerMemoryContribution.owner_id)
-                .having(sa.func.min(HasnOwnerMemoryContribution.created_time) <= cutoff)
-                .order_by(sa.func.min(HasnOwnerMemoryContribution.created_time).asc())
-                .limit(max(1, max_owners))
-            )
-            if owner_ids is not None:
-                candidate_query = candidate_query.where(
-                    HasnOwnerMemoryContribution.owner_id.in_(owner_ids)
-                )
-            candidates = list((await db.execute(candidate_query)).scalars().all())
-
-        summary = {'candidates': len(candidates), 'merged': 0, 'no_pending': 0, 'failed': 0}
-        for owner_id in candidates:
-            try:
-                async with async_db_session.begin() as db:
-                    outcome = await self.merge_owner_memory(db, owner_id=owner_id, llm_complete=llm_complete)
-                if outcome.get('merged'):
-                    summary['merged'] += 1
-                else:
-                    # 候选时有 pending，到合并时已无（同步内联抢先处理）——非失败，正常竞态。
-                    summary['no_pending'] += 1
-            except Exception as exc:  # noqa: PERF203 — 每个 owner 独立 try：单 owner 合并失败不得拖垮其余
-                summary['failed'] += 1
-                log.warning(f'owner memory sweep retry failed for {owner_id}: {exc}')
-        return summary
-
-
-def _merge_messages(current: str, observations: list[str]) -> list[dict[str, str]]:
-    joined = '\n\n---\n\n'.join(observations) if observations else '(无)'
-    return [
-        {
-            'role': 'system',
-            'content': (
-                '你负责维护一个人（主人）的个人记忆档案 USER.md，供其多个 AI 分身共享；'
-                '该文件由 Hermes 记忆工具按 § 分隔读写，不是普通 Markdown。'
-                '把新观察合并进现有档案：去重、消解冲突（新观察更可信）、保持事实、简洁、可长期复用。'
-                '\n【最高优先·绝不丢失】现有档案是增量演进的，不是重写：'
-                '\n- 必须保留现有档案里已有的全部事实，尤其是主人身份与建档信息——'
-                '「称呼/昵称」「Owner HASN ID」等建档身份行无论如何都要原样保留，绝不能删除或改写；'
-                '\n- 新观察只用于「新增事实」或「更新已有事实」，不得作为「丢弃现有事实」的理由；'
-                '\n- 若现有档案里有占位提示（如「待补充」「待观察」），用真实观察替换它；没有真实观察时保留占位。'
-                '\n输出格式（必须严格遵守）：'
-                '\n- 每条事实独占一段，尽量用「要点: 内容」一行表达；'
-                '\n- 段与段之间用单独一行的 § 分隔（即换行、§、换行）；'
-                '\n- 不要用 Markdown 标题(#)/列表符号(- )、不要代码围栏、不要任何解释；'
-                '\n- 总长控制在 1300 字符以内（身份行优先保留，超长时压缩描述类内容而非删身份）。'
-                '\n只输出合并后的 USER.md 正文。'
-            ),
-        },
-        {
-            'role': 'user',
-            'content': (
-                f'现有 USER.md（§ 记录格式，须整体保留其事实，尤其身份行）：\n{current or "(空)"}\n\n'
-                f'各分身上传的新观察（合并进来，只增不删）：\n{joined}\n\n'
-                '返回更新后的 USER.md（仍用 § 记录格式，且包含现有档案中的全部身份/事实）：'
-            ),
-        },
-    ]
-
-
-# 匹配建档身份行：行首「称呼:/昵称:」（半/全角冒号）。用于判断 LLM 合并结果是否已含身份。
+# 匹配建档身份行：行首「称呼:/昵称:」（半/全角冒号）。用于判断合并结果是否已含身份。
 _NICKNAME_LABEL_RE = re.compile(r'(?m)^\s*(?:称呼|昵称)\s*[:：]')
 
 
 def _ensure_identity_lines(content: str, *, nickname: str, owner_id: str) -> str:
     """确保合并结果含主人身份行（称呼 / Owner HASN ID），缺则从权威来源补回。
 
-    LLM 合并可能漏掉建档身份事实（历史上甚至把它整段抹掉）。这里以 HasnHumans.nickname 与
-    owner_id 为权威，把缺失的身份行补到档案最前面，确保主人昵称/HASN_ID 永不因合并丢失——
-    对已被旧逻辑抹掉身份的存量 owner，下一次合并即自愈。纯函数（不碰 DB），便于单测。
+    主脑的 LLM 重算同样可能漏掉建档身份事实（历史上云端合并甚至把它整段抹掉）。合并闸落库前
+    以 HasnHumans.nickname 与 owner_id 为权威，把缺失的身份行补到档案最前面，确保主人昵称 /
+    HASN_ID 永不因某一轮合并丢失——已被旧逻辑抹掉身份的存量 owner，下一次合并即自愈。
+    纯函数（不碰 DB），便于单测。
     """
     text = (content or '').strip()
     prepend: list[str] = []

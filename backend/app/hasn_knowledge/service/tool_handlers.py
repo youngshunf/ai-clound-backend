@@ -230,6 +230,7 @@ async def handle_knowledge_upload_document(
                 folder_id=folder_id_int,
                 source='agent',
                 agent_hasn_id=agent.agent_hasn_id,
+                asset_actor_id=agent.owner_hasn_id,
             )
             # 不回显整段正文（避免灌爆分身上下文），与 write_doc 出参对齐。
             result.pop('content', None)
@@ -409,6 +410,7 @@ async def handle_knowledge_move_document(
             move_to_root=move_to_root,
             source='agent',
             agent_hasn_id=agent.agent_hasn_id,
+            asset_actor_id=agent.owner_hasn_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
@@ -516,6 +518,7 @@ async def handle_knowledge_write_doc(
                 content=input_payload.get('content'),
                 source='agent',
                 agent_hasn_id=agent.agent_hasn_id,
+                asset_actor_id=agent.owner_hasn_id,
             )
         else:
             kb_id = int(input_payload['kb_id'])
@@ -532,6 +535,7 @@ async def handle_knowledge_write_doc(
                 folder_id=int(folder_id) if folder_id is not None else None,
                 source='agent',
                 agent_hasn_id=agent.agent_hasn_id,
+                asset_actor_id=agent.owner_hasn_id,
             )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc

@@ -456,6 +456,13 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
     await growth_outreach_service.record_inbound_reply(
         session, user_id=uid, customer_id=cid, channel='wechat', content='可以聊聊，周三下午方便'
     )
+    await growth_outreach_service.record_inbound_reply(
+        session,
+        user_id=uid,
+        customer_id=cid,
+        channel='wechat',
+        content='补充一下，周四上午也可以',
+    )
 
     notif = (
         (
@@ -469,7 +476,8 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
         .scalars()
         .all()
     )
-    assert notif, '客户回复应给主人落一条 growth.reply.received 通知'
+    assert len(notif) == 1, '同一客户的高频回复应聚合到一条未读通知'
+    assert notif[0].data['aggregated_count'] == 2
     assert any('回复' in (n.title or '') for n in notif)
     assert all(injected_pii not in (n.title or '') for n in notif)
     assert all(injected_pii not in (n.body or '') for n in notif)

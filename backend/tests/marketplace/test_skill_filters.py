@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
+from backend.app.marketplace.model.marketplace_skill_version import MarketplaceSkillVersion
 from backend.app.marketplace.service.search_service import search_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -131,3 +132,32 @@ async def test_format_skill_emits_is_common_flag(db_session) -> None:
     item = result['items'][0]
     assert 'is_common' in item
     assert item['is_common'] is True
+
+
+@pytest.mark.asyncio
+async def test_search_skill_emits_latest_immutable_snapshot(db_session) -> None:
+    """公开搜索返回 latest 的真实版本与内容指纹，供存量 requirement 冻结。"""
+    tag = uuid.uuid4().hex[:8]
+    namespace = f'huanxing/snapshot-{tag}'
+    skill_id = f'{namespace}/briefing'
+    await _seed_skill(db_session, skill_id, namespace, 'briefing', name='简报')
+    content_hash = 'a' * 64
+    db_session.add(
+        MarketplaceSkillVersion(
+            skill_id=skill_id,
+            version='1.2.3',
+            content_hash=content_hash,
+            is_latest=True,
+        )
+    )
+    await db_session.flush()
+
+    result = await search_service.search_skills(
+        db_session,
+        skill_ids=[skill_id],
+        page_size=100,
+    )
+
+    assert len(result['items']) == 1
+    assert result['items'][0]['latest_version'] == '1.2.3'
+    assert result['items'][0]['content_hash'] == content_hash

@@ -5,11 +5,45 @@ from re import Pattern
 from re import compile as compile_pattern
 from typing import Any, Literal
 
-from pydantic import model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH
 from backend.plugin.settings_source import PluginSettingsSource
+
+
+def _set_production_observability_default(values: dict[str, Any]) -> None:
+    """生产默认开启可观测性，同时保留显式关闭能力。"""
+    if 'GRAFANA_METRICS_ENABLE' not in values:
+        values['GRAFANA_METRICS_ENABLE'] = True
+
+
+def _validate_production_celery_rabbitmq(values: dict[str, Any]) -> None:
+    """校验生产 Celery 只能使用固定最小权限角色和强凭据。"""
+    if values.get('ENVIRONMENT') != 'prod' or values.get('CELERY_BROKER', 'redis') != 'rabbitmq':
+        return
+    if values.get('CELERY_RABBITMQ_USERNAME') != 'huanxing_celery':
+        raise ValueError('生产 Celery RabbitMQ 必须使用最小权限角色 huanxing_celery')
+    if values.get('CELERY_RABBITMQ_VHOST', 'huanxing') != 'huanxing':
+        raise ValueError('生产 CELERY_RABBITMQ_VHOST 必须为 huanxing')
+    if len(str(values.get('CELERY_RABBITMQ_PASSWORD') or '')) < 24:
+        raise ValueError('生产 Celery RabbitMQ 密码长度必须至少为 24 位')
+
+
+def _validate_production_realtime_rabbitmq(
+    values: dict[str, Any],
+    *,
+    selected: bool,
+) -> None:
+    """校验生产 realtime 只能使用固定最小权限角色和强凭据。"""
+    if values.get('ENVIRONMENT') != 'prod' or not selected:
+        return
+    if values.get('REALTIME_RABBITMQ_USERNAME') != 'huanxing_realtime':
+        raise ValueError('生产 realtime RabbitMQ 必须使用最小权限角色 huanxing_realtime')
+    if values.get('REALTIME_RABBITMQ_VHOST', 'huanxing') != 'huanxing':
+        raise ValueError('生产 REALTIME_RABBITMQ_VHOST 必须为 huanxing')
+    if len(str(values.get('REALTIME_RABBITMQ_PASSWORD') or '')) < 24:
+        raise ValueError('生产 realtime RabbitMQ 密码长度必须至少为 24 位')
 
 
 class Settings(BaseSettings):
@@ -20,6 +54,7 @@ class Settings(BaseSettings):
         env_file_encoding='utf-8',
         extra='allow',
         case_sensitive=True,
+        hide_input_in_errors=True,
     )
 
     @classmethod
@@ -56,6 +91,10 @@ class Settings(BaseSettings):
     # 数据库
     DATABASE_ECHO: bool | Literal['debug'] = False
     DATABASE_POOL_ECHO: bool | Literal['debug'] = False
+    # R3 后同一进程最多建立主库与三个受限角色的四个独立池；生产又有多 API/Celery
+    # 进程，因此单池默认必须保守，避免所有进程按旧 10+20 配置耗尽 PostgreSQL 连接。
+    DATABASE_POOL_SIZE: int = Field(default=2, ge=1, le=20)
+    DATABASE_MAX_OVERFLOW: int = Field(default=2, ge=0, le=40)
     DATABASE_SCHEMA: str = 'huanxing'
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
@@ -125,6 +164,18 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_TIMEOUT: int = 5
+    # 显式固定 RESP，避免 redis-py 主版本升级时跟随客户端默认值漂移。
+    REDIS_PROTOCOL: Literal[2, 3] = 2
+    # Redis 6 使用 Lua；Redis 8 蓝绿验收后由生产环境显式切到原生 LMOVE。
+    REDIS_LIST_MOVE_MODE: Literal['lua', 'lmove'] = 'lua'
+
+    @field_validator('REDIS_PROTOCOL', mode='before')
+    @classmethod
+    def normalize_redis_protocol(cls, value: object) -> object:
+        """把 `.env` 文本协议版本归一化为 redis-py 需要的整数。"""
+        if isinstance(value, str) and value in {'2', '3'}:
+            return int(value)
+        return value
 
     # 缓存
     CACHE_LOCAL_ENABLED: bool = True
@@ -154,13 +205,16 @@ class Settings(BaseSettings):
     # G1 平台特权门 bootstrap 兜底（doc18 §4.1）：`agent_hasn_id:scope[,agent_hasn_id:scope…]`，
     # 与 hasn_platform_operator_grants 表行同构，读入合并进 granted 集；仅应急，常态走 Admin 授予表
     PLATFORM_OPERATOR_AGENTS: str = ''
-    HUANXING_SITE_URL: str = 'https://astra.dcfuture.cn'  # 前端站点域名，用于生成分享链接等（2026-07-03 起 huanxing→astra）
+    HUANXING_SITE_URL: str = (
+        'https://astra.dcfuture.cn'  # 前端站点域名，用于生成分享链接等（2026-07-03 起 huanxing→astra）
+    )
 
     # Hermes Runtime（仅后端持有；不得返回给浏览器）
     HUANXING_HERMES_RUNTIME_BASE_URL: str = ''
     HUANXING_HERMES_RUNTIME_API_TOKEN: str = ''
     HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS: float = 10.0
     HUANXING_HERMES_RUNTIME_ID: str = 'hermes-runtime-local'
+    HUANXING_CLOUD_INTERNAL_BASE_URL: str = 'http://127.0.0.1:8001'
 
     # 内部 service token（runtime ↔ backend 单向调用，仅 .env 配置，不暴露浏览器）
     # 用于 X-Internal-Token header 校验（§09 §5）
@@ -172,7 +226,9 @@ class Settings(BaseSettings):
     # 管理端「从 GitHub 自动构建」触发 workflow_dispatch 所需（三者齐才真触发，缺则仅排队记录）
     RELEASE_GITHUB_TOKEN: str = ''  # GitHub PAT（repo + actions:write）
     RELEASE_GITHUB_REPO: str = 'youngshunf/hasn-node'  # owner/repo
-    RELEASE_GITHUB_WORKFLOW: str = 'release-desktop.yml'  # workflow 文件名或 id（对齐 .github/workflows/release-desktop.yml）
+    RELEASE_GITHUB_WORKFLOW: str = (
+        'release-desktop.yml'  # workflow 文件名或 id（对齐 .github/workflows/release-desktop.yml）
+    )
     # 通用语音模型签名目录发布密钥（SPCAT-4·Bearer）：离线发布方 package-speech-model.sh --publish
     # 携此密钥先调 /speech-catalog/packages 暂存包，再调 /speech-catalog/releases 原子切换目录。
     # 未配置则拒绝所有发布（生产必须显式配置，避免误开放写库）。
@@ -193,21 +249,58 @@ class Settings(BaseSettings):
     # 网页发布（模块 18）：制品内容绝不在 API 主域渲染——/s/* 整面落独立分享域名（usercontent 模式）。
     # 形如 https://share.huanxing.ai；为空时回退请求 origin（仅 dev/同域，生产必须配独立域名）。
     WEB_PUBLISH_SHARE_ORIGIN: str = ''
+    # Growth 落地页的受信任外壳向公开表单 API 回流时使用的 origin；为空则与分享域同源。
+    # 跨域部署时必须同时把 WEB_PUBLISH_SHARE_ORIGIN 加入 CORS_ALLOWED_ORIGINS。
+    GROWTH_PUBLIC_FORM_API_ORIGIN: str = ''
+    # Growth 公开表单只通过 Publish 内部 HTTP 解析站点权威绑定；两项缺一即 fail-closed。
+    PUBLISH_INTERNAL_BASE_URL: str = ''
+    PUBLISH_INTERNAL_TOKEN: str = ''
+    PUBLISH_INTERNAL_TIMEOUT: float = 5.0
     RAGFLOW_PUBLIC_RSA_PUBLIC_KEY: str = ''  # RAGFlow RSA 公钥（PEM 格式），用于加密注册密码
     RAGFLOW_DEFAULT_EMBD_ID: str = 'BAAI/bge-large-zh-v1.5'  # 默认 embedding 模型
     RAGFLOW_DEFAULT_LLM_ID: str = 'deepseek-chat'  # 默认 LLM 模型
 
     # 金融数据服务（finance-data-service，独立部署，模块 24 doc）：唯一接触 akshare 的地方，
     # 主云端经 finance_provider（httpx）中转取数（agent 工具面 + owner read-API 共用）。
-    FINANCE_SERVICE_URL: str = ''  # 数据服务地址，如 http://finance-svc.internal:8000（为空时 provider 归一 service_unconfigured）
+    FINANCE_SERVICE_URL: str = (
+        ''  # 数据服务地址，如 http://finance-svc.internal:8000（为空时 provider 归一 service_unconfigured）
+    )
     FINANCE_SERVICE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐数据服务 FIN_SVC_TOKEN）
     FINANCE_SERVICE_TIMEOUT: int = 30  # HTTP 超时（秒）
 
     # 量化交易引擎服务（quant-engine-service，独立部署，模块 14 doc23）：唯一接触 NautilusTrader 的地方，
     # 主云端经 quant_engine_provider（httpx）中转提交/轮询回测（agent 工具面 + owner read-API 共用）。
-    QUANT_ENGINE_URL: str = ''  # 引擎服务地址，如 http://quant-svc.internal:8000（为空时 provider 抛 QuantEngineError / healthz 归一 service_unconfigured）
-    QUANT_ENGINE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐引擎服务 QUANT_SVC_TOKEN；空则引擎仅允许本机回环，开发态）
+    # 地址如 http://quant-svc.internal:8000；为空时 provider 抛 QuantEngineError，
+    # healthz 归一为 service_unconfigured。
+    QUANT_ENGINE_URL: str = ''
+    QUANT_ENGINE_TOKEN: str = (
+        ''  # 内部 svc-token（Bearer，对齐引擎服务 QUANT_SVC_TOKEN；空则引擎仅允许本机回环，开发态）
+    )
     QUANT_ENGINE_TIMEOUT: int = 30  # HTTP 超时（秒）
+
+    # 无头 hasn-node 托管（hasn-node-hosting agent，独立部署，doc「云端节点托管」实施契约 §1/§4）：
+    # 主云端经 hosting_agent_provider（httpx）中转建/起停/删容器与卷。为空时 provider 归一
+    # service_unconfigured（prod 未配诚实报错·零 fake）。Bearer 令牌由 services.toml master_secret 派生。
+    HOSTING_AGENT_URL: str = (
+        ''  # 托管宿主代理地址，如 http://hosting-agent.internal:8003（为空时 provider 归一 service_unconfigured）
+    )
+    HOSTING_AGENT_TOKEN: str = ''  # 内部 svc-token（Bearer，空则从 master_secret 派生）
+    HOSTING_AGENT_TIMEOUT: int = 120  # HTTP 超时（秒，建容器要拉镜像）
+    # 托管宿主标识：写进 hasn_cloud_nodes.host（§6.2 自始就有；MVP 单宿主也必须落值）
+    HOSTING_DEFAULT_HOST: str = 'hosting-01'
+    # edge 反代对外基址（§3.4①返回给客户端的 edge_url；为空时 access-ticket 端点如实返回空）
+    HOSTING_EDGE_BASE_URL: str = ''
+    # 容器内 daemon 回连主云端用的地址（注入容器；为空回落本进程 http/ws 地址由 provider 调用方组装）
+    HOSTING_NODE_BACKEND_HTTP_BASE: str = ''
+    HOSTING_NODE_BACKEND_WS_URL: str = ''
+    # 单容器资源上限（hosting-agent 建容器时的硬限）
+    HOSTING_NODE_MEMORY_MB: int = 2048
+    HOSTING_NODE_CPUS: float = 1.0
+    # 无头镜像平台目标（hasn_release 里的 platform_target；宿主 CPU 架构决定）
+    HOSTING_NODE_IMAGE_PLATFORM: str = 'headless-linux-amd64'
+    # 注：曾有 HOSTING_MAX_NODES_PER_OWNER（档位未定档时的兜底配额=1）。五档定档后已退役——
+    # 兜底改为 fail-closed 的 0（见 cloud_node_service._tier_grant），配置默认值会让未定档的
+    # 低价档白得一个常驻容器，故不再保留这个「静默送资源」的开关。
 
     # 获客采集引擎（firecrawl，独立部署，模块 07 doc）：唯一接触 firecrawl 的地方，hasn_growth
     # 采集 provider 经 FirecrawlClient（httpx）搜索/抓取/抽取线索。为空时回落
@@ -219,7 +312,9 @@ class Settings(BaseSettings):
     # Twisted reactor 与 FastAPI async 冲突 → 独立内部服务。ScrapyProvider（yellow_pages/b2b）
     # 经此 cloud-brokered 中转 POST /v1/crawl 出详情页线索。为空时 provider 归一 service_unconfigured
     # （prod 未配诚实不出数·零 fake）。Bearer 令牌由 services.toml master_secret 派生（对齐 finance/quant）。
-    LEAD_CRAWLER_URL: str = ''  # 深爬服务地址，如 http://lead-crawler.internal:8003（为空时 provider 归一 service_unconfigured）
+    LEAD_CRAWLER_URL: str = (
+        ''  # 深爬服务地址，如 http://lead-crawler.internal:8003（为空时 provider 归一 service_unconfigured）
+    )
     LEAD_CRAWLER_TOKEN: str = ''  # 内部 svc-token（Bearer，空则从 master_secret 派生）
     LEAD_CRAWLER_TIMEOUT: int = 120  # HTTP 超时（秒，深爬可能耗时）
 
@@ -253,6 +348,9 @@ class Settings(BaseSettings):
     GROWTH_PUBLISH_LANDING_ENABLED: bool = False
     # 当前页面实际展示的隐私说明版本；为空时公开表单即使误开总开关也必须拒绝写入。
     GROWTH_FORM_PRIVACY_NOTICE_VERSION: str = ''
+    GROWTH_FORM_RATE_WINDOW_SECONDS: int = 3600
+    GROWTH_FORM_RATE_IP_MAX: int = 20
+    GROWTH_FORM_RATE_IDENTITY_MAX: int = 5
     # 真实外部发送有独立授权；默认只允许 manual_assist/manual_attested。
     GROWTH_EXTERNAL_SEND_ENABLED: bool = False
 
@@ -305,29 +403,39 @@ class Settings(BaseSettings):
     TOKEN_REQUEST_PATH_EXCLUDE_PATTERN: list[Pattern[str]] = [  # JWT / RBAC 路由白名单（正则）
         compile_pattern(pattern)
         for pattern in (
-        rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
-        rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
-        rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
-        rf'^{FASTAPI_API_V1_PATH}/client/version/.*$',  # 桌面端版本检测公开 API
-        rf'^{FASTAPI_API_V1_PATH}/llm/proxy(/.*)?$',  # LLM Proxy API（使用 x-api-key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/huanxing/open/.*$',  # 唤星公开 API（分享文档等）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/agent/.*$',  # HASN Agent API（使用 AgentKey 认证）
-        rf'^{FASTAPI_API_V1_PATH}/mcp/.*$',  # MCP Streamable 接入面（Agent MCP Key / Agent JWT 由 handler 自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/open/.*$',  # HASN 公开 API
-        rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',  # 桌面端发布：下载页/updater 公开面 + CI 回调（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',  # 通用语音签名目录 CI 发布面（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$',  # HASN WebSocket
-        rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$',  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$',  # 获客 Agent API（Agent JWT，handler 自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # 获客旧前缀 Agent API（薄转发过渡，M8 退役）
-        rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
-        r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
-        # 注：Agent JWT（Bearer，token_type=agent）的整类放行已不再依赖路径白名单——
-        # JwtAuthMiddleware.extract_token 通过 is_agent_token 按 token 类型分流放行，
-        # 交由路由自身的 DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
-        # 上面 *_agent/* 模式保留的是 X-Agent-Key（无 Authorization 头）等非 Bearer 自鉴权面。
+            rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
+            rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
+            rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
+            rf'^{FASTAPI_API_V1_PATH}/client/version/.*$',  # 桌面端版本检测公开 API
+            rf'^{FASTAPI_API_V1_PATH}/llm/proxy(/.*)?$',  # LLM Proxy API（使用 x-api-key 认证，不走 JWT）
+            rf'^{FASTAPI_API_V1_PATH}/huanxing/open/.*$',  # 唤星公开 API（分享文档等）
+            rf'^{FASTAPI_API_V1_PATH}/hasn/agent/.*$',  # HASN Agent API（使用 AgentKey 认证）
+            # MCP Streamable 接入面由 Agent MCP Key / Agent JWT 自鉴权。
+            rf'^{FASTAPI_API_V1_PATH}/mcp/.*$',
+            rf'^{FASTAPI_API_V1_PATH}/hasn/open/.*$',  # HASN 公开 API
+            # 桌面端下载/updater 与 CI 回调自带 Bearer CI 密钥鉴权。
+            rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',
+            # 通用语音签名目录 CI 发布面自带 Bearer CI 密钥鉴权。
+            rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',
+            # 无头节点托管节点面：授权码兑换无任何既有身份；session-grant 校验用容器设备 token，
+            # 由 handler 自己调 jwt_authentication 验。不放行的话中间件会先按平台 JWT 解析并 401。
+            rf'^{FASTAPI_API_V1_PATH}/hasn/node/cloud/.*$',
+            # 无头节点托管内部面：edge / hosting-agent 带的是 derive_service_token 派生的服务令牌，
+            # 不是平台 JWT——中间件按 JWT 解析必 401，须整面放行交给 require_hosting_internal_bearer。
+            rf'^{FASTAPI_API_V1_PATH}/hasn/internal/cloud-nodes/.*$',
+            rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$',  # HASN WebSocket
+            rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
+            rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
+            rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$',  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
+            # 获客 Agent API 由 handler 校验 Agent JWT。
+            rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$',
+            rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # 获客旧前缀 Agent API（薄转发过渡，M8 退役）
+            rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
+            r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
+            # 注：Agent JWT（Bearer，token_type=agent）的整类放行已不再依赖路径白名单——
+            # JwtAuthMiddleware.extract_token 通过 is_agent_token 按 token 类型分流放行，
+            # 交由路由自身的 DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
+            # 上面 *_agent/* 模式保留的是 X-Agent-Key（无 Authorization 头）等非 Bearer 自鉴权面。
         )
     ]
 
@@ -415,7 +523,8 @@ class Settings(BaseSettings):
         'http://localhost:8020',
         'http://192.168.1.92:8020',
         'http://api.ai.dcfuture.cn',
-        'https://astra.dcfuture.cn',  # 官网/分享查看器前端域名（website /s/{slug} fetch publish/open meta+换票；2026-07-03 起 huanxing→astra）
+        # 官网/分享查看器前端域名；website /s/{slug} 读取公开元数据并换票。
+        'https://astra.dcfuture.cn',
     ]
     CORS_EXPOSE_HEADERS: list[str] = [
         'X-Request-ID',
@@ -491,6 +600,10 @@ class Settings(BaseSettings):
         'new_password',
         'confirm_password',
     ]
+    # 超过该长度的请求体不读入操作日志，避免大文件上传把 worker 内存打满。
+    # `request.body()` 会把整个请求体缓冲进内存，非 JSON 分支还会再 decode 出一份等长字符串；
+    # 发布数百 MB 的引擎包 / 模型包时，这一步发生在路由之前，会让端点侧的分块读取彻底失效。
+    OPERA_LOG_MAX_BODY_BYTES: int = 1 * 1024 * 1024
     OPERA_LOG_QUEUE_MAXSIZE: int = 100000
     OPERA_LOG_QUEUE_BATCH_CONSUME_SIZE: int = 100
     OPERA_LOG_QUEUE_TIMEOUT: int = 60  # 1 分钟
@@ -558,8 +671,8 @@ class Settings(BaseSettings):
     # ClawHub 下载量阈值：只同步 stats.downloads 严格大于该值的技能。
     #   0 = 不设阈值（全收）；生产设为 100 即"下载量超过 100 才同步"。
     MARKETPLACE_CLAWHUB_MIN_DOWNLOADS: int = 0
-    # ClawHub 技能解压目录累计占用硬上限(GB)：达到即暂停后续下载（安全兜底）。
-    MARKETPLACE_CLAWHUB_MAX_DISK_GB: float = 50.0
+    # ClawHub 详情和版本元数据并发数；只请求 JSON，不下载技能 ZIP。
+    MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY: int = 8
 
     # 市场缓存配置
     MARKETPLACE_CACHE_DIR: str = '/tmp/marketplace-cache'
@@ -573,17 +686,33 @@ class Settings(BaseSettings):
     CELERY_BROKER_REDIS_DATABASE: int
 
     # .env RabbitMQ
-    # docker run -d --hostname fba-mq --name fba-mq  -p 5672:5672 -p 15672:15672 rabbitmq:latest
-    CELERY_RABBITMQ_HOST: str
-    CELERY_RABBITMQ_PORT: int
-    CELERY_RABBITMQ_USERNAME: str
-    CELERY_RABBITMQ_PASSWORD: str
+    CELERY_RABBITMQ_HOST: str = '127.0.0.1'
+    CELERY_RABBITMQ_PORT: int = Field(default=5672, ge=1, le=65535)
+    CELERY_RABBITMQ_USERNAME: str = ''
+    CELERY_RABBITMQ_PASSWORD: str = ''
 
     # 基础配置
     CELERY_BROKER: Literal['rabbitmq', 'redis'] = 'redis'
-    CELERY_RABBITMQ_VHOST: str = ''
+    # 容器/进程环境专用的无命名冲突覆盖；`CELERY_BROKER` 会被 Celery CLI 当作 broker URL。
+    # inherit 保持 `.env` 中既有 CELERY_BROKER，Docker 等显式环境使用 redis/rabbitmq。
+    CELERY_BROKER_MODE: Literal['rabbitmq', 'redis', 'inherit'] = 'inherit'
+    CELERY_RABBITMQ_VHOST: str = 'huanxing'
     CELERY_REDIS_PREFIX: str = 'fba:celery'
     CELERY_TASK_MAX_RETRIES: int = 5
+    FLOWER_BASIC_AUTH: str = ''
+
+    ##################################################
+    # [ Messaging ] Socket.IO / HASN realtime / offline recovery
+    ##################################################
+    SOCKETIO_MANAGER: Literal['rabbitmq', 'redis'] = 'redis'
+    REALTIME_RABBITMQ_HOST: str = '127.0.0.1'
+    REALTIME_RABBITMQ_PORT: int = Field(default=5672, ge=1, le=65535)
+    REALTIME_RABBITMQ_VHOST: str = 'huanxing'
+    REALTIME_RABBITMQ_USERNAME: str = ''
+    REALTIME_RABBITMQ_PASSWORD: str = ''
+    HASN_REALTIME_BUS: Literal['rabbitmq', 'redis'] = 'redis'
+    HASN_REALTIME_SHADOW_RABBITMQ: bool = False
+    HASN_OFFLINE_RECOVERY: Literal['dual', 'redis', 'sync'] = 'redis'
 
     ##################################################
     # [ Plugin ] code_generator
@@ -660,6 +789,10 @@ class Settings(BaseSettings):
     @classmethod
     def check_env(cls, values: Any) -> Any:
         """检查环境变量"""
+        celery_broker_mode = values.get('CELERY_BROKER_MODE', 'inherit')
+        if celery_broker_mode != 'inherit':
+            values['CELERY_BROKER'] = celery_broker_mode
+
         cutover_value = values.get('HASN_IM_SCHEMA_CUTOVER', False)
         cutover = cutover_value is True or str(cutover_value).strip().lower() in {
             '1',
@@ -676,9 +809,45 @@ class Settings(BaseSettings):
             )
             missing = [name for name in required if not str(values.get(name) or '').strip()]
             if missing:
-                raise ValueError(
-                    'R3 生产硬切换配置不完整，缺少：' + ', '.join(missing)
-                )
+                raise ValueError('R3 生产硬切换配置不完整，缺少：' + ', '.join(missing))
+
+        shadow_value = values.get('HASN_REALTIME_SHADOW_RABBITMQ', False)
+        shadow_rabbitmq = shadow_value is True or str(shadow_value).strip().lower() in {
+            '1',
+            'true',
+            'yes',
+            'on',
+        }
+        missing_rabbitmq_settings: list[str] = []
+        if values.get('CELERY_BROKER', 'redis') == 'rabbitmq':
+            missing_rabbitmq_settings.extend(
+                name
+                for name in ('CELERY_RABBITMQ_USERNAME', 'CELERY_RABBITMQ_PASSWORD')
+                if not str(values.get(name) or '').strip()
+            )
+        realtime_rabbitmq_selected = (
+            values.get('SOCKETIO_MANAGER', 'redis') == 'rabbitmq'
+            or values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq'
+            or shadow_rabbitmq
+        )
+        if realtime_rabbitmq_selected:
+            missing_rabbitmq_settings.extend(
+                name
+                for name in ('REALTIME_RABBITMQ_USERNAME', 'REALTIME_RABBITMQ_PASSWORD')
+                if not str(values.get(name) or '').strip()
+            )
+        if missing_rabbitmq_settings:
+            raise ValueError('RabbitMQ 配置不完整，缺少：' + ', '.join(dict.fromkeys(missing_rabbitmq_settings)))
+        _validate_production_celery_rabbitmq(values)
+        _validate_production_realtime_rabbitmq(
+            values,
+            selected=realtime_rabbitmq_selected,
+        )
+        if values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq' and shadow_rabbitmq:
+            raise ValueError(
+                'HASN_REALTIME_BUS=rabbitmq 时必须关闭 HASN_REALTIME_SHADOW_RABBITMQ，避免同一通道重复消费'
+            )
+
         if values.get('ENVIRONMENT') == 'prod':
             # FastAPI
             values['FASTAPI_OPENAPI_URL'] = None
@@ -688,7 +857,7 @@ class Settings(BaseSettings):
             # 生产若要用 RabbitMQ，在 .env 显式设置 CELERY_BROKER=rabbitmq（不再硬编码）
 
             # Grafana
-            values['GRAFANA_METRICS_ENABLE'] = True
+            _set_production_observability_default(values)
 
         return values
 

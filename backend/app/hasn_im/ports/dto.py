@@ -79,6 +79,15 @@ class ConversationRef:
 
 
 @dataclass(frozen=True)
+class ResolvedTarget:
+    """消息目标引用；群目标额外携带现有权威会话 ID。"""
+
+    hasn_id: str
+    entity_type: str
+    conversation_id: str | None = None
+
+
+@dataclass(frozen=True)
 class SendMessageCommand:
     """严格发送契约（§5.2）。
 

@@ -8,10 +8,16 @@ venv/
 .python-version
 .ruff_cache/
 .pytest_cache/
+# pytest-cov 本地覆盖率数据（SQLite，可由测试重新生成）
+.coverage
+.coverage.*
 .claude/
 .serena/
 .agents/
 .logs/
+
+# 误落在仓库根目录的本地运行时 HOME（含凭据与 SQLite 数据）
+/~/
 
 # FBA CLI config (contains API keys)
 .fba.yaml

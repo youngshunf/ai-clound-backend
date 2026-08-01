@@ -184,3 +184,41 @@ async def delete_growth_contact():
     )
 
     assert audit_application(tmp_path / 'backend/app') == []
+
+
+def test_every_im_schema_table_is_in_the_r3_cutover_move_list() -> None:
+    """按 IM_SCHEMA 解析的表必须全部进 R3 正反向搬迁清单。
+
+    漏一张就是「切换后代码找 hasn_im.X、库里还在 public.X」→ 端点 500。
+    2026-07-31 实测已发生一次：doc03 于 07-29 新增的三张历史快照表没进清单，
+    R3 切换后 `/sync/im/bootstrap/start` 全部 500，daemon 换设备/离线后的
+    消息历史补拉整条链路失效（真机双设备 E2E 场景 5 因此挂掉）。
+    """
+    backend_root = Path(__file__).resolve().parents[3]
+    model_dir = backend_root / 'app/hasn/model'
+    migrations = backend_root / 'sql/hasn/migrations'
+    forward = (migrations / '2026-07-16-r2-11-schema-cutover.sql').read_text(encoding='utf-8')
+    reverse = (migrations / '2026-07-16-r2-11-schema-cutover.reverse.sql').read_text(encoding='utf-8')
+
+    im_tables: set[str] = set()
+    for path in model_dir.glob('*.py'):
+        source = path.read_text(encoding='utf-8')
+        if 'IM_SCHEMA' not in source:
+            continue
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('__tablename__'):
+                im_tables.add(stripped.split("'")[1])
+                break
+
+    assert im_tables, '未能从模型中解析出任何 IM_SCHEMA 表，守卫失效'
+
+    # 集成事件/消费者三表在迁移中改名去前缀，由 §4b 单独处理，不走数组清单。
+    renamed = {
+        'hasn_im_integration_events',
+        'hasn_im_event_consumer_offsets',
+        'hasn_im_event_consumer_failures',
+    }
+    for table in sorted(im_tables - renamed):
+        assert f"'{table}'" in forward, f'{table} 未进 R3 正向搬迁清单，切换后代码会找不到它'
+        assert f"'{table}'" in reverse, f'{table} 未进 R3 反向搬迁清单，回滚后会留在 hasn_im'

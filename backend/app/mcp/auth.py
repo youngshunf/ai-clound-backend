@@ -37,7 +37,6 @@ class AgentContext:
         token_payload: AgentTokenPayload | None = None,
         default_mode: str = 'allow',
         capability_modes: dict | None = None,
-        runtime_location: str = 'cloud',
     ) -> None:
         self.hasn_id = hasn_id
         self.owner_id = owner_id
@@ -47,11 +46,10 @@ class AgentContext:
         self.owner_hasn_id = owner_hasn_id
         self.session_uuid = session_uuid
         self._token_payload = token_payload
-        # 运行位置（local/cloud/remote）快照，鉴权时从 HasnAgents.runtime_location 灌入。
-        # ⚠️ 不参与工具暴露判定——工具暴露只受权限 + 付费墙限制，与分身在本地/云端无关
-        # （福仔 2026-07-10 拍板退役原 TOOLMIG2-P4「运行位置收口」）。此字段仅供其它用途
-        # （如 runtime 派发分叉：cloud 走云端 runtime、local 走本地 sidecar）。
-        self.runtime_location = runtime_location
+        # 已退役（H8）：此处曾挂一份 `runtime_location` 快照，唯一用途是 runtime 派发分叉
+        # （cloud 走云端 runtime / local 走本地 sidecar）。云端沙箱形态整体下线后该分叉不复
+        # 存在，快照无任何读取方，随形态删除。工具暴露本就不看运行位置（福仔 2026-07-10
+        # 拍板退役原 TOOLMIG2-P4「运行位置收口」），不受影响。
         # 维度① 三态能力授权（D3：消费时活取，凭证不再承载授权权威）。
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。
         self.default_mode = default_mode
@@ -71,6 +69,16 @@ class AgentContext:
         # Hermes 面经保留参数 `_hasn_work_session_id` 由 server.call_tool 剥离采信。register-on-write
         # 的工作会话 ContextVar 优先取本字段，缺省才对 `session_id` 做「在册 task」收窄（兼容旧节点）。
         self.work_session_id: str | None = None
+        # 项目语境（doc19 §6.2 项目记忆 · doc38 §3.3 联邦挂靠）：本次调用所属的**云端权威平台项目
+        # UUID**。两条来源，都由系统注入、分身不可伪造：① CLI 直连面 streamable 从 daemon 组装的
+        # `X-Hasn-Project-Id` header 直取；② 缺 header 时由 `work_session_id`/`session_id` 反查
+        # `hasn_sessions.project_id`（该列只由已验证派发项目透传）。
+        # 消费方：`hasn.memory.save` 未显式给 scope 时自动落 `scope_kind='project'` + 本 UUID；
+        # `search`/`recall`/`list` 据它做「当前项目 ∪ 非项目作用域」并集检索（读不收窄，§6.2）。
+        # ⚠️ 铁律「跨端 {id} 必须是云端权威 server_id」：此处只放云端项目 UUID，禁止本地 ID。
+        # ⚠️ 它是**运行期上下文，不是凭证声明**——不进 to_token_payload / from_token_payload。
+        # None = 不在项目中工作（记忆照常落既有兜底作用域，检索不做项目并集收敛）。
+        self.project_id: str | None = None
         # P7 第三方 MCP 网关：本请求该 Agent 可发现/可调的 external 工具 canonical 名集合
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
         # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。
@@ -104,7 +112,6 @@ class AgentContext:
         metadata: dict | None = None,
         default_mode: str = 'allow',
         capability_modes: dict | None = None,
-        runtime_location: str = 'cloud',
     ) -> 'AgentContext':
         return cls(
             hasn_id=payload.agent_hasn_id,
@@ -117,7 +124,6 @@ class AgentContext:
             token_payload=payload,
             default_mode=default_mode,
             capability_modes=capability_modes,
-            runtime_location=runtime_location,
         )
 
     def apply_policy(self, policy: dict) -> None:
@@ -243,7 +249,6 @@ async def get_agent_context(
         context = AgentContext.from_token_payload(
             payload,
             agent_status=agent.status,
-            runtime_location=getattr(agent, 'runtime_location', 'cloud') or 'cloud',
         )
         # D3 消费时活取：JWT scopes 仅审计快照，三态判定现查 DB（凭证与授权解耦）。
         policy = await get_agent_scopes_cached(x_hasn_agent_id, db)

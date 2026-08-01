@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-
 _ROOT = Path(__file__).resolve().parents[4]
 _MIGRATIONS = _ROOT / 'backend/sql/hasn/migrations'
 _FORWARD = _MIGRATIONS / '2026-07-16-r2-11-schema-cutover.sql'
@@ -25,6 +24,12 @@ _SYNC_INBOX_WORKER_MIGRATION = (
 )
 _SUPPRESSED_COMMAND_MIGRATION = (
     _MIGRATIONS / '2026-07-27-r3-suppressed-command.sql'
+)
+_IM_ASSET_OBJECT_READ_MIGRATION = (
+    _MIGRATIONS / '2026-07-30-im-service-asset-object-read.sql'
+)
+_IM_PRIVATE_ATTACHMENT_GATEWAY_MIGRATION = (
+    _MIGRATIONS / '2026-07-30-im-private-attachment-gateway.sql'
 )
 _REHEARSAL = _MIGRATIONS / 'r3_migration_rehearsal.py'
 
@@ -233,6 +238,80 @@ def test_sync_role_cannot_bypass_append_event() -> None:
     )
     assert 'SYNC 角色仍可绕过 APPEND_EVENT' in permission_test
     assert 'SYNC 角色 INBOX 状态更新结果' in permission_test
+
+
+def test_im_role_only_reads_asset_object_metadata() -> None:
+    """IM 附件校验可读取对象元数据，但不得获得对象表写权限。"""
+    forward = _FORWARD.read_text(encoding='utf-8').upper()
+    migration = _IM_ASSET_OBJECT_READ_MIGRATION.read_text(encoding='utf-8').upper()
+
+    assert re.search(
+        r'GRANT SELECT ON PUBLIC\.HASN_AGENTS,\s*PUBLIC\.HASN_HUMANS,\s*'
+        r'PUBLIC\.HASN_ASSETS,\s*PUBLIC\.HASN_STORAGE_OBJECTS,',
+        forward,
+    )
+    assert (
+        'GRANT SELECT ON PUBLIC.HASN_STORAGE_OBJECTS TO ASTRA_IM_SERVICE'
+        in migration
+    )
+    permission_test = _PERMISSION_TEST.read_text(encoding='utf-8').upper()
+    assert 'PERFORM 1 FROM PUBLIC.HASN_STORAGE_OBJECTS LIMIT 1' in permission_test
+    assert (
+        "'UPDATE PUBLIC.HASN_STORAGE_OBJECTS SET STATE = STATE WHERE FALSE'"
+        in permission_test
+    )
+    for sql in (forward, migration):
+        assert (
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON PUBLIC.HASN_STORAGE_OBJECTS '
+            'TO ASTRA_IM_SERVICE'
+            not in sql
+        )
+        assert (
+            'GRANT INSERT, UPDATE, DELETE ON PUBLIC.HASN_STORAGE_OBJECTS '
+            'TO ASTRA_IM_SERVICE'
+            not in sql
+        )
+
+
+def test_im_private_attachment_gateway_is_narrow_and_definer_secured() -> None:
+    """附件读写只能走窄化接缝，不能互相开放 Owner/IM 基表。"""
+    sql = _IM_PRIVATE_ATTACHMENT_GATEWAY_MIGRATION.read_text(encoding='utf-8').upper()
+
+    assert 'CREATE OR REPLACE FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT' in sql
+    assert 'SECURITY DEFINER' in sql
+    assert 'SET SEARCH_PATH = PG_CATALOG, PUBLIC' in sql
+    assert 'REVOKE ALL ON FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT' in sql
+    assert (
+        'GRANT EXECUTE ON FUNCTION PUBLIC.HASN_BIND_PRIVATE_ATTACHMENT'
+        in sql
+    )
+    assert "A.ACCESS = 'PRIVATE'" in sql
+    assert "A.LIFECYCLE_STATUS = 'ACTIVE'" in sql
+    assert 'FOR UPDATE' in sql
+    assert "TO_REGCLASS('HASN_IM.HASN_ASSET_GRANTS')" in sql
+    assert "TO_REGCLASS('PUBLIC.HASN_ASSET_GRANTS')" in sql
+    for table in ('HASN_ASSETS', 'HASN_ASSET_GRANTS', 'HASN_ASSET_BINDINGS'):
+        assert (
+            f'GRANT INSERT, UPDATE, DELETE ON PUBLIC.{table} TO ASTRA_IM_SERVICE'
+            not in sql
+        )
+    assert (
+        'CREATE OR REPLACE FUNCTION '
+        'PUBLIC.HASN_AUTHORIZED_CONVERSATION_ASSETS'
+        in sql
+    )
+    assert sql.count('SECURITY DEFINER') == 2
+    assert (
+        'GRANT EXECUTE ON FUNCTION '
+        'PUBLIC.HASN_AUTHORIZED_CONVERSATION_ASSETS'
+        in sql
+    )
+    assert 'TO ASTRA_PYTHON_BACKEND' in sql
+    assert "TO_REGCLASS('HASN_IM.HASN_CONVERSATIONS')" in sql
+    assert "TO_REGCLASS('PUBLIC.HASN_CONVERSATIONS')" in sql
+    assert 'HASN_CONVERSATION_MEMBERSHIPS' in sql
+    assert 'HASN_ASSET_GRANTS' in sql
+    assert 'G.ASSET_ID = ANY($3)' in sql
 
 
 def test_task_visibility_is_backfilled_before_sync_role_serves_pull() -> None:

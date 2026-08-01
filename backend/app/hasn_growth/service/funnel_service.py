@@ -59,9 +59,7 @@ def _gen_no(prefix: str) -> str:
 def _customer_to_dict(c: Customer, *, reveal_pii: bool = False) -> dict[str, Any]:
     data = {
         'id': c.id,
-        'growth_project_id': (
-            str(c.growth_project_id) if c.growth_project_id is not None else None
-        ),
+        'growth_project_id': (str(c.growth_project_id) if c.growth_project_id is not None else None),
         'customer_no': c.customer_no,
         'lead_contact_id': c.lead_contact_id,
         'source_kind': c.source_kind,
@@ -128,7 +126,9 @@ def _apply_masked_private_contact(
     if private_contact is None:
         return lead
     lead['contact_name'] = private_contact.get('contact_name')
-    for channel in private_contact.get('channels', []):
+    channels = private_contact.get('channels', [])
+    lead['channels'] = channels
+    for channel in channels:
         channel_name = channel.get('channel')
         if channel_name in {'email', 'phone', 'wechat'}:
             lead[channel_name] = channel.get('masked_value')
@@ -202,6 +202,14 @@ async def _customer_response(db: AsyncSession, customer: Customer) -> dict[str, 
     return data
 
 
+async def masked_customer_response(
+    db: AsyncSession,
+    customer: Customer,
+) -> dict[str, Any]:
+    """返回客户的通用脱敏视图，供项目化写服务复用同一隐私边界。"""
+    return await _customer_response(db, customer)
+
+
 class GrowthFunnelService:
     """漏斗推进领域服务（owner 隔离 + PII 脱敏）。"""
 
@@ -220,12 +228,10 @@ class GrowthFunnelService:
     ) -> list[dict[str, Any]]:
         """项目读优先；迁移窗口缺行时才审计回落旧引用。"""
         if growth_project_id is not None:
-            validated_project_id = (
-                await project_lead_compatibility_service.require_owned_project(
-                    db,
-                    user_id=user_id,
-                    growth_project_id=growth_project_id,
-                )
+            validated_project_id = await project_lead_compatibility_service.require_owned_project(
+                db,
+                user_id=user_id,
+                growth_project_id=growth_project_id,
             )
             growth_project_id = str(validated_project_id)
             project_ids = sa.select(GrowthProjectLead.lead_contact_id).where(
@@ -234,14 +240,8 @@ class GrowthFunnelService:
             )
             candidate_ids: Any = project_ids
             if not settings.GROWTH_PROJECT_READ_CUTOVER_ENABLED:
-                candidate_ids = project_ids.union(
-                    sa.select(LeadRef.lead_contact_id).where(
-                        LeadRef.user_id == user_id
-                    )
-                )
-            project_stmt = sa.select(LeadContact).where(
-                LeadContact.id.in_(candidate_ids)
-            )
+                candidate_ids = project_ids.union(sa.select(LeadRef.lead_contact_id).where(LeadRef.user_id == user_id))
+            project_stmt = sa.select(LeadContact).where(LeadContact.id.in_(candidate_ids))
             if query:
                 like = f'%{query}%'
                 project_stmt = project_stmt.where(
@@ -253,15 +253,11 @@ class GrowthFunnelService:
                     )
                 )
             if min_score is not None:
-                project_stmt = project_stmt.where(
-                    LeadContact.confidence_score >= min_score
-                )
+                project_stmt = project_stmt.where(LeadContact.confidence_score >= min_score)
             contacts = (
                 (
                     await db.execute(
-                        project_stmt.order_by(
-                            LeadContact.confidence_score.desc().nullslast()
-                        ).limit(min(limit, 100))
+                        project_stmt.order_by(LeadContact.confidence_score.desc().nullslast()).limit(min(limit, 100))
                     )
                 )
                 .scalars()
@@ -307,10 +303,7 @@ class GrowthFunnelService:
             stmt = stmt.where(LeadContact.confidence_score >= min_score)
         stmt = stmt.order_by(LeadContact.confidence_score.desc().nullslast()).limit(min(limit, 100))
         rows = (await db.execute(stmt)).all()
-        return [
-            await _lead_response(db, contact=contact, ref=ref, user_id=user_id)
-            for contact, ref in rows
-        ]
+        return [await _lead_response(db, contact=contact, ref=ref, user_id=user_id) for contact, ref in rows]
 
     @staticmethod
     async def get_lead(
@@ -424,9 +417,7 @@ class GrowthFunnelService:
                 lawful_basis='owner_provided',
                 source_ref='manual_entry',
                 retention_until=timezone.now() + timedelta(days=365),
-                confidence_score=Decimal(
-                    str(confidence_score if confidence_score is not None else 60)
-                ),
+                confidence_score=Decimal(str(confidence_score if confidence_score is not None else 60)),
                 public_metadata={},
                 preserve_existing_private=False,
             ),
@@ -746,16 +737,27 @@ class GrowthFunnelService:
         # 单条轻量 SELECT，免去把 scope 透传到每个调用点（DRY）。
         cust = (
             await db.execute(
-                sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(
-                    Customer.id == customer_id
+                sa
+                .select(
+                    Customer.growth_project_id,
+                    Customer.owner_scope,
+                    Customer.enterprise_id,
+                    Customer.assignee,
                 )
+                .where(Customer.id == customer_id)
             )
         ).first()
-        o_scope, ent_id, assignee = cust or ('personal', None, None)
+        project_id, o_scope, ent_id, assignee = cust or (
+            None,
+            'personal',
+            None,
+            None,
+        )
         activity = Activity(
             customer_id=customer_id,
             opportunity_id=opportunity_id,
             user_id=user_id,
+            growth_project_id=project_id,
             kind=kind,
             content=redact_pii_value(content),
             actor_kind=actor_kind,

@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.customer import Customer
@@ -149,19 +149,11 @@ class GrowthProjectMigrationService:
             return None, None
         if create:
             platform_project = (
-                await db.execute(
-                    sa.select(HasnProject)
-                    .where(HasnProject.id == platform_project.id)
-                    .with_for_update()
-                )
+                await db.execute(sa.select(HasnProject).where(HasnProject.id == platform_project.id).with_for_update())
             ).scalar_one()
 
         growth_project = (
-            await db.execute(
-                sa.select(GrowthProject).where(
-                    GrowthProject.platform_project_id == platform_project.id
-                )
-            )
+            await db.execute(sa.select(GrowthProject).where(GrowthProject.platform_project_id == platform_project.id))
         ).scalar_one_or_none()
         if growth_project is None and create:
             growth_project = GrowthProject(
@@ -203,66 +195,38 @@ class GrowthProjectMigrationService:
         list[FormSubmission],
     ]:
         refs = list(
-            (
-                await db.execute(
-                    sa.select(LeadRef)
-                    .where(LeadRef.user_id == user_id)
-                    .order_by(LeadRef.id)
-                )
-            )
+            (await db.execute(sa.select(LeadRef).where(LeadRef.user_id == user_id).order_by(LeadRef.id)))
             .scalars()
             .all()
         )
         customers = list(
-            (
-                await db.execute(
-                    sa.select(Customer)
-                    .where(Customer.user_id == user_id)
-                    .order_by(Customer.id)
-                )
-            )
+            (await db.execute(sa.select(Customer).where(Customer.user_id == user_id).order_by(Customer.id)))
             .scalars()
             .all()
         )
         opportunities = list(
-            (
-                await db.execute(
-                    sa.select(Opportunity)
-                    .where(Opportunity.user_id == user_id)
-                    .order_by(Opportunity.id)
-                )
-            )
+            (await db.execute(sa.select(Opportunity).where(Opportunity.user_id == user_id).order_by(Opportunity.id)))
             .scalars()
             .all()
         )
         messages = list(
             (
                 await db.execute(
-                    sa.select(OutreachMessage)
-                    .where(OutreachMessage.user_id == user_id)
-                    .order_by(OutreachMessage.id)
+                    sa.select(OutreachMessage).where(OutreachMessage.user_id == user_id).order_by(OutreachMessage.id)
                 )
             )
             .scalars()
             .all()
         )
         activities = list(
-            (
-                await db.execute(
-                    sa.select(Activity)
-                    .where(Activity.user_id == user_id)
-                    .order_by(Activity.id)
-                )
-            )
+            (await db.execute(sa.select(Activity).where(Activity.user_id == user_id).order_by(Activity.id)))
             .scalars()
             .all()
         )
         forms = list(
             (
                 await db.execute(
-                    sa.select(FormSubmission)
-                    .where(FormSubmission.user_id == user_id)
-                    .order_by(FormSubmission.id)
+                    sa.select(FormSubmission).where(FormSubmission.user_id == user_id).order_by(FormSubmission.id)
                 )
             )
             .scalars()
@@ -276,10 +240,7 @@ class GrowthProjectMigrationService:
         source_table: str,
         row: Any,
     ) -> _Quarantine | None:
-        if (
-            getattr(row, 'owner_scope', 'personal') == 'enterprise'
-            or getattr(row, 'enterprise_id', None) is not None
-        ):
+        if getattr(row, 'owner_scope', 'personal') == 'enterprise' or getattr(row, 'enterprise_id', None) is not None:
             return _Quarantine(
                 source_table=source_table,
                 source_record_id=str(row.id),
@@ -289,9 +250,7 @@ class GrowthProjectMigrationService:
                 enterprise_id_hint=getattr(row, 'enterprise_id', None),
                 details={
                     'gate': 'GROWTH_PROJECT_V4_ENTERPRISE_ENABLED',
-                    'gate_enabled': bool(
-                        settings.GROWTH_PROJECT_V4_ENTERPRISE_ENABLED
-                    ),
+                    'gate_enabled': bool(settings.GROWTH_PROJECT_V4_ENTERPRISE_ENABLED),
                 },
             )
         return None
@@ -322,10 +281,7 @@ class GrowthProjectMigrationService:
                         'parent_id': str(customer_id),
                     },
                 )
-            if (
-                customer.owner_scope != 'personal'
-                or customer.enterprise_id is not None
-            ):
+            if customer.owner_scope != 'personal' or customer.enterprise_id is not None:
                 return _Quarantine(
                     source_table=source_table,
                     source_record_id=str(row.id),
@@ -395,9 +351,7 @@ class GrowthProjectMigrationService:
                 growth_project_id=growth_project.id,
                 outreach_message_id=message.id,
                 event_type=event_type,
-                idempotency_key=(
-                    f'migration:{_MIGRATION_VERSION}:{message.id}:{message.status}'
-                ),
+                idempotency_key=(f'migration:{_MIGRATION_VERSION}:{message.id}:{message.status}'),
                 occurred_time=self._state_time(message),
                 actor_kind='system',
                 actor_id='growth_project_migration',
@@ -410,9 +364,7 @@ class GrowthProjectMigrationService:
                     'legacy_status': message.status,
                 },
             )
-            .on_conflict_do_nothing(
-                constraint='uq_growth_outreach_event_idempotency'
-            )
+            .on_conflict_do_nothing(constraint='uq_growth_outreach_event_idempotency')
         )
         if message.status != 'replied':
             return
@@ -453,7 +405,8 @@ class GrowthProjectMigrationService:
         contact_plaintext = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count(sa.distinct(LeadContact.id)))
+                    sa
+                    .select(sa.func.count(sa.distinct(LeadContact.id)))
                     .select_from(LeadContact)
                     .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
                     .where(
@@ -473,7 +426,8 @@ class GrowthProjectMigrationService:
         customer_plaintext = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(Customer)
                     .where(
                         Customer.user_id == user_id,
@@ -490,7 +444,8 @@ class GrowthProjectMigrationService:
         form_plaintext = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(FormSubmission)
                     .where(
                         FormSubmission.user_id == user_id,
@@ -506,7 +461,8 @@ class GrowthProjectMigrationService:
         versions = list(
             (
                 await db.execute(
-                    sa.select(ContactChannel.hash_key_version)
+                    sa
+                    .select(ContactChannel.hash_key_version)
                     .where(ContactChannel.user_id == user_id)
                     .distinct()
                     .order_by(ContactChannel.hash_key_version)
@@ -520,7 +476,8 @@ class GrowthProjectMigrationService:
         pii_quarantine_pending = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(GrowthPiiMigrationQuarantine)
                     .where(
                         GrowthPiiMigrationQuarantine.user_id_hint == user_id,
@@ -530,9 +487,7 @@ class GrowthProjectMigrationService:
             ).scalar_one()
         )
         return {
-            'plaintext_rows': (
-                contact_plaintext + customer_plaintext + form_plaintext
-            ),
+            'plaintext_rows': (contact_plaintext + customer_plaintext + form_plaintext),
             'plaintext_by_table': {
                 'contact': contact_plaintext,
                 'customer': customer_plaintext,
@@ -577,18 +532,14 @@ class GrowthProjectMigrationService:
                 )
             return result
 
-        refs, customers, opportunities, messages, activities, forms = (
-            await self._owner_rows(db, user_id=user_id)
-        )
+        refs, customers, opportunities, messages, activities, forms = await self._owner_rows(db, user_id=user_id)
         _existing_platform, existing_growth = await self._migration_project(
             db,
             owner_hasn_id=owner_hasn_id,
             user_id=user_id,
             create=False,
         )
-        expected_existing_id = (
-            existing_growth.id if existing_growth is not None else None
-        )
+        expected_existing_id = existing_growth.id if existing_growth is not None else None
         customer_by_id = {row.id: row for row in customers}
         opportunity_by_id = {row.id: row for row in opportunities}
         personal_rows: list[tuple[str, Any]] = []
@@ -606,9 +557,7 @@ class GrowthProjectMigrationService:
                     row=row,
                     customers=customer_by_id,
                     opportunities=opportunity_by_id,
-                ) or self._quarantine_for_scope(
-                    source_table=table_name, row=row
-                )
+                ) or self._quarantine_for_scope(source_table=table_name, row=row)
                 if quarantine is not None:
                     quarantines.append(quarantine)
                 elif (
@@ -620,21 +569,13 @@ class GrowthProjectMigrationService:
                             source_table=table_name,
                             source_record_id=str(row.id),
                             reason_code='crm_project_conflict',
-                            owner_scope_hint=getattr(
-                                row, 'owner_scope', None
-                            ),
+                            owner_scope_hint=getattr(row, 'owner_scope', None),
                             user_id_hint=user_id,
-                            enterprise_id_hint=getattr(
-                                row, 'enterprise_id', None
-                            ),
+                            enterprise_id_hint=getattr(row, 'enterprise_id', None),
                             details={
-                                'existing_growth_project_id': str(
-                                    row.growth_project_id
-                                ),
+                                'existing_growth_project_id': str(row.growth_project_id),
                                 'migration_project_id': (
-                                    str(expected_existing_id)
-                                    if expected_existing_id is not None
-                                    else None
+                                    str(expected_existing_id) if expected_existing_id is not None else None
                                 ),
                             },
                         )
@@ -642,14 +583,8 @@ class GrowthProjectMigrationService:
                 else:
                     personal_rows.append((table_name, row))
 
-        mapped_messages: list[
-            tuple[OutreachMessage, tuple[str, str, str]]
-        ] = []
-        eligible_message_ids = {
-            row.id
-            for table_name, row in personal_rows
-            if table_name == 'outreach_message'
-        }
+        mapped_messages: list[tuple[OutreachMessage, tuple[str, str, str]]] = []
+        eligible_message_ids = {row.id for table_name, row in personal_rows if table_name == 'outreach_message'}
         for message in messages:
             if message.id not in eligible_message_ids:
                 continue
@@ -687,16 +622,14 @@ class GrowthProjectMigrationService:
         )
         result.crm_rows_updated = len(personal_rows) + reply_facts
         result.outreach_rows_mapped = len(mapped_messages)
-        result.quarantined = len(
-            {
-                (
-                    item.source_table,
-                    item.source_record_id,
-                    item.reason_code,
-                )
-                for item in quarantines
-            }
-        )
+        result.quarantined = len({
+            (
+                item.source_table,
+                item.source_record_id,
+                item.reason_code,
+            )
+            for item in quarantines
+        })
         result.pii_audit = await self._pii_audit_summary(db, user_id=user_id)
         if result.project_created == 0:
             result.status = 'quarantined'
@@ -751,9 +684,7 @@ class GrowthProjectMigrationService:
                         'enterprise_id': None,
                         'source_kind': ref.source,
                         'source_ref': f'lead_ref:{ref.id}',
-                        'source_meta': {
-                            'migration_version': _MIGRATION_VERSION
-                        },
+                        'source_meta': {'migration_version': _MIGRATION_VERSION},
                         'status': ref.status,
                         'dismiss_reason': ref.dismiss_reason,
                         'note': ref.note,
@@ -807,7 +738,8 @@ class GrowthProjectMigrationService:
 
         lead_rows = (
             await db.execute(
-                sa.select(
+                sa
+                .select(
                     LeadRef.lead_contact_id,
                     LeadRef.status.label('legacy_status'),
                     LeadRef.note.label('legacy_note'),
@@ -818,43 +750,35 @@ class GrowthProjectMigrationService:
                 .outerjoin(
                     GrowthProjectLead,
                     sa.and_(
-                        GrowthProjectLead.growth_project_id
-                        == growth_project.id,
-                        GrowthProjectLead.lead_contact_id
-                        == LeadRef.lead_contact_id,
+                        GrowthProjectLead.growth_project_id == growth_project.id,
+                        GrowthProjectLead.lead_contact_id == LeadRef.lead_contact_id,
                     ),
                 )
                 .where(LeadRef.user_id == user_id)
                 .order_by(LeadRef.lead_contact_id)
             )
         ).all()
-        missing_in_project = [
-            int(row.lead_contact_id)
-            for row in lead_rows
-            if row.project_status is None
-        ]
+        missing_in_project = [int(row.lead_contact_id) for row in lead_rows if row.project_status is None]
         status_mismatch = [
             int(row.lead_contact_id)
             for row in lead_rows
-            if row.project_status is not None
-            and row.project_status != row.legacy_status
+            if row.project_status is not None and row.project_status != row.legacy_status
         ]
         content_mismatch = [
             int(row.lead_contact_id)
             for row in lead_rows
-            if row.project_status is not None
-            and row.project_note != row.legacy_note
+            if row.project_status is not None and row.project_note != row.legacy_note
         ]
         extra_in_project = list(
             (
                 await db.execute(
-                    sa.select(GrowthProjectLead.lead_contact_id)
+                    sa
+                    .select(GrowthProjectLead.lead_contact_id)
                     .outerjoin(
                         LeadRef,
                         sa.and_(
                             LeadRef.user_id == user_id,
-                            LeadRef.lead_contact_id
-                            == GrowthProjectLead.lead_contact_id,
+                            LeadRef.lead_contact_id == GrowthProjectLead.lead_contact_id,
                         ),
                     )
                     .where(
@@ -868,7 +792,8 @@ class GrowthProjectMigrationService:
         cross_owner = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(GrowthProject)
                     .join(
                         HasnProject,
@@ -884,7 +809,8 @@ class GrowthProjectMigrationService:
         wrong_enterprise = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(GrowthProjectLead)
                     .where(
                         GrowthProjectLead.growth_project_id == growth_project.id,
@@ -908,12 +834,12 @@ class GrowthProjectMigrationService:
             orphan_crm += int(
                 (
                     await db.execute(
-                        sa.select(sa.func.count())
+                        sa
+                        .select(sa.func.count())
                         .select_from(model)
                         .where(
                             model.user_id == user_id,
-                            getattr(model, 'owner_scope', sa.literal('personal'))
-                            == 'personal',
+                            getattr(model, 'owner_scope', sa.literal('personal')) == 'personal',
                             sa.or_(
                                 model.growth_project_id.is_(None),
                                 model.growth_project_id != growth_project.id,
@@ -925,7 +851,8 @@ class GrowthProjectMigrationService:
         orphan_tasks = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(HasnTask)
                     .where(
                         HasnTask.owner_id == owner_hasn_id,
@@ -941,7 +868,8 @@ class GrowthProjectMigrationService:
         orphan_artifacts = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(HasnArtifacts)
                     .where(
                         HasnArtifacts.owner_hasn_id == owner_hasn_id,
@@ -960,12 +888,12 @@ class GrowthProjectMigrationService:
         unknown_statuses = int(
             (
                 await db.execute(
-                    sa.select(sa.func.count())
+                    sa
+                    .select(sa.func.count())
                     .select_from(GrowthProjectMigrationQuarantine)
                     .where(
                         GrowthProjectMigrationQuarantine.user_id_hint == user_id,
-                        GrowthProjectMigrationQuarantine.reason_code
-                        == 'unknown_outreach_status',
+                        GrowthProjectMigrationQuarantine.reason_code == 'unknown_outreach_status',
                         GrowthProjectMigrationQuarantine.status == 'pending',
                     )
                 )
@@ -987,10 +915,7 @@ class GrowthProjectMigrationService:
         }
         differences['total'] = sum(differences.values())
         sample_ids = (
-            missing_in_project
-            + [int(value) for value in extra_in_project]
-            + status_mismatch
-            + content_mismatch
+            missing_in_project + [int(value) for value in extra_in_project] + status_mismatch + content_mismatch
         )[: max(0, min(sample_size, 100))]
         return {
             'schema_version': 'growth-project-shadow-v1',
@@ -1001,9 +926,7 @@ class GrowthProjectMigrationService:
             'growth_project_id': str(growth_project.id),
             'counts': {
                 'legacy_leads': len(lead_rows),
-                'project_leads': len(lead_rows)
-                - len(missing_in_project)
-                + len(extra_in_project),
+                'project_leads': len(lead_rows) - len(missing_in_project) + len(extra_in_project),
             },
             'differences': differences,
             'boundaries': {
@@ -1023,9 +946,7 @@ class GrowthProjectMigrationService:
             'compatibility': {
                 'removal_owner': COMPATIBILITY_REMOVAL_OWNER,
                 'remove_after': COMPATIBILITY_REMOVAL_DATE,
-                'cutover_enabled': bool(
-                    settings.GROWTH_PROJECT_READ_CUTOVER_ENABLED
-                ),
+                'cutover_enabled': bool(settings.GROWTH_PROJECT_READ_CUTOVER_ENABLED),
             },
         }
 

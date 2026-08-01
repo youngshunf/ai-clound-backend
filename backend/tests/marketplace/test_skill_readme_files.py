@@ -306,40 +306,6 @@ async def test_resolve_bilingual_body_echo_guard_drops_untranslated(monkeypatch)
     assert body_en is None           # 回声译文被丢弃，不把中文当英文译文落库
 
 
-# --------------------------------------------------------------------------- #
-# 5) clawhub 同源捕获：从解压目录读取正文+文件清单（与 github 共享提取逻辑）
-# --------------------------------------------------------------------------- #
-
-@pytest.mark.asyncio
-async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypatch) -> None:
-    """clawhub 同步从解压后的技能目录提取正文(双语)+文件清单，与 github 同源。"""
-    from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
-
-    (tmp_path / 'SKILL.md').write_text(SKILL_MD, encoding='utf-8')  # 正文为英文
-    (tmp_path / 'scripts').mkdir()
-    (tmp_path / 'scripts' / 'run.py').write_text('print("hi")\n', encoding='utf-8')
-    (tmp_path / '__pycache__').mkdir()
-    (tmp_path / '__pycache__' / 'c.bin').write_text('x', encoding='utf-8')  # 应被过滤
-
-    translation_service._translation_cache.clear()
-
-    async def _fake(messages, **kwargs) -> str:
-        return '# 演示\n\n已翻译正文。'
-
-    monkeypatch.setattr(translation_service, '_complete_chat', _fake)
-
-    body_en, body_zh, files_json = await clawhub_sync_service._extract_body_and_files(
-        existing_skill=None, source_language='en', skill_dir=tmp_path,
-    )
-    assert body_en is not None
-    assert body_en.startswith('# Demo Skill')   # 英文正文落英文侧
-    assert body_zh == '# 演示\n\n已翻译正文。'    # 中文侧是译文
-    files = json.loads(files_json)
-    assert [f['path'] for f in files] == ['SKILL.md', 'scripts/run.py']   # __pycache__ 被过滤
-    for f in files:
-        assert set(f.keys()) == {'path', 'size'}, f   # 仅名称+大小，不含内容
-
-
 def test_split_markdown_for_translation_chunks_without_breaking_fences() -> None:
     """长文档按段落分块（≤budget），且**绝不**切开代码围栏；拼回恢复原文。
 
@@ -380,16 +346,3 @@ def test_detect_body_source_lang_cjk_ratio_beats_langdetect() -> None:
 
     pure_en = '# Code Review\n\nA systematic approach to reviewing pull requests across stacks.'
     assert detect_body_source_lang(pure_en, source_language='zh') == 'en'  # 纯英文仍判 en
-
-
-@pytest.mark.asyncio
-async def test_clawhub_extract_missing_skill_md_is_honest_empty(tmp_path: Path) -> None:
-    """目录无 SKILL.md → 正文两侧空、文件清单为 []（零 fake，如实反映无正文）。"""
-    from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
-
-    (tmp_path / 'desc.txt').write_text('只有附带文件，没有 SKILL.md', encoding='utf-8')
-    body_en, body_zh, files_json = await clawhub_sync_service._extract_body_and_files(
-        existing_skill=None, source_language='en', skill_dir=tmp_path,
-    )
-    assert body_en is None and body_zh is None
-    assert [f['path'] for f in json.loads(files_json)] == ['desc.txt']   # 文件清单仍如实列出

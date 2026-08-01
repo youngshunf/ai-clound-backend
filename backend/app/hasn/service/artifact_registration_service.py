@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func, literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -175,6 +176,25 @@ class ArtifactRegistrationService:
         await self._merge_superseded_locator(db, mutation, artifact_key)
         contribution_key = self._contribution_idempotency_key(mutation, artifact_key)
         artifact_id = self._public_id('art')
+        counter_keys = tuple(mutation.accumulate_metadata_keys)
+        counter_values = {
+            key: cast('int', mutation.metadata[key])
+            for key in counter_keys
+        }
+        current_metadata = {
+            key: value
+            for key, value in mutation.metadata.items()
+            if key not in counter_values
+        }
+        metadata_on_conflict: Any
+        if counter_keys:
+            metadata_on_conflict = func.coalesce(
+                HasnArtifacts.meta_data,
+                literal({}, type_=JSONB),
+            ).op('||')(literal(current_metadata, type_=JSONB))
+        else:
+            current_metadata = dict(mutation.metadata)
+            metadata_on_conflict = current_metadata
         artifact_statement = (
             insert(HasnArtifacts)
             .values(
@@ -206,7 +226,7 @@ class ArtifactRegistrationService:
                 source_kind=mutation.source_kind,
                 action=mutation.action,
                 dispatch_id=mutation.dispatch_id,
-                meta_data=mutation.metadata,
+                meta_data=current_metadata,
                 status='active',
             )
             .on_conflict_do_update(
@@ -254,7 +274,7 @@ class ArtifactRegistrationService:
                     # 同一对象被分身再次写入即视为复活：软删后若只累积参与记录而当前态保持
                     # deleted，列表（过滤 status='active'）会永远查不到这条仍在生长的产物。
                     'status': 'active',
-                    'metadata': mutation.metadata,
+                    'metadata': metadata_on_conflict,
                     'updated_time': func.now(),
                 },
             )
@@ -289,6 +309,7 @@ class ArtifactRegistrationService:
             .returning(HasnArtifactContributions.contribution_id)
         )
         contribution_id = (await db.execute(contribution_statement)).scalar_one_or_none()
+        contribution_inserted = contribution_id is not None
         if contribution_id is None:
             contribution_id = (
                 await db.execute(
@@ -299,6 +320,32 @@ class ArtifactRegistrationService:
                     )
                 )
             ).scalar_one()
+
+        if contribution_inserted and counter_values:
+            # artifact UPSERT 已锁定当前态行；在同一事务读取最新 metadata 后写回，
+            # 并发批次会依次获取行锁，重放 contribution 因未插入而不会重复累计。
+            stored_metadata = (
+                await db.execute(
+                    select(HasnArtifacts.meta_data)
+                    .where(HasnArtifacts.artifact_id == canonical_artifact_id)
+                    .with_for_update()
+                )
+            ).scalar_one()
+            accumulated = dict(stored_metadata or {})
+            for key, delta in counter_values.items():
+                current = accumulated.get(key, 0)
+                if (
+                    not isinstance(current, int)
+                    or isinstance(current, bool)
+                    or current < 0
+                ):
+                    raise ValueError(f'产物 metadata 计数器 {key} 的存量值无效')
+                accumulated[key] = current + delta
+            await db.execute(
+                update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == canonical_artifact_id)
+                .values(meta_data=accumulated, updated_time=func.now())
+            )
 
         outbox_key = f'{mutation.agent_hasn_id}:{contribution_key}'
         outbox_statement = insert(HasnArtifactRegistrationOutbox).values(

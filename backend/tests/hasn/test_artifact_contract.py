@@ -48,6 +48,19 @@ def test_artifact_mutation_requires_exactly_one_locator() -> None:
         ArtifactMutation.model_validate(payload)
 
 
+def test_artifact_dispatch_id_accepts_real_composite_and_rejects_overflow() -> None:
+    """真实图坊组合派发键可通过，超过数据库上限的输入必须在契约边界拒绝。"""
+    payload = _resource_mutation()
+    dispatch_id = f'work_disp_{"a" * 26}:ilab_out_{"b" * 26}'
+    assert 64 < len(dispatch_id) <= 128
+    payload['dispatch_id'] = dispatch_id
+    assert ArtifactMutation.model_validate(payload).dispatch_id == dispatch_id
+
+    payload['dispatch_id'] = 'd' * 129
+    with pytest.raises(ValueError):
+        ArtifactMutation.model_validate(payload)
+
+
 def test_local_mutation_uses_opaque_locator_key_instead_of_absolute_path() -> None:
     """云端登记命令只接收不可逆 locator key，绝对路径必须在边界被拒绝。"""
     payload = {
@@ -69,15 +82,13 @@ def test_local_mutation_uses_opaque_locator_key_instead_of_absolute_path() -> No
 
 def test_legacy_runtime_path_is_hashed_before_artifact_mutation_boundary() -> None:
     """冻结 runtime sink 的旧入参只能在请求边界即时转为不可逆定位键。"""
-    params = RecordArtifactParam.model_validate(
-        {
-            'kind': 'file',
-            'local_path': '/runtime/workspace/report.md',
-            'node_id': 'node_phase1',
-            'source_kind': 'runtime_file',
-            'action': 'update',
-        }
-    )
+    params = RecordArtifactParam.model_validate({
+        'kind': 'file',
+        'local_path': '/runtime/workspace/report.md',
+        'node_id': 'node_phase1',
+        'source_kind': 'runtime_file',
+        'action': 'update',
+    })
 
     assert params.local_locator_key is not None
     assert params.local_locator_key.startswith('legacy-path-v1:')
@@ -87,45 +98,46 @@ def test_legacy_runtime_path_is_hashed_before_artifact_mutation_boundary() -> No
 
 def test_artifact_list_item_serialization_never_contains_local_absolute_path() -> None:
     """唯一读模型仅暴露设备和条目类型，序列化边界没有本地路径。"""
-    item = ArtifactListItem.model_validate(
-        {
-            'artifact_id': 'art_phase1',
-            'artifact_kind': 'file',
-            'resource_kind': None,
-            'resource_app_id': None,
-            'title': '周报.md',
-            'summary': None,
-            'body_preview': None,
-            'asset_uri': None,
-            'preview_url': None,
-            'download_url': None,
-            'resource_uri': None,
-            'local_entry': {
-                'node_id': 'node_phase1',
-                'entry_kind': 'file',
-                'device_name': '测试设备',
-            },
-            'availability': 'local_other_device',
-            'allowed_actions': [],
-            'sync_state': 'synced',
-            'latest_contribution': {
-                'contribution_id': 'con_phase1',
-                'agent_hasn_id': 'agent_phase1',
-                'work_session_id': None,
-                'project_id': None,
-                'action': 'update',
-                'source_kind': 'runtime_file',
-                'source_tool': 'write_file',
-                'source_app_id': None,
-                'source_link': None,
-                'occurred_time': '2026-07-22T00:00:00Z',
-            },
-            'agent_identity': None,
-            'project_relation': None,
-            'created_time': '2026-07-22T00:00:00Z',
-            'updated_time': '2026-07-22T00:00:00Z',
-        }
-    )
+    item = ArtifactListItem.model_validate({
+        'artifact_id': 'art_phase1',
+        'artifact_kind': 'file',
+        'resource_kind': None,
+        'resource_app_id': None,
+        'title': '周报.md',
+        'summary': None,
+        'body_preview': None,
+        'asset_uri': None,
+        'preview_url': None,
+        'download_url': None,
+        'resource_uri': None,
+        'source_asset_uri': None,
+        'source_hash': None,
+        'source_synced_at': None,
+        'local_entry': {
+            'node_id': 'node_phase1',
+            'entry_kind': 'file',
+            'device_name': '测试设备',
+        },
+        'availability': 'local_other_device',
+        'allowed_actions': [],
+        'sync_state': 'synced',
+        'latest_contribution': {
+            'contribution_id': 'con_phase1',
+            'agent_hasn_id': 'agent_phase1',
+            'work_session_id': None,
+            'project_id': None,
+            'action': 'update',
+            'source_kind': 'runtime_file',
+            'source_tool': 'write_file',
+            'source_app_id': None,
+            'source_link': None,
+            'occurred_time': '2026-07-22T00:00:00Z',
+        },
+        'agent_identity': None,
+        'project_relation': None,
+        'created_time': '2026-07-22T00:00:00Z',
+        'updated_time': '2026-07-22T00:00:00Z',
+    })
 
     serialized = json.loads(item.model_dump_json())
     assert 'local_path' not in serialized

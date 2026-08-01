@@ -112,9 +112,9 @@ PUBLISH_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
-    'project_aware': False,
+    'project_aware': True,
     'project_required': False,
-    'project_integration': 'artifact_only',
+    'project_integration': 'project_aware',
     # catalog 枚举 local_tool（本地工具数据面 + 原生 UI）。
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Platform/Local → daemon PublishGateway），不经云端 Runtime Gateway。
@@ -147,6 +147,11 @@ PUBLISH_AI_NATIVE_MANIFEST: dict[str, Any] = {
                     'description': '本地 HTML 文件路径（限 Agent 数据目录内，白名单校验）',
                 },
                 'source_ref': _SOURCE_REF_SCHEMA,
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'format': 'uuid',
+                    'description': '可选：继承当前工作会话的平台项目云端权威 UUID',
+                },
                 'title': {'type': ['string', 'null'], 'description': '可选：站点标题'},
                 'visibility': {
                     'enum': ['private', 'password', 'unlisted', 'public', None],
@@ -277,4 +282,6 @@ def build_publish_app() -> App:
         entry_route='/apps/publish',
         install_policy='auto',
         execution_mode='local_tool',
+        project_aware=True,
+        project_required=False,
     )

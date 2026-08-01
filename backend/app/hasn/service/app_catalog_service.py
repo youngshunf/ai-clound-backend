@@ -17,9 +17,10 @@ from __future__ import annotations
 import copy
 import json
 import re
+import zipfile
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
@@ -35,11 +36,15 @@ from backend.app.hasn.service.app_catalog_registry import App, app_catalog_regis
 from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from fastapi import UploadFile
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from backend.plugin.s3.model import S3Storage
 
 # 默认应用标识（订阅档与 billing 同源，见 [[project_billing_newapi_authoritative_source]]）。
 _DEFAULT_APP_CODE = 'huanxing'
@@ -58,7 +63,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
     'reel': 57,  # 短视频合成（源自 MoneyPrinterTurbo，瘦引擎应用；default_mount=FALSE 由 install_policy=manual 推导）
-    'imagelab': 58,  # 图像处理（图坊，自研本地引擎，doc30；default_mount=FALSE 由 install_policy=manual 推导）
+    'imagelab': 58,  # 图像处理（图坊，自研本地引擎；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融投研（local_tool 本地应用；default_mount=FALSE 由 install_policy=manual 推导）
@@ -212,7 +217,7 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '一把梭 hasn.reel.generate 或分步合成出片 → hasn.reel.artifact.upload 登记成片。'
         '真实引擎本地合成、本地优先不自动上云，零 fake，失败如实报错。',
     ),
-    # 图像处理（图坊，自研本地引擎，doc30 §5.5/§5.7）也归「内容运营官（content_operator）」——无专有「修图师」
+    # 图像处理（图坊，自研本地引擎，图坊架构 §5.5/§5.7）也归「内容运营官（content_operator）」——无专有「修图师」
     # 分身，任意分身皆可操作，hasn.imagelab.* 工具面与技能所有分身共享（福仔 2026-07-02 纠正）；默认承接
     # content_operator。一个分身默认服务 deck/designsystem/creator/film/reel/imagelab 等多应用。
     'imagelab': (
@@ -361,7 +366,7 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
             'bundled_deps': ['ffmpeg', 'imagemagick'],
         },
     },
-    # 图像处理（imagelab，图坊，自研本地引擎，doc30 §5.1/§5.5）：确定性像素处理走自研本地引擎（ffmpeg/rembg/
+    # 图像处理（imagelab，图坊，自研本地引擎，图坊架构 §5.1/§5.5）：确定性像素处理走自研本地引擎（ffmpeg/rembg/
     # Pillow/scipy/libwebp/opencv），生成类不自建模型（桥接平台 hasn.image.generate）→ 故 config_json 只承载
     # engine 分发骨架 + 按需下载的 ML 模型清单，**无 image/video 生成模型**（不烧生成 token）。
     #   - engine.bundled_deps=['ffmpeg','libwebp']（图坊本地处理特有依赖，含动画组装 cwebp/webpmux）；
@@ -1023,6 +1028,504 @@ async def publish_signed_engine_manifest(
     await db.flush()
     await sync_bump('platform_config', db)
     return copy.deepcopy(merged['engine'])
+
+
+# ---- 图坊模型签名目录（schema v1）：与引擎清单同构的哑存储发布面 ----
+#
+# 云端同样不持有、不加载发布公钥；daemon 收到后仍用内置 Ed25519 信任根验签，云端结构校验
+# 只用于挡住明显残缺的发布，不能当作执行信任。
+
+_SIGNED_MODEL_DOCUMENT_FIELDS = {'payload', 'signature'}
+_SIGNED_MODEL_PAYLOAD_FIELDS = {
+    'schema_version',
+    'catalog_id',
+    'release_sequence',
+    'channel',
+    'issued_at',
+    'expires_at',
+    'minimum_daemon_version',
+    'key_id',
+    'models',
+}
+_SIGNED_MODEL_RELEASE_FIELDS = {
+    'runtime_name',
+    'artifact_id',
+    'display_name',
+    'purposes',
+    'license',
+    'version',
+    'filename',
+    'size',
+    'sha256',
+    'revoked',
+    'package',
+}
+_SIGNED_MODEL_PACKAGE_FIELDS = {
+    'key',
+    'url',
+    'sha256',
+    'compressed_size',
+    'installed_size',
+}
+_SIGNED_MODEL_CATALOG_ID = 'imagelab-models'
+# 模型签名目录目前只服务图坊：catalog_id 与 daemon 的 artifact 前缀都硬钉在 imagelab，
+# 归属闸缺位时选错 pk 会把 GB 级包写进别的应用命名空间且无回收路径。
+_SIGNED_MODEL_APP_ID = 'imagelab'
+_SIGNED_MODEL_DEPENDENCY_RE = re.compile(r'^model\.[A-Za-z0-9._-]{1,120}$')
+# 含扩展名总长不得超过 128：daemon `is_safe_model_filename` 判的是整个 filename 的长度，
+# 词干放到 128 会让总长达到 133，云端放行而 daemon 拒。
+_SIGNED_MODEL_FILENAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,123}\.onnx$')
+# SPDX 表达式语法：许可证 id + 可选的 AND/OR/WITH 与括号。不校验 id 是否在 SPDX 清单内。
+_SPDX_EXPRESSION_RE = re.compile(
+    r'^\(?[A-Za-z0-9.+-]+\)?(?:\s+(?:AND|OR|WITH)\s+\(?[A-Za-z0-9.+-]+\)?)*$',
+)
+# display_name 长度按 UTF-8 字节计，与 daemon 的 `String::len()` 一致（Python len() 是字符数，
+# 50 个汉字 = 150 字节，按字符计会放行而 daemon 拒）。
+_SIGNED_MODEL_DISPLAY_NAME_MAX_BYTES = 128
+# 模型 zip 上限 4 GiB，与 daemon `model_artifact.rs` 的 MAX_PACKAGE_BYTES 对齐。
+MAX_SIGNED_MODEL_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
+# 签名目录 json 上限 8 MiB；供 api 层做有界读，避免误传模型包时全量读进内存。
+MAX_SIGNED_MODEL_CATALOG_BYTES = 8 * 1024 * 1024
+_SIGNED_MODEL_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def _require_exact_model_fields(value: object, fields: set[str], label: str) -> dict:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise errors.RequestError(msg=f'图坊模型目录 {label}字段不符合 schema v1')
+    return value
+
+
+def _require_model_byte_size(value: object, *, label: str) -> None:
+    """字节数必须是正整数且不超过 4 GiB。
+
+    daemon `validate_model`/`validate_package` 对 size、compressed_size、installed_size
+    都判上界，云端只判「正整数」会让多打一位的目录被放行、再被 daemon 整份 TrustRejected。
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise errors.RequestError(msg=f'{label} 必须是正整数')
+    if value > MAX_SIGNED_MODEL_PACKAGE_BYTES:
+        raise errors.RequestError(msg=f'{label} 超过上限 {MAX_SIGNED_MODEL_PACKAGE_BYTES} 字节')
+
+
+def _require_safe_model_token(value: object, *, label: str) -> str:
+    """与 daemon `is_safe_token` 对齐：允许的字符集之外，还须排除 `.` 与 `..`。
+
+    `.`/`..` 能通过 `_SIGNED_ENGINE_TOKEN_RE`，但会被拼进 object key 造成路径逃逸。
+    """
+    if not isinstance(value, str) or value in {'.', '..'} or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(value):
+        raise errors.RequestError(msg=f'{label} 无效')
+    return value
+
+
+def _require_spdx_like_license(value: object, *, label: str) -> None:
+    """校验 license 的 SPDX 表达式**语法**。
+
+    daemon 侧是 `spdx::Expression::parse` 全量解析；云端不引入 SPDX 依赖，只做语法形状校验：
+    许可证 id 由 `[A-Za-z0-9.+-]` 组成，可用 AND/OR/WITH 连接并加括号。这挡得住现实中真正
+    会发生的误填（`Apache 2.0` 带空格、`商用授权` 带中文），但不校验 id 是否在 SPDX 清单内——
+    后者由发布工具链的 `sign-models` 自检兜底。
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise errors.RequestError(msg=f'{label} 不能为空')
+    if not _SPDX_EXPRESSION_RE.fullmatch(value.strip()):
+        raise errors.RequestError(msg=f'{label} 必须是 SPDX 许可证表达式，如 Apache-2.0 或 MIT')
+
+
+def _validate_signed_model_package(
+    *,
+    app_id: str,
+    runtime_name: str,
+    version: str,
+    package_value: object,
+) -> dict:
+    package = _require_exact_model_fields(
+        package_value,
+        _SIGNED_MODEL_PACKAGE_FIELDS,
+        f'models.{runtime_name}.package ',
+    )
+    object_key = package['key']
+    expected_prefix = f'runtime-model/{app_id}/{runtime_name}/{version}/'
+    # `..` 与空白字符必须显式拦：daemon `validate_package` 拒绝二者，且带空白的 key
+    # 会让云端存的 key 与对象存储实际签出的路径不一致，下载直接 404。
+    if (
+        not isinstance(object_key, str)
+        or not object_key.startswith(expected_prefix)
+        or '..' in object_key
+        or any(character.isspace() for character in object_key)
+    ):
+        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 key 必须位于 {expected_prefix}')
+    url = package['url']
+    if not isinstance(url, str):
+        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 url 无效')
+    # 与 daemon `PackageSourceRef::parse` 对齐：只放行 https 或 loopback http。
+    # 明文 http 会被 macOS 桌面端 ATS 直接掐断，造成「Linux 装得上、macOS 装不上」的平台分叉。
+    parsed_url = urlparse(url)
+    loopback = parsed_url.scheme == 'http' and parsed_url.hostname in {'localhost', '127.0.0.1', '::1'}
+    if parsed_url.scheme != 'https' and not loopback:
+        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 url 必须是 HTTPS 或 loopback HTTP')
+    digest = package['sha256']
+    if not isinstance(digest, str) or not _SIGNED_ENGINE_SHA256_RE.fullmatch(digest):
+        raise errors.RequestError(msg=f'图坊模型目录 {runtime_name} 的包 sha256 必须是 64 位十六进制')
+    for field in ('compressed_size', 'installed_size'):
+        size = package[field]
+        _require_model_byte_size(size, label=f'图坊模型目录 {runtime_name} 的包 {field}')
+    return package
+
+
+def _validate_signed_model_release(*, app_id: str, dependency_id: str, release_value: object) -> None:
+    if not isinstance(dependency_id, str) or not _SIGNED_MODEL_DEPENDENCY_RE.fullmatch(dependency_id):
+        raise errors.RequestError(msg=f'图坊模型目录依赖 ID 无效：{dependency_id}')
+    release = _require_exact_model_fields(
+        release_value,
+        _SIGNED_MODEL_RELEASE_FIELDS,
+        f'models.{dependency_id} ',
+    )
+    runtime_name = _require_safe_model_token(
+        release['runtime_name'],
+        label=f'图坊模型目录 {dependency_id} 的 runtime_name',
+    )
+    # 制品身份必须由 runtime_name 确定性派生，避免同一模型在不同发布里指向不同制品目录。
+    expected_artifact_id = f'app.model.{app_id}.{runtime_name}'
+    if release['artifact_id'] != expected_artifact_id:
+        raise errors.RequestError(
+            msg=f'图坊模型目录 {dependency_id} 的 artifact_id 必须为 {expected_artifact_id}',
+        )
+    display_name = release['display_name']
+    if (
+        not isinstance(display_name, str)
+        or not display_name.strip()
+        or len(display_name.encode('utf-8')) > _SIGNED_MODEL_DISPLAY_NAME_MAX_BYTES
+    ):
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 display_name 无效')
+    purposes = release['purposes']
+    if (
+        not isinstance(purposes, list)
+        or not purposes
+        or len(purposes) > 32
+        or any(not isinstance(item, str) or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(item) for item in purposes)
+        or len(set(purposes)) != len(purposes)
+    ):
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 purposes 无效')
+    _require_spdx_like_license(release['license'], label=f'图坊模型目录 {dependency_id} 的 license')
+    version = release['version']
+    if not isinstance(version, str) or version in {'.', '..'} or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version):
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 version 无效')
+    filename = release['filename']
+    if not isinstance(filename, str) or not _SIGNED_MODEL_FILENAME_RE.fullmatch(filename):
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 filename 必须是单段 .onnx')
+    size = release['size']
+    _require_model_byte_size(size, label=f'图坊模型目录 {dependency_id} 的 size')
+    digest = release['sha256']
+    if not isinstance(digest, str) or not _SIGNED_ENGINE_SHA256_RE.fullmatch(digest):
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 sha256 必须是 64 位十六进制')
+    if not isinstance(release['revoked'], bool):
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 revoked 必须是布尔值')
+    package = _validate_signed_model_package(
+        app_id=app_id,
+        runtime_name=runtime_name,
+        version=version,
+        package_value=release['package'],
+    )
+    # 解压后必须精确等于模型文件字节数：daemon 按此判定单文件载荷，不一致即安装失败。
+    if package['installed_size'] != size:
+        raise errors.RequestError(msg=f'图坊模型目录 {dependency_id} 的 installed_size 必须等于模型 size')
+
+
+def _validate_signed_model_catalog_header(payload: dict) -> None:
+    """校验 payload 的头部标量字段（schema/catalog_id/序列/通道/版本/有效期）。"""
+    # 裸相等判断放行 JSON 的 true 与 1.0（Python 里 True == 1、1.0 == 1）；
+    # 同函数对 release_sequence、size 都显式排除了 bool，这里同样要排。
+    schema_version = payload['schema_version']
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
+        raise errors.RequestError(msg='图坊模型目录 schema_version 必须为 1')
+    if payload['catalog_id'] != _SIGNED_MODEL_CATALOG_ID:
+        raise errors.RequestError(msg=f'图坊模型目录 catalog_id 必须为 {_SIGNED_MODEL_CATALOG_ID}')
+    sequence = payload['release_sequence']
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0:
+        raise errors.RequestError(msg='图坊模型目录 release_sequence 必须是正整数')
+    for field in ('channel', 'key_id'):
+        value = payload[field]
+        if not isinstance(value, str) or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(value):
+            raise errors.RequestError(msg=f'图坊模型目录 {field} 无效')
+    minimum_daemon_version = payload['minimum_daemon_version']
+    if not isinstance(minimum_daemon_version, str) or not _SIGNED_ENGINE_SEMVER_RE.fullmatch(minimum_daemon_version):
+        raise errors.RequestError(msg='图坊模型目录 minimum_daemon_version 无效')
+    issued_at = _parse_signed_engine_time(payload['issued_at'], 'issued_at')
+    expires_at = _parse_signed_engine_time(payload['expires_at'], 'expires_at')
+    if expires_at <= issued_at:
+        raise errors.RequestError(msg='图坊模型目录 expires_at 必须晚于 issued_at')
+
+
+def _validate_signed_model_catalog(*, app_id: str, document: object) -> dict:
+    signed = _require_exact_model_fields(document, _SIGNED_MODEL_DOCUMENT_FIELDS, '顶层')
+    signature = signed['signature']
+    if not isinstance(signature, str) or not _SIGNED_ENGINE_SIGNATURE_RE.fullmatch(signature):
+        raise errors.RequestError(msg='图坊模型目录 signature 必须是 128 位 Ed25519 hex')
+    payload = _require_exact_model_fields(signed['payload'], _SIGNED_MODEL_PAYLOAD_FIELDS, 'payload ')
+    _validate_signed_model_catalog_header(payload)
+    models = payload['models']
+    if not isinstance(models, dict) or not models:
+        raise errors.RequestError(msg='图坊模型目录 models 不能为空')
+    if len(models) > 64:
+        raise errors.RequestError(msg='图坊模型目录 models 超过 64 个上限')
+    artifact_ids: set[str] = set()
+    for dependency_id, release in models.items():
+        _validate_signed_model_release(app_id=app_id, dependency_id=dependency_id, release_value=release)
+        artifact_id = release['artifact_id']
+        if artifact_id in artifact_ids:
+            raise errors.RequestError(msg=f'图坊模型目录制品身份重复：{artifact_id}')
+        artifact_ids.add(artifact_id)
+    return signed
+
+
+def _require_signed_model_catalog_ownership(*, pk: int, app_id: str) -> None:
+    """拒绝把图坊模型发布面用在别的应用目录上（孪生的 finance 引擎面同样有这道闸）。"""
+    if app_id != _SIGNED_MODEL_APP_ID:
+        raise errors.RequestError(
+            msg=f'应用目录 {pk} 属于 {app_id}，图坊模型发布面仅接受 {_SIGNED_MODEL_APP_ID}',
+        )
+
+
+def extract_current_signed_model_document(models_node: object) -> dict | None:
+    """取出当前生效的签名目录文档，语义与 daemon `broker.rs` 的读路径完全一致。
+
+    daemon 是 `models.get("signed_catalog").unwrap_or(models)`——迁移期存在 ``models``
+    自身就是签名文档的形态。重放与不可变守卫必须覆盖**两条**读路径：只认 ``signed_catalog``
+    的话，处在迁移形态的行会让序列单调、同序列幂等、同版本异摘要三道闸整体静默失效。
+    """
+    if not isinstance(models_node, dict):
+        return None
+    candidate = models_node.get('signed_catalog')
+    if not isinstance(candidate, dict):
+        candidate = models_node
+    return candidate if isinstance(candidate.get('payload'), dict) else None
+
+
+def _reject_model_release_regression(previous_payload: dict, incoming_payload: dict) -> None:
+    """同一制品同版本的 zip 摘要一旦发布不得改写。
+
+    必须按 ``artifact_id`` 配对：``dependency_id`` 只是发布方自由选取的目录键，
+    按它配对时「换个键重发同一模型」即可绕过整道闸，而 daemon 认的是 artifact 身份。
+    """
+    previous_by_artifact = {
+        release['artifact_id']: release
+        for release in (previous_payload.get('models') or {}).values()
+        if isinstance(release, dict) and isinstance(release.get('artifact_id'), str)
+    }
+    for dependency_id, incoming_release in incoming_payload['models'].items():
+        previous_release = previous_by_artifact.get(incoming_release['artifact_id'])
+        if not isinstance(previous_release, dict) or previous_release.get('version') != incoming_release['version']:
+            continue
+        # `get('package', {})` 在 package 显式为 null 时会返回 None，默认值不生效；
+        # 历史脏数据（可经通用配置面写入）会让这里从 400 变成未捕获的 500。
+        previous_package = previous_release.get('package')
+        previous_digest = previous_package.get('sha256') if isinstance(previous_package, dict) else None
+        if previous_digest != incoming_release['package']['sha256']:
+            raise errors.RequestError(msg=f'图坊模型目录同版本异摘要：{dependency_id}')
+
+
+def merge_signed_model_catalog(config_json: dict | None, *, app_id: str, document: dict) -> dict:
+    """严格校验并保存 schema v1 模型签名目录；发布序列单调、同版本异摘要拒绝。
+
+    与 :func:`merge_signed_engine_manifest` 同一套重放与幂等语义：低序列拒绝，相同序列只接受
+    逐字节幂等重发；同一模型同版本的 zip 摘要一旦发布不得改写。
+    """
+    signed = copy.deepcopy(_validate_signed_model_catalog(app_id=app_id, document=document))
+    existing = copy.deepcopy(config_json or {})
+    current = existing.get('models')
+    previous = extract_current_signed_model_document(current)
+    if previous is not None:
+        previous_payload = previous['payload']
+        incoming_payload = signed['payload']
+        previous_sequence = previous_payload.get('release_sequence')
+        incoming_sequence = incoming_payload['release_sequence']
+        if isinstance(previous_sequence, int):
+            if incoming_sequence < previous_sequence:
+                raise errors.RequestError(msg='图坊模型目录发布序列重放')
+            if incoming_sequence == previous_sequence:
+                if previous != signed:
+                    raise errors.RequestError(msg='图坊模型目录相同发布序列内容不一致')
+                return existing
+        _reject_model_release_regression(previous_payload, incoming_payload)
+    # 只替换 signed_catalog 一项，保留 models 下运营可能维护的其它键。
+    models_node = dict(current) if isinstance(current, dict) else {}
+    models_node['signed_catalog'] = signed
+    # 迁移期直挂形态收敛到 signed_catalog：两份文档并存时 daemon 只读新的那份，
+    # 残留的旧 payload/signature 会让后续的守卫与人工排查都对着过期数据判断。
+    models_node.pop('payload', None)
+    models_node.pop('signature', None)
+    existing['models'] = models_node
+    return existing
+
+
+def _require_single_onnx_zip(file: BinaryIO, *, runtime_name: str) -> None:
+    """读中央目录确认这是一个恰好含单个 .onnx 的 zip。
+
+    不能用 `zipfile.is_zipfile`：它只在文件尾部 64 KiB 内找 EOCD 魔数（CPython `_check_zipfile`
+    仅调 `_EndRecData`），还会吞掉 OSError 返回 False。前半段被截断但尾部中央目录完整的 zip
+    照样能通过，随后被签进目录发布上线——daemon 安装时才因逐文件摘要不符失败，而那时
+    release_sequence 已被消耗，只能走「重传 + 重签 + 抬序列」。
+
+    这里只读中央目录、不做 CRC 全量校验：GB 级包上 `testzip()` 的耗时不可接受，
+    而内容正确性另有 daemon 侧 `verify_expanded` 的逐文件摘要比对兜底。
+    """
+    file.seek(0)
+    try:
+        with zipfile.ZipFile(file) as archive:
+            entries = [item for item in archive.infolist() if not item.is_dir()]
+    except zipfile.BadZipFile as exc:
+        raise errors.RequestError(msg='图坊模型包不是可读取的 ZIP 文件') from exc
+    except OSError as exc:
+        raise errors.RequestError(msg='图坊模型包读取失败，可能在传输中被截断') from exc
+    if len(entries) != 1:
+        raise errors.RequestError(msg=f'图坊模型包必须恰好包含一个文件，实际 {len(entries)} 个')
+    entry_name = entries[0].filename
+    if not _SIGNED_MODEL_FILENAME_RE.fullmatch(entry_name):
+        raise errors.RequestError(msg=f'图坊模型包内文件名 {entry_name} 必须是单段 .onnx')
+    log.info(f'图坊模型包 staging 结构校验通过：{runtime_name} → {entry_name}（{entries[0].file_size} 字节）')
+
+
+async def stage_signed_model_package(
+    db: AsyncSession,
+    *,
+    pk: int,
+    runtime_name: str,
+    version: str,
+    upload: UploadFile,
+) -> dict:
+    """两遍流式上传模型 zip 到公共桶，返回进入签名正文的云端权威字段。
+
+    模型包动辄数百 MB 到 1 GB，因此先流式哈希、再流式上传，全程有界内存；远程 I/O 前释放
+    数据库事务，避免长事务占住连接。本步骤不修改 ``config_json``，在线 daemon 看不到半套发布。
+    """
+    import hashlib
+
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.plugin.s3.service.storage_service import StorageService
+
+    # stage 发生在签名之前，runtime_name/version 是裸表单字段，没有任何工具校验过：
+    # 填 `..` 会拼出逃逸出应用命名空间的 object key，而且要等整个 GB 级包传完、
+    # 算完 sha256 之后才在 `_clean_object_path` 抛出一个与字段无关的模糊报错。
+    _require_safe_model_token(runtime_name, label=f'图坊模型 runtime_name（{runtime_name}）')
+    if version in {'.', '..'} or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version):
+        raise errors.RequestError(msg='图坊模型包 version 无效')
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    # 归属闸必须在读取上传体之前：否则选错 pk 会先把整个 GB 级包写进别的应用命名空间，
+    # 到 publish 阶段才以「artifact_id 不匹配」报错，而对象已永久留在公共桶且无回收路径。
+    _require_signed_model_catalog_ownership(pk=pk, app_id=catalog.app_id)
+    app_id = catalog.app_id
+
+    digest = hashlib.sha256()
+    size = 0
+    await upload.seek(0)
+    while chunk := await upload.read(_SIGNED_MODEL_UPLOAD_CHUNK_BYTES):
+        size += len(chunk)
+        if size > MAX_SIGNED_MODEL_PACKAGE_BYTES:
+            raise errors.RequestError(msg=f'图坊模型包超过大小上限 {MAX_SIGNED_MODEL_PACKAGE_BYTES} 字节')
+        digest.update(chunk)
+    if size == 0:
+        raise errors.RequestError(msg='图坊模型包不能为空')
+    await upload.seek(0)
+    _require_single_onnx_zip(upload.file, runtime_name=runtime_name)
+    package_sha256 = digest.hexdigest()
+    object_key = f'runtime-model/{app_id}/{runtime_name}/{version}/{package_sha256[:16]}-{runtime_name}.zip'
+
+    storage = await StorageService.get_public_package_storage(db, category='film_engine')
+    # 远程 I/O 前释放事务：上传可能持续数分钟，长事务会耗尽连接池。
+    await db.rollback()
+
+    # 内容寻址 key 意味着同一份字节永远落同一个对象：已经在桶里就不该再传一遍。
+    # 这不只是省流量——上传大模型时服务器到对象存储那一段是吞吐瓶颈（817 MB 实测超过
+    # nginx 的 600s `proxy_read_timeout` 导致 504），而 504 之后的每一次重试都在重传全部字节。
+    # 复用前必须由服务端流式复算桶内对象摘要，不接受客户端声明，也不接受仅凭大小相等。
+    existing_url = await _reuse_uploaded_model_package(
+        storage,
+        object_key=object_key,
+        expected_sha256=package_sha256,
+        expected_size=size,
+    )
+    if existing_url is not None:
+        return {
+            'key': object_key,
+            'url': existing_url,
+            'sha256': package_sha256,
+            'compressed_size': size,
+            'reused': True,
+        }
+
+    await upload.seek(0)
+    # 必须走分片上传：单次预签名 PUT 的超时与预签名 TTL 都硬顶 1800 秒且不可续传，
+    # GB 级模型包只要吞吐略低就会在最后一刻整体作废。
+    reference = await StorageService.upload_public_package_to_storage(
+        storage,
+        upload.file,
+        size=size,
+        key=object_key,
+        content_type='application/zip',
+    )
+    # 回读核对：预签名 PUT 返回 2xx 不等于对象完整落地，也不保证落在推算出的 provider key 上。
+    # 不核对的话，运维会拿着一份「云端认为成功」的字段去签名，故障要到全网 daemon 校验时才暴露。
+    stat = await StorageService.stat_on_storage(storage, object_key=object_key)
+    if stat.size != size:
+        raise errors.ServerError(msg=f'模型包落地大小与上传不一致：期望 {size}，实际 {stat.size}')
+    return {
+        'key': object_key,
+        'url': reference.stable_url,
+        'sha256': package_sha256,
+        'compressed_size': size,
+        'reused': False,
+    }
+
+
+async def _reuse_uploaded_model_package(
+    storage: S3Storage,
+    *,
+    object_key: str,
+    expected_sha256: str,
+    expected_size: int,
+) -> str | None:
+    """桶内已有同 key 且**服务端复算摘要**一致时返回其稳定 URL，否则返回 `None` 走正常上传。
+
+    任何读取或校验异常都按「没有可复用对象」处理：宁可重传一遍，也不能凭一次失败的探测
+    就把未经证实的对象当成已发布内容。
+    """
+    from backend.plugin.s3.service.storage_service import StorageService
+    from backend.plugin.s3.utils.file_ops import build_object_url
+
+    try:
+        digest, actual_size = await StorageService.sha256_on_storage(storage, object_key=object_key)
+    # 探测失败一律回落到重传，不影响正确性
+    except Exception:
+        log.info(f'图坊模型包 {object_key} 无法复用（对象不存在或读取失败），按正常上传处理')
+        return None
+    if digest.lower() != expected_sha256.lower() or actual_size != expected_size:
+        log.warning(
+            f'图坊模型包 {object_key} 桶内对象与本次上传不一致'
+            f'（桶内 sha256={digest[:16]} size={actual_size}），将覆盖重传'
+        )
+        return None
+    log.info(f'图坊模型包 {object_key} 已在桶内且摘要一致，跳过重传')
+    return build_object_url(storage, object_key)
+
+
+async def publish_signed_model_catalog(db: AsyncSession, *, pk: int, document: dict) -> dict:
+    """原子保存已签模型目录并推送 ``platform_config`` 失效。"""
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    _require_signed_model_catalog_ownership(pk=pk, app_id=catalog.app_id)
+    merged = merge_signed_model_catalog(catalog.config_json, app_id=catalog.app_id, document=document)
+    if merged == (catalog.config_json or {}):
+        return copy.deepcopy(merged['models'])
+    catalog.config_json = merged
+    await db.flush()
+    await sync_bump('platform_config', db)
+    return copy.deepcopy(merged['models'])
 
 
 async def resolve_default_agent_for_app(db: AsyncSession, *, owner_id: str, app_id: str) -> str | None:

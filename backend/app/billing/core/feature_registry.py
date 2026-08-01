@@ -23,6 +23,12 @@ FIXED_FEATURE_KEYS: frozenset[str] = frozenset({
     'llm:tier',  # LLM 订阅档（订阅制唯一特征；档位差异走 plan_key）
     'credits:topup',  # 积分充值（消耗型 top-up，非门控；不同包为不同 plan_key）
     'webapp:hosting',  # 网页应用全栈托管（doc06；MK-1 预定义键，暂不 seed offering 行）
+    # 云端常驻节点：为主人在云端托管一个**无头 hasn-node 实例**（每订阅一容器 = 主人的第 N 台设备）。
+    # 与上面的 `webapp:hosting` 是两码事，别混：
+    #   - `webapp:hosting`  → 托管「主人的网页应用」（doc06 全栈托管，卖的是 Web 应用运行环境）
+    #   - `cloud_node`      → 托管「主人的分身节点」（无头 hasn-node 容器，卖的是常驻在线的设备位）
+    # 混用会让付费墙拿错商品、按错价，故此处显式注释区分。
+    'cloud_node',
 })
 
 # 前缀族：<prefix><instance_id>，instance_id 必须非空

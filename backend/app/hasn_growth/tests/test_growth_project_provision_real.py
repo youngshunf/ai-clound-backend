@@ -42,7 +42,9 @@ _MIGRATION = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-30-growth-proje
 
 async def _apply_migration(db: AsyncSession) -> None:
     raw = await (await db.connection()).get_raw_connection()
-    await raw.driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
+    driver_connection = raw.driver_connection
+    assert driver_connection is not None
+    await driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
 
 
 async def test_growth_provision_creates_one_real_kb_and_resumes_without_duplicates() -> None:

@@ -564,6 +564,19 @@ class FakeLlmCredentialIssuer:
         return f'sk-p0-{user.id}', 'https://llm.example/v1', 'test-model'
 
 
+class FakeRegistrationCreditGranter:
+    """doc94 履约语义对齐：注册积分走 NewAPI 映射 + 真实 outbox，属于外部履约世界。
+
+    与 FakeLlmCredentialIssuer/FakeSms 同一分层——p0 登录链路断言的是验证码校验与
+    会话签发，不断言积分履约（履约语义由 billing 模块自有的单元/集成测试覆盖）。
+    缺这个注入时 SqlAlchemyRegistrationCreditGranter 会因「用户 7 尚无 NewAPI 账户
+    映射」把 verify 打成 400，daemon 侧映射为 422 ERR_AUTH_PHONE_CODE_INVALID。
+    """
+
+    async def grant_new_user(self, _db: Any, user_id: int) -> None:
+        return None
+
+
 class FakeAgentTokenIssuer:
     def __init__(self, redis: FakeRedis) -> None:
         self.redis = redis
@@ -1194,6 +1207,7 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         code_generator=lambda: '123456',
         token_creator=fake_token_creator,
         llm_credentials=FakeLlmCredentialIssuer(),
+        registration_credits=FakeRegistrationCreditGranter(),
         agent_tokens=FakeAgentTokenIssuer(redis),
     )
     monkeypatch.setattr(onboarding_api, 'hasn_phone_auth_service', phone_auth)

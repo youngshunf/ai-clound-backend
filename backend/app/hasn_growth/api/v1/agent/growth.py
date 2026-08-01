@@ -18,19 +18,31 @@ from backend.app.hasn_growth.schema.funnel import (
     CloseDealParam,
     CreateOpportunityParam,
     DismissLeadParam,
+    DraftOutreachParam,
     LogActivityParam,
     QualifyLeadParam,
     SendOutreachParam,
+    SubmitOutreachParam,
     UpdateCustomerParam,
     UpdateStageParam,
 )
+from backend.app.hasn_growth.schema.project_review import CreateGrowthReviewSuggestionBody
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.opportunity_artifact import (
+    register_opportunity_artifact,
+)
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.project_customer_service import (
+    project_customer_service,
+)
+from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
+from backend.app.mcp.artifact_registration import merge_resource_uri
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
@@ -97,9 +109,7 @@ async def search_leads(
         query=q,
         limit=limit,
         reveal_pii=_reveal(agent),
-        growth_project_id=(
-            str(growth_project_id) if growth_project_id is not None else None
-        ),
+        growth_project_id=(str(growth_project_id) if growth_project_id is not None else None),
     )
     return response_base.success(data=data)
 
@@ -116,9 +126,7 @@ async def get_lead(
         user_id=agent.owner_user_id,
         lead_contact_id=lead_contact_id,
         reveal_pii=_reveal(agent),
-        growth_project_id=(
-            str(growth_project_id) if growth_project_id is not None else None
-        ),
+        growth_project_id=(str(growth_project_id) if growth_project_id is not None else None),
     )
     return response_base.success(data=data)
 
@@ -144,6 +152,32 @@ async def qualify_lead(
     return response_base.success(data=data)
 
 
+@router.post(
+    '/projects/{growth_project_id}/leads/{project_lead_id}/qualify',
+    summary='[Agent] 项目线索晋级客户并建立接续任务',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def qualify_project_lead(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    project_lead_id: int,
+    obj: QualifyLeadParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await project_lead_service.qualify_project_lead(
+        db,
+        growth_project_id=growth_project_id,
+        project_lead_id=project_lead_id,
+        scope=scope,
+        profile=obj.profile,
+        intent_score=obj.intent_score,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
+    )
+    return response_base.success(data=data)
+
+
 @router.post('/leads/{lead_contact_id}/dismiss', summary='[Agent] 线索不合格', dependencies=[DependsAgentJwtAuth])
 async def dismiss_lead(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -158,6 +192,76 @@ async def dismiss_lead(
 
 
 # ---------------- 客户 ----------------
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers',
+    summary='[Agent] 项目客户分页列表',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def list_project_customers(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    lifecycle_status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent, view=view)
+    data = await project_customer_service.list_customers(
+        db,
+        growth_project_id=growth_project_id,
+        scope=scope,
+        page=page,
+        size=size,
+        lifecycle_status=lifecycle_status,
+        assignee=assignee,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers/{customer_id}',
+    summary='[Agent] 项目客户脱敏详情',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def get_project_customer(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: int,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await project_customer_service.get_customer(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/customers/{customer_id}/detail',
+    summary='[Agent] 项目客户接续详情',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def get_project_customer_detail(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: int,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await project_customer_service.get_customer_detail(
+        db,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
 
 
 @router.get('/customers', summary='[Agent] 客户列表', dependencies=[DependsAgentJwtAuth])
@@ -271,6 +375,69 @@ async def reassign_customer(
 # ---------------- 触达 ----------------
 
 
+@router.post(
+    '/projects/{growth_project_id}/outreach/drafts',
+    summary='[Agent] 创建项目触达草稿',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def draft_project_outreach(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: DraftOutreachParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_outreach_service.draft_outreach(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        customer_id=obj.customer_id,
+        channel=obj.channel,
+        content=obj.content,
+        idempotency_key=obj.idempotency_key,
+        agent_id=agent.agent_hasn_id,
+        subject=obj.subject,
+        intent_note=obj.intent_note,
+        content_assets=obj.content_assets,
+        opportunity_id=obj.opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/outreach/{message_id}/submit',
+    summary='[Agent] 提交项目触达审批',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def submit_project_outreach(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    message_id: int,
+    obj: SubmitOutreachParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_outreach_service.submit_outreach(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        message_id=message_id,
+        expected_content_version=obj.expected_content_version,
+        idempotency_key=obj.idempotency_key,
+        scope=scope,
+    )
+    if data.get('approval_status') == 'pending_approval':
+        await growth_notification_service.outreach_pending_approval(
+            db,
+            agent=agent,
+            message_id=int(data['id']),
+            customer_id=int(data['customer_id']),
+            channel=str(data['channel']),
+        )
+    return response_base.success(data=data)
+
+
 @router.post('/outreach', summary='[Agent] 发起触达（进审批状态机）', dependencies=[DependsAgentJwtAuth])
 async def send_outreach(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -320,6 +487,184 @@ async def outreach_status(
 # ---------------- 商机 / 成交 ----------------
 
 
+@router.get(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Agent] 项目商机列表',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def list_project_opportunities(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: Annotated[int | None, Query()] = None,
+    stage: Annotated[str | None, Query()] = None,
+    open_only: Annotated[bool, Query()] = False,  # noqa: FBT002
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.list_opportunities(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        stage=stage,
+        open_only=open_only,
+        limit=limit,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}',
+    summary='[Agent] 项目商机详情',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def get_project_opportunity(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.get_opportunity(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Agent] 项目内立商机',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def create_project_opportunity(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: CreateOpportunityParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.create_opportunity(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        customer_id=obj.customer_id,
+        name=obj.name,
+        amount=obj.amount,
+        currency=obj.currency,
+        stage=obj.stage,
+        probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
+        created_by_kind='agent',
+        actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.create',
+        idempotency_key=obj.idempotency_key,
+        action='create',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
+
+
+@router.patch(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/stage',
+    summary='[Agent] 项目商机阶段变更',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def update_project_opportunity_stage(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: UpdateStageParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.update_stage(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        stage=obj.stage,
+        note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    await growth_notification_service.opportunity_stage_changed(
+        db,
+        agent=agent,
+        opportunity_id=opportunity_id,
+        stage=obj.stage,
+    )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.update_stage',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
+
+
+@router.post(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/close',
+    summary='[Agent] 项目商机成交或流失登记',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def close_project_deal(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: CloseDealParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.close_deal(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=obj.amount,
+        currency=obj.currency,
+        close_note=obj.close_note,
+        lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    await growth_notification_service.deal_closed(
+        db,
+        agent=agent,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=data.get('amount'),
+    )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.deal.close',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
+
+
 @router.post('/opportunities', summary='[Agent] 立商机', dependencies=[DependsAgentJwtAuth])
 async def create_opportunity(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -336,11 +681,20 @@ async def create_opportunity(
         currency=obj.currency,
         stage=obj.stage,
         probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
         created_by_kind='agent',
         actor_id=agent.agent_hasn_id,
         scope=scope,
     )
-    return response_base.success(data=data)
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.create',
+        idempotency_key=obj.idempotency_key,
+        action='create',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
 
 
 @router.patch(
@@ -359,6 +713,8 @@ async def update_stage(
         opportunity_id=opportunity_id,
         stage=obj.stage,
         note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
         scope=scope,
@@ -367,7 +723,15 @@ async def update_stage(
     await growth_notification_service.opportunity_stage_changed(
         db, agent=agent, opportunity_id=opportunity_id, stage=obj.stage
     )
-    return response_base.success(data=data)
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.update_stage',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
 
 
 @router.post(
@@ -379,16 +743,21 @@ async def close_deal(
     opportunity_id: int,
     obj: CloseDealParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_opportunity_service.close_deal(
         db,
         user_id=agent.owner_user_id,
         opportunity_id=opportunity_id,
         result=obj.result,
         amount=obj.amount,
+        currency=obj.currency,
         close_note=obj.close_note,
         lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
+        scope=scope,
     )
     # 成交/流失登记 → 通知主人（仅登记，不自动收款）。
     await growth_notification_service.deal_closed(
@@ -398,10 +767,43 @@ async def close_deal(
         result=obj.result,
         amount=data.get('amount'),
     )
-    return response_base.success(data=data)
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.deal.close',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
 
 
 # ---------------- 报表 ----------------
+
+
+@router.post(
+    '/projects/{growth_project_id}/review/suggestions',
+    summary='[Agent] 提交下一周期 ICP、渠道或打法建议',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def create_growth_review_suggestion(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: CreateGrowthReviewSuggestionBody,
+) -> ResponseModel:
+    data = await growth_review_service.create_suggestion(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=growth_project_id,
+        suggestion_kind=obj.suggestion_kind,
+        proposal=obj.proposal,
+        evidence=obj.evidence,
+        proposed_by_kind='agent',
+        proposed_by_id=agent.agent_hasn_id,
+        idempotency_key=obj.idempotency_key,
+    )
+    return response_base.success(data=data)
 
 
 @router.get('/report/funnel', summary='[Agent] 漏斗总览', dependencies=[DependsAgentJwtAuth])
