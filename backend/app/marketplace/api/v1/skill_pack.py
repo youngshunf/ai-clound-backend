@@ -215,7 +215,7 @@ def _skill_pack_response(
         command_key=row['command_key'],
         hermes_bundle_json=row.get('hermes_bundle_json'),
         hermes_yaml=row['hermes_yaml'],
-        content_hash=row['content_hash'],
+        content_hash=skill_pack_service.content_hash(row['hermes_yaml']),
         member_skills=member_skills or [],
         package_url=row.get('package_url'),
         file_hash=row.get('file_hash'),

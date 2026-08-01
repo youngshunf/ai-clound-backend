@@ -193,6 +193,8 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client) -> N
     # hermes_yaml 是 safe_dump 规范化产出（含两个成员）
     assert 'developer/code-review' in data['hermes_yaml']
     assert 'productivity/tdd' in data['hermes_yaml']
+    definition_hash = f"sha256:{hashlib.sha256(data['hermes_yaml'].encode()).hexdigest()}"
+    assert data['content_hash'] == definition_hash
 
     row = (
         await client.session.execute(
@@ -236,6 +238,21 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client) -> N
     )
     await client.session.flush()
 
+    await client.session.execute(
+        text(
+            """
+            UPDATE hasn_marketplace.marketplace_template_version
+            SET content_hash = :artifact_hash
+            WHERE template_id = :template_id AND version = '1.0.0'
+            """
+        ),
+        {
+            'template_id': f'huanxing/{slug}',
+            'artifact_hash': hashlib.sha256(b'published skill-pack zip').hexdigest(),
+        },
+    )
+    await client.session.flush()
+
     list_response = await client.http.get(
         '/api/v1/marketplace/app/skill-packs',
         params={'q': slug},
@@ -251,6 +268,7 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client) -> N
         for item in listed['member_skills']
         if item['skill_id'] == 'developer/code-review'
     )
+    assert listed['content_hash'] == definition_hash
     assert frozen_member['version'] == '1.0.0'
     assert frozen_member['content_hash'] != version_two_hash
 

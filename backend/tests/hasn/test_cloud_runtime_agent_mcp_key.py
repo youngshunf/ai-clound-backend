@@ -13,6 +13,7 @@ key 必须：
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 from collections.abc import Iterator
@@ -126,6 +127,11 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
             owner_user_id=user.id,
         )
         package_id = f'huanxing/private-runtime-{tag}'
+        hermes_yaml = (
+            f'name: private-runtime-{tag}\n'
+            'skills:\n'
+            '  - huanxing/official/task-management\n'
+        )
         await db.execute(
             sa.text(
                 """
@@ -161,11 +167,7 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
                 'package_id': package_id,
                 'slug': f'private-runtime-{tag}',
                 'command_key': f'/private-runtime-{tag}',
-                'hermes_yaml': (
-                    f'name: private-runtime-{tag}\n'
-                    'skills:\n'
-                    '  - huanxing/official/task-management\n'
-                ),
+                'hermes_yaml': hermes_yaml,
                 'content_hash': 'sha256:runtime-private-bundle',
             },
         )
@@ -215,12 +217,8 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
                 'version': '1.2.3',
                 'bundle_slug': f'private-runtime-{tag}',
                 'command_key': f'/private-runtime-{tag}',
-                'hermes_yaml': (
-                    f'name: private-runtime-{tag}\n'
-                    'skills:\n'
-                    '  - huanxing/official/task-management\n'
-                ),
-                'content_hash': 'sha256:runtime-private-bundle',
+                'hermes_yaml': hermes_yaml,
+                'content_hash': f'sha256:{hashlib.sha256(hermes_yaml.encode()).hexdigest()}',
                 'member_skill_ids': ['huanxing/official/task-management'],
             }
             # 成员快照来自权威技能版本；只冻结结构与身份，不把本机数据库当前 latest 写死。

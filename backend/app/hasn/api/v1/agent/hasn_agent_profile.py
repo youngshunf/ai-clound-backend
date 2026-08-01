@@ -131,7 +131,7 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
         out.append({
             'package_id': template_id,
             'version': bundle_row['version'],
-            'content_hash': bundle_row['content_hash'],
+            'content_hash': skill_pack_service.content_hash(hermes_yaml),
             'bundle_slug': bundle_row['bundle_slug'],
             'command_key': bundle_row['command_key'],
             'hermes_yaml': hermes_yaml,

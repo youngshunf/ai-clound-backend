@@ -82,7 +82,7 @@ async def get_runtime_skill_pack_authority(
             'bundle_slug': row['bundle_slug'],
             'command_key': row['command_key'],
             'hermes_yaml': hermes_yaml,
-            'content_hash': row['content_hash'],
+            'content_hash': skill_pack_service.content_hash(hermes_yaml),
             'member_skill_ids': member_ids,
             'member_skills': member_skills,
         }
