@@ -2,14 +2,15 @@
 -- 云端常驻节点（cloud_node）计费档位落地
 --
 -- 主人 2026-08-01 拍板的**混合结构**：
---   1. `llm:tier` 的 **pro 及以上各档各附赠 1 个**云端节点；`free` 档 0 个、不给试用；
+--   1. `llm:tier` 五档 free/lite/pro/max/ultra 中 **pro 及以上各档各附赠 1 个**云端节点；
+--      `free` 与 `lite` 都是 0 个、不给试用；
 --   2. 超出附赠的部分走独立商品 `cloud:node` **按需加购**，¥128/月 · ¥1228/年
 --      （与 `llm:tier` 的 pro 同价同折扣）。
 --   最终配额 = LLM 档附赠数 ＋ cloud_node 权益里的加购数。
 --
 -- 本迁移做四件事：
 --   A. 新增 offering `cloud:node` + 两个 plan（monthly / yearly）
---   B. 给 `llm:tier` 各档 `quota_json` 补 `max_cloud_nodes`（free=0，其余付费档=1）
+--   B. 给 `llm:tier` 各档 `quota_json` 补 `max_cloud_nodes`（free/lite=0，pro 及以上=1）
 --   C. **回填存量 `user_subscription.plan_snapshot`**——配额是购买时固化进快照的，
 --      `cloud_node_service._tier_grant` 优先读快照，只改 `billing_plan` 对存量订阅无效；
 --      漏了这一路 = 存量付费用户拿不到附赠、存量免费用户白拿一个节点。
@@ -105,14 +106,19 @@ VALUES
    'active', 2)
 ON CONFLICT ("offering_key", "plan_key") DO NOTHING;
 
--- ============ B) llm:tier 各档补 max_cloud_nodes（free=0，其余付费档=1） ============
+-- ============ B) llm:tier 各档补 max_cloud_nodes（free/lite=0，pro 及以上=1） ============
 -- 只填空缺（`NOT (quota_json ? 'max_cloud_nodes')`），已有值一律不覆盖——
 -- 运营可能已为某个大客户单独调高，迁移无权抹掉。
 -- 档位归属以 quota_json->>'tier' 为准（而非 plan_key），这样 free / <tier>_yearly 都能正确归位。
+-- **零附赠档是 ('free','lite') 两档**：`lite`（¥49）是五档定档新增的低价档，主人明确只有
+-- `pro` 及以上才附赠云端节点。写成「除 free 外全是 1」会让 lite 白得一个常驻容器；
+-- 本迁移若在订阅线建出 lite 之后重跑，那一行就会被填成 1，故此处必须显式列出。
 UPDATE "hasn_billing"."billing_plan"
    SET "quota_json" = jsonb_set(
          "quota_json", '{max_cloud_nodes}',
-         to_jsonb(CASE WHEN COALESCE("quota_json"->>'tier', "plan_key") = 'free' THEN 0 ELSE 1 END)
+         to_jsonb(
+           CASE WHEN COALESCE("quota_json"->>'tier', "plan_key") IN ('free', 'lite') THEN 0 ELSE 1 END
+         )
        ),
        "updated_time" = now()
  WHERE "offering_key" = 'llm:tier'
@@ -121,14 +127,14 @@ UPDATE "hasn_billing"."billing_plan"
 -- ============ C) 回填存量订阅的 plan_snapshot（**关键：漏了存量用户拿不到附赠**） ============
 -- `plan_snapshot` 是购买时固化的合同参数，服务层优先读它；只改 billing_plan 对存量订阅无效。
 -- 判档以 `user_subscription.tier` 列为准（NOT NULL，恒有值，且与快照里的 tier 一致）：
---   tier='free' → 0；其余（pro/advanced/max/ultra/flagship…）→ 1。
+--   tier IN ('free','lite') → 0；其余（pro/max/ultra 及重命名前的 advanced/flagship）→ 1。
 -- 快照可能是 SQL NULL 或 JSON null（库里两种都有），先 COALESCE 成 '{}' 再 set，否则 jsonb_set 返回 NULL。
 -- 含已过期 / 已终止的合同一并回填：口径统一，续订恢复时不必再补一次。
 UPDATE "hasn_billing"."user_subscription"
    SET "plan_snapshot" = jsonb_set(
          COALESCE(NULLIF("plan_snapshot", 'null'::jsonb), '{}'::jsonb),
          '{max_cloud_nodes}',
-         to_jsonb(CASE WHEN "tier" = 'free' THEN 0 ELSE 1 END)
+         to_jsonb(CASE WHEN "tier" IN ('free', 'lite') THEN 0 ELSE 1 END)
        ),
        "updated_time" = now()
  WHERE NOT (COALESCE(NULLIF("plan_snapshot", 'null'::jsonb), '{}'::jsonb) ? 'max_cloud_nodes');
@@ -166,17 +172,19 @@ BEGIN
 
   SELECT count(*) INTO v_free_nodes
     FROM "hasn_billing"."billing_plan"
-   WHERE "offering_key" = 'llm:tier' AND COALESCE("quota_json"->>'tier', "plan_key") = 'free'
+   WHERE "offering_key" = 'llm:tier'
+     AND COALESCE("quota_json"->>'tier', "plan_key") IN ('free', 'lite')
      AND ("quota_json"->>'max_cloud_nodes')::int <> 0;
 
   SELECT COALESCE(min(("quota_json"->>'max_cloud_nodes')::int), -1) INTO v_paid_min
     FROM "hasn_billing"."billing_plan"
-   WHERE "offering_key" = 'llm:tier' AND COALESCE("quota_json"->>'tier', "plan_key") <> 'free';
+   WHERE "offering_key" = 'llm:tier'
+     AND COALESCE("quota_json"->>'tier', "plan_key") NOT IN ('free', 'lite');
 
   SELECT count(*) FILTER (
            WHERE NOT (COALESCE(NULLIF("plan_snapshot", 'null'::jsonb), '{}'::jsonb) ? 'max_cloud_nodes')
          ),
-         count(*) FILTER (WHERE "tier" = 'free' AND ("plan_snapshot"->>'max_cloud_nodes')::int <> 0)
+         count(*) FILTER (WHERE "tier" IN ('free', 'lite') AND ("plan_snapshot"->>'max_cloud_nodes')::int <> 0)
     INTO v_sub_missing, v_sub_free_bad
     FROM "hasn_billing"."user_subscription";
 
@@ -185,9 +193,9 @@ BEGIN
     FROM "public"."hasn_app_entitlement" WHERE "feature_key" = 'cloud_node';
 
   RAISE NOTICE '[改后] offering cloud:node = % 行，其 plan = % 行（应为 1 / 2）', v_offering, v_plan_rows;
-  RAISE NOTICE '[改后] llm:tier 仍缺 max_cloud_nodes = % 行（应为 0）；free 档非 0 的 = % 行（应为 0）；付费档最小值 = %（应为 1）',
+  RAISE NOTICE '[改后] llm:tier 仍缺 max_cloud_nodes = % 行（应为 0）；free/lite 档非 0 的 = % 行（应为 0）；pro 及以上最小值 = %（应为 1）',
     v_plan_missing, v_free_nodes, v_paid_min;
-  RAISE NOTICE '[改后] user_subscription 仍缺 max_cloud_nodes = % 行（应为 0）；free 订阅非 0 的 = % 行（应为 0）',
+  RAISE NOTICE '[改后] user_subscription 仍缺 max_cloud_nodes = % 行（应为 0）；free/lite 订阅非 0 的 = % 行（应为 0）',
     v_sub_missing, v_sub_free_bad;
   RAISE NOTICE '[改后] cloud_node 权益仍缺 max_cloud_nodes = % 行（应为 0）', v_ent_missing;
 

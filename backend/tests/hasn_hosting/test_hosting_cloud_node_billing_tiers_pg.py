@@ -1,7 +1,8 @@
 """云端节点计费档位：附赠 + 加购的混合结构（主人 2026-08-01 拍板）——零 mock，打真实 PostgreSQL。
 
-结构：`llm:tier` 的 pro 及以上各档**附赠 1 个**；超出部分走 `cloud:node` 独立商品**按需加购**
-（¥128/月 · ¥1228/年）；free 档 0 个且不给试用。
+结构：`llm:tier` 五档 free/lite/pro/max/ultra 中**只有 pro 及以上各附赠 1 个**；超出部分走
+`cloud:node` 独立商品**按需加购**（¥128/月 · ¥1228/年）；free 与 lite 都是 0 个且不给试用，
+**未定档的档位一律 fail-closed 为 0**（不回落配置默认值静默送资源）。
 准入取并集、配额求和：
 
     允许创建 ⟺ （档位附赠 > 0） 或 （持有有效 cloud_node 权益）
@@ -68,6 +69,9 @@ USER_ADDON = 990403
 ALL_USERS = (USER_PRO, USER_FREE, USER_ADDON)
 ALL_OWNERS = (OWNER_PRO, OWNER_FREE, OWNER_ADDON)
 NODE_PREFIX = 'n_cloud_test_tier_'
+
+#: 零附赠档（主人 2026-08-01 五档定档：free/lite/pro/max/ultra，只有 pro 及以上附赠 1 个）
+ZERO_GRANT_TIERS = ('free', 'lite')
 
 # backend/ 根（tests/hasn_hosting/ 的上两级）
 _MIGRATION = (
@@ -268,7 +272,11 @@ async def test_cloud_node_offering_and_plans_seeded(ctx) -> None:
 
 
 async def test_llm_tier_plans_carry_max_cloud_nodes(ctx) -> None:
-    """`llm:tier` 各档都带上附赠数：free=0，其余付费档（含 max/ultra 平行命名组）=1。"""
+    """`llm:tier` 各档都带上附赠数：五档中 free/lite=0，pro 及以上=1。
+
+    `lite`（¥49）是五档定档新增的低价档，主人明确**只有 pro 及以上才附赠**云端节点；
+    写成「除 free 外全是 1」会让 lite 白得一个常驻容器。
+    """
     sess, _ = ctx
     plans = (
         await sess.execute(select(BillingPlan).where(BillingPlan.offering_key == 'llm:tier'))
@@ -278,8 +286,49 @@ async def test_llm_tier_plans_carry_max_cloud_nodes(ctx) -> None:
     for plan in plans:
         assert 'max_cloud_nodes' in plan.quota_json, f'{plan.plan_key} 缺 max_cloud_nodes'
         tier = plan.quota_json.get('tier') or plan.plan_key
-        expected = 0 if tier == 'free' else 1
+        expected = 0 if tier in ZERO_GRANT_TIERS else 1
         assert plan.quota_json['max_cloud_nodes'] == expected, f'{plan.plan_key} 附赠数应为 {expected}'
+
+
+# ─── 守卫 1b：未定档的档位必须 fail-closed 为 0（五档定档的直接后果） ───
+
+
+async def test_undefined_tier_grants_zero_and_is_rejected(ctx) -> None:
+    """档位没定档 `max_cloud_nodes` → 附赠 **0** 且创建被拒（`cloud_node_subscription_required`）。
+
+    改判前这里回落配置 `HOSTING_MAX_NODES_PER_OWNER`（=1）：订阅线新建 `lite`（¥49）时若没写
+    `max_cloud_nodes`，托管侧就一路掉到默认 1，**免费级别的档白得一个常驻容器**（真金白银的算力）。
+    送资源必须是显式定档的结果，没定档就是 0。用一个库里绝不存在的 tier 名钉死这条兜底。
+    """
+    sess, _ = ctx
+    sub = _subscription(user_id=USER_FREE, tier='someday_unpriced')  # 商品目录里查无此档
+    sess.add(sub)
+    await sess.commit()
+
+    assert await cloud_node_service._tier_grant(sess, sub) == 0, '未定档的档位必须按 0 计，不得回落配置默认值'
+    assert await cloud_node_service._quota_of(sess, sub, owner_hasn_id=OWNER_FREE) == 0
+    with pytest.raises(errors.ForbiddenError) as exc:
+        await cloud_node_service._assert_can_create(sess, user_id=USER_FREE, owner_hasn_id=OWNER_FREE)
+    assert exc.value.data == {'error': ERR_SUBSCRIPTION_REQUIRED}
+    # sweep 侧口径同样收紧：未定档不算「仍有资格」
+    assert await cloud_node_service.is_entitled(sess, user_id=USER_FREE, owner_hasn_id=OWNER_FREE) is False
+
+
+async def test_defined_pro_tier_still_grants_one(ctx) -> None:
+    """兜底改判**不得误伤正常路径**：`pro` 显式定档仍是 1（快照 / 目录反查两条路都验）。"""
+    sess, _ = ctx
+    # 路径①：合同快照已固化（迁移 C 回填后的形状）
+    snap_sub = _subscription(user_id=USER_PRO, tier='pro', plan_snapshot={'tier': 'pro', 'max_cloud_nodes': 1})
+    sess.add(snap_sub)
+    await sess.commit()
+    assert await cloud_node_service._tier_grant(sess, snap_sub) == 1
+
+    # 路径②：存量形状（快照为空、offering_key 为 NULL）→ 按 tier 名反查商品目录
+    catalog_sub = _subscription(user_id=USER_ADDON, tier='pro')
+    sess.add(catalog_sub)
+    await sess.commit()
+    assert await cloud_node_service._tier_grant(sess, catalog_sub) == 1
+    await cloud_node_service._assert_can_create(sess, user_id=USER_ADDON, owner_hasn_id=OWNER_ADDON)
 
 
 # ─── 守卫 1：pro 零加购也能建（服务层合并口径前必红） ───

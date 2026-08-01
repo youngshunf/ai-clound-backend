@@ -149,8 +149,11 @@ IMAGE_ASSET_KIND: Final[str] = 'image'
 
 # ─── 配额（§3.1） ───
 
-#: 无明确订阅档位时的默认云端节点上限（每订阅 1 个）
-DEFAULT_CLOUD_NODE_QUOTA: Final[int] = 1
+#: 档位未定档云端节点附赠数时的兜底值——**fail-closed 为 0**。
+#: 主人 2026-08-01 五档定档（free/lite/pro/max/ultra）后只有 `pro` 及以上附赠 1 个；
+#: 新档位若漏写 `max_cloud_nodes`，兜底给 1 就等于免费级别的档白得一个常驻容器。
+#: 送资源必须是显式定档的结果，没定档就是 0（并 warn 让它显性暴露）。
+TIER_GRANT_FALLBACK: Final[int] = 0
 
 #: 订阅准入判定用的 feature_key（已注册进 `billing.core.feature_registry.FIXED_FEATURE_KEYS`）。
 #: 注意与 `webapp:hosting` 区分：那个托管的是主人的**网页应用**（doc06 全栈托管），

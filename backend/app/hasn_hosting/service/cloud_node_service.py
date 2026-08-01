@@ -54,6 +54,7 @@ from backend.app.hasn_hosting.constants import (
     NODE_STATUS_STARTING,
     NODE_STATUS_STOPPED,
     NODE_STATUS_UPDATING,
+    TIER_GRANT_FALLBACK,
 )
 from backend.app.hasn_hosting.model import HasnCloudNodeEvents, HasnCloudNodes
 from backend.app.hasn_hosting.provider.agent_client import HostingAgentError, hosting_agent_provider
@@ -95,7 +96,8 @@ class CloudNodeService:
     # ─── 订阅与配额（混合结构，主人 2026-08-01 拍板） ───
     #
     # 云端节点的名额有**两个来源**：
-    #   来源 A｜LLM 订阅档附赠：`llm:tier` 的 pro 及以上各档各附赠 1 个，free 档 0 个（不给试用）；
+    #   来源 A｜LLM 订阅档附赠：五档 free/lite/pro/max/ultra 中**只有 pro 及以上各附赠 1 个**，
+    #           free 与 lite 都是 0（不给试用）；未定档的档位一律按 0（`_tier_grant` fail-closed）；
     #   来源 B｜`cloud:node` 独立商品加购：¥128/月 · ¥1228/年，买几份加几个。
     #
     # 两条来源必须**取并集判准入、求和算上限**：
@@ -134,8 +136,15 @@ class CloudNodeService:
         2. `billing_plan.quota_json`，按合同上的 `(offering_key, plan_key)` 精确命中；
         3. `billing_plan.quota_json`，按 `tier` 名反查 `llm:tier` 档位——存量合同（尤其
            `credit_grant_service` 建的 free 档）根本不写 `offering_key`/`plan_key`，没有这一步
-           它们会一路掉到配置默认值，让**免费档白拿一个云端节点**；月付/年付同档附赠数相同，取任一即可；
-        4. 配置默认 `HOSTING_MAX_NODES_PER_OWNER`。档位没写就是没写，不臆造上限。
+           它们会一路掉到兜底值；月付/年付同档附赠数相同，取任一即可；
+        4. **兜底 fail-closed 为 0**，并 `warn` 记录是哪个档位没定档。
+
+        第 4 条原先回落配置 `HOSTING_MAX_NODES_PER_OWNER`（=1），主人 2026-08-01 五档定档后
+        必须改判：只有 `pro` 及以上附赠 1 个，`free` 与新增的 `lite` 都是 0。新档位若上线时
+        漏写 `max_cloud_nodes`，回落 1 就等于**免费级别的档白得一个常驻容器**（真金白银的算力）。
+        送资源必须是显式定档的结果，没定档就是 0——并且要在日志里看得见，而不是静默送。
+
+        事实源：`docs/hasn-node设计文档/16-订阅与积分计费/05-订阅档位与权益定档（五档命名·额度·门禁口径）.md` §2.1
         """
         snapshot = subscription.plan_snapshot or {}
         raw = snapshot.get('max_cloud_nodes')
@@ -165,12 +174,19 @@ class CloudNodeService:
             if plan is not None:
                 raw = (plan.quota_json or {}).get('max_cloud_nodes')
         if raw is None:
-            return int(settings.HOSTING_MAX_NODES_PER_OWNER)
+            log.warning(
+                f'[hosting] 档位未定档云端节点附赠数，按 0 计（不静默送资源）: '
+                f'订阅 {subscription.id}, tier={subscription.tier!r}, '
+                f'offering={subscription.offering_key!r}, plan={subscription.plan_key!r}'
+            )
+            return TIER_GRANT_FALLBACK
         try:
             return max(0, int(raw))
         except (TypeError, ValueError):
-            log.warning(f'[hosting] 订阅 {subscription.id} 的 max_cloud_nodes 非法（{raw!r}），回落配置默认值')
-            return int(settings.HOSTING_MAX_NODES_PER_OWNER)
+            log.warning(
+                f'[hosting] 订阅 {subscription.id} 的 max_cloud_nodes 非法（{raw!r}），按 0 计（不静默送资源）'
+            )
+            return TIER_GRANT_FALLBACK
 
     @staticmethod
     async def _addon_access(db: AsyncSession, *, owner_hasn_id: str) -> tuple[bool, int]:

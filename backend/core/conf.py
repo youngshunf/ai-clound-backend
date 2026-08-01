@@ -297,8 +297,9 @@ class Settings(BaseSettings):
     HOSTING_NODE_CPUS: float = 1.0
     # 无头镜像平台目标（hasn_release 里的 platform_target；宿主 CPU 架构决定）
     HOSTING_NODE_IMAGE_PLATFORM: str = 'headless-linux-amd64'
-    # 每订阅默认云端节点配额（订阅档位未显式给出上限时用；§3.1）
-    HOSTING_MAX_NODES_PER_OWNER: int = 1
+    # 注：曾有 HOSTING_MAX_NODES_PER_OWNER（档位未定档时的兜底配额=1）。五档定档后已退役——
+    # 兜底改为 fail-closed 的 0（见 cloud_node_service._tier_grant），配置默认值会让未定档的
+    # 低价档白得一个常驻容器，故不再保留这个「静默送资源」的开关。
 
     # 获客采集引擎（firecrawl，独立部署，模块 07 doc）：唯一接触 firecrawl 的地方，hasn_growth
     # 采集 provider 经 FirecrawlClient（httpx）搜索/抓取/抽取线索。为空时回落
