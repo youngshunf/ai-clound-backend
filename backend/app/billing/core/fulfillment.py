@@ -27,10 +27,33 @@ KIND_SEAT = 'seat'  # 企业席位购买（累加 seats_total）
 KIND_FEATURE_PLAN = 'feature_plan'  # 通用 feature 订阅/买断（MK-2 通用路；首个商品 cloud:node）
 KIND_LEAD_PACK = 'lead_pack'  # 获客线索包（hasn_growth 额度）
 
+#: 商品目录里全部合法 kind（报价端点过滤参数校验用；拼错一个字母就该 4xx，
+#: 而不是回一个空列表让前端把整块加购区渲染成「暂无商品」）。
+KNOWN_KINDS: frozenset[str] = frozenset({
+    KIND_LLM_TIER,
+    KIND_CREDIT_PACK,
+    KIND_APP,
+    KIND_SEAT,
+    KIND_FEATURE_PLAN,
+    KIND_LEAD_PACK,
+})
+
 #: feature_plan 类商品的下单 order_type（与 kind 同名：这一类没有历史 order_type 包袱）。
 ORDER_TYPE_FEATURE_PLAN = 'feature_plan'
 
+#: **通用下单 order_type（G2 · 实施/95）**：新商品一律走这条路——请求只带
+#: `offering_key` + `plan_key` + `quantity`，价格/周期/配额全部从目录读。
+#: 它的 `kind` **由目录 `billing_offering.kind` 决定**，不由 order_type 钉死，
+#: 因此同一条通用路将来也能承载 `app` / `seat` 等其它种类，而不是被绑死在 `feature_plan`。
+ORDER_TYPE_OFFERING = 'offering'
+
+#: kind 由目录动态决定的 order_type 集合——它们**刻意不在** `ORDER_TYPE_TO_KIND` 里：
+#: 静态映射回答不了「这一单到底是哪种商品」，只有目录能回答。
+#: `build_offering_ref` 对这些 order_type 强制要求显式传入 `kind`。
+DYNAMIC_KIND_ORDER_TYPES: frozenset[str] = frozenset({ORDER_TYPE_OFFERING})
+
 # order_type（存量下单分支）→ offering.kind（发货轴）的唯一映射。
+# 注意：通用下单路 `offering` 不在此表内（见 DYNAMIC_KIND_ORDER_TYPES）。
 ORDER_TYPE_TO_KIND: dict[str, str] = {
     'subscribe': KIND_LLM_TIER,
     'credit_pack': KIND_CREDIT_PACK,
@@ -81,16 +104,27 @@ def build_offering_ref(
     *,
     offering_key: str | None = None,
     plan_key: str | None = None,
+    kind: str | None = None,
 ) -> dict | None:
     """据 ``order_type`` 组装 ``pay_order.offering_ref`` 快照（下单入口用）。
 
-    ``kind`` 由 ``order_type`` 唯一确定；``offering_key`` / ``plan_key`` 为下单时已知的商品/档位快照
-    （不强制解析 live 行——发货只认 ``kind``）。``order_type`` 未知时返回 ``None``（不落 ``offering_ref``）。
+    ``offering_key`` / ``plan_key`` 为下单时已知的商品/档位快照（不强制解析 live 行——发货只认 ``kind``）。
+
+    ``kind`` 的来源分两种：
+
+    - **存量五个 order_type**：由 ``ORDER_TYPE_TO_KIND`` 唯一确定，调用方不必传；
+    - **通用下单路（``DYNAMIC_KIND_ORDER_TYPES``，即 ``order_type='offering'``）**：kind 只有商品目录
+      知道，调用方必须把从 ``billing_offering.kind`` 读到的值显式传进来。漏传即 ``ValueError``——
+      让它在下单时就炸，而不是落一条无 ``offering_ref`` 的订单、等用户付完钱才在发货处 fail-closed。
+
+    显式传入的 ``kind`` 优先于静态映射。``order_type`` 未知且未传 ``kind`` 时返回 ``None``（不落 ``offering_ref``）。
     """
-    kind = ORDER_TYPE_TO_KIND.get(order_type)
-    if not kind:
+    if order_type in DYNAMIC_KIND_ORDER_TYPES and not kind:
+        raise ValueError(f'order_type={order_type!r} 的商品种类须从目录读取并显式传入 kind，不得由 order_type 推断')
+    resolved = kind or ORDER_TYPE_TO_KIND.get(order_type)
+    if not resolved:
         return None
-    return {'offering_key': offering_key, 'plan_key': plan_key, 'kind': kind}
+    return {'offering_key': offering_key, 'plan_key': plan_key, 'kind': resolved}
 
 
 async def dispatch_fulfillment(db: Any, order: Any) -> None:
@@ -124,7 +158,11 @@ async def dispatch_fulfillment(db: Any, order: Any) -> None:
 
 
 def _resolve_order_kind(order: Any) -> str | None:
-    """解析订单的 offering.kind：优先 ``offering_ref.kind``，回落 ``order_type`` 映射（存量订单无 offering_ref）。"""
+    """解析订单的 offering.kind：优先 ``offering_ref.kind``，回落 ``order_type`` 映射（存量订单无 offering_ref）。
+
+    通用下单路（``order_type='offering'``）**没有静态回落**：它的 kind 只在下单时从目录读到并写进
+    ``offering_ref``，缺快照就返回 ``None`` 让调用方 fail-closed，绝不猜一个 kind 去反向发货/回收。
+    """
     offering_ref = getattr(order, 'offering_ref', None) or {}
     kind = offering_ref.get('kind')
     if kind:

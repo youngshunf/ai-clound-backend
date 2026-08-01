@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
+from backend.app.billing.model.billing_offering import BillingOffering
 from backend.app.billing.model.billing_plan import BillingPlan
 
 if TYPE_CHECKING:
@@ -33,6 +34,18 @@ if TYPE_CHECKING:
 OFFERING_LLM_TIER = 'llm:tier'
 # 积分充值 offering 业务键（与 seed 对齐）
 OFFERING_CREDITS_TOPUP = 'credits:topup'
+
+#: 目录行的上架状态取值（`billing_offering.status` / `billing_plan.status` 共用）。
+STATUS_ACTIVE = 'active'
+
+
+def purchase_uri(offering_key: str) -> str:
+    """商品的客户端无关购买深链。
+
+    与 `access_service._build_offer` 透出的 `AccessDecision.offer.purchase_uri` **必须是同一形态**——
+    「撞墙后引导购买」与「主动加购」点的是同一个商品，两处漂移就会出现同一商品两条深链。
+    """
+    return f'hasn://billing/offering/{offering_key}'
 
 
 async def active_plans_map(db: AsyncSession, offering_key: str) -> dict[str, BillingPlan]:
@@ -244,3 +257,81 @@ async def get_credit_pack(db: AsyncSession, package_name: str) -> CreditPackCata
     if plan is None:
         return None
     return _build_pack(plan)
+
+
+# ── 通用商品读侧（G2 下单 + G4 报价端点共用 · 实施/95） ──
+#
+# 上面几个函数都是「某一类商品的专用读法」（订阅档聚合月付/年付、积分包按包名取）。
+# 下面这组刻意不认识任何具体商品：只按 `offering_key` / `plan_key` / `kind` 读目录原样返回，
+# 让「新增一个商品」不需要在这里再加一个专用读法。
+
+
+async def get_offering(db: AsyncSession, offering_key: str) -> BillingOffering | None:
+    """按业务键取商品行（**不过滤 status**，调用方按场景决定上架校验的严格度）。
+
+    下单入口必须拒下架商品；已付款订单的履约则必须无视下架照发——两种口径都要用这一个读法，
+    故此处不替调用方做决定。
+    """
+    return (
+        await db.execute(sa.select(BillingOffering).where(BillingOffering.key == offering_key))
+    ).scalars().first()
+
+
+async def get_active_plan(db: AsyncSession, offering_key: str, plan_key: str) -> BillingPlan | None:
+    """按 (offering_key, plan_key) 取 **active** 档位行；不存在或已下架返回 None。"""
+    return (
+        await db.execute(
+            sa.select(BillingPlan).where(
+                BillingPlan.offering_key == offering_key,
+                BillingPlan.plan_key == plan_key,
+                BillingPlan.status == STATUS_ACTIVE,
+            )
+        )
+    ).scalars().first()
+
+
+@dataclass(slots=True, frozen=True)
+class OfferingQuote:
+    """一个商品在报价面上的完整形态：offering 行 + 它名下的档位行（按 sort_order）。"""
+
+    offering: BillingOffering
+    plans: list[BillingPlan]
+
+
+async def list_offering_quotes(
+    db: AsyncSession,
+    *,
+    kind: str,
+    status: str | None = STATUS_ACTIVE,
+    offering_key: str | None = None,
+) -> list[OfferingQuote]:
+    """列出某 `kind` 下的商品及其档位（报价端点 G4 的唯一取数口径）。
+
+    - `kind` **必填**：`billing_offering` 没有 `app_code` 列（doc05 §3 记录了此约束），
+      全表混着多条产品线的商品。强制按 kind 收窄是接口层的最小护栏，调用方还应按
+      `offering_key` 进一步收窄，**不得全量渲染**——否则重演桌面端串档（知小鸦档位与唤星档位并排）。
+    - `status=None` 表示不过滤上架状态（admin 预览用）；默认只回 `active`。
+    - 档位与商品用**同一个 status 口径**：报价面上不该出现「商品上架、档位下架」的半截购买卡。
+
+    一次查两条 SQL（offering 一批、plan 一批）后在内存里归组，避免按商品逐条查 plan 的 N+1。
+    """
+    off_stmt = sa.select(BillingOffering).where(BillingOffering.kind == kind)
+    if status is not None:
+        off_stmt = off_stmt.where(BillingOffering.status == status)
+    if offering_key:
+        off_stmt = off_stmt.where(BillingOffering.key == offering_key)
+    off_stmt = off_stmt.order_by(BillingOffering.sort_order, BillingOffering.key)
+    offerings = list((await db.execute(off_stmt)).scalars().all())
+    if not offerings:
+        return []
+
+    keys = [off.key for off in offerings]
+    plan_stmt = sa.select(BillingPlan).where(BillingPlan.offering_key.in_(keys))
+    if status is not None:
+        plan_stmt = plan_stmt.where(BillingPlan.status == status)
+    plans = (await db.execute(plan_stmt.order_by(BillingPlan.sort_order, BillingPlan.plan_key))).scalars().all()
+
+    grouped: dict[str, list[BillingPlan]] = {key: [] for key in keys}
+    for plan in plans:
+        grouped[plan.offering_key].append(plan)
+    return [OfferingQuote(offering=off, plans=grouped[off.key]) for off in offerings]
