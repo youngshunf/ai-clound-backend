@@ -59,7 +59,7 @@ from backend.plugin.s3.service.storage_service import StorageService
 from backend.utils.timezone import timezone
 
 _SEMVER_CORE = re.compile(r'^(\d+)\.(\d+)\.(\d+)')
-_RELEASE_NOTES_MAX_CHARS = 200
+_RELEASE_NOTES_MAX_CHARS = 500
 _MAX_RELEASE_COMMITS = 5000
 _RELEASE_COMMIT_CHUNK_CHARS = 12000
 
@@ -375,7 +375,7 @@ class ReleaseService:
         release_tag: str,
         commits: list[ReleaseCommitInput],
     ) -> str:
-        """调用统一 LLM 客户端，把 Git 历史整理成 200 字以内 Markdown 更新说明。"""
+        """调用统一 LLM 客户端，把 Git 历史整理成 500 字以内 Markdown 更新说明。"""
         if not llm_client.is_configured:
             raise LLMError('统一 LLM 网关未配置')
         commit_lines: list[str] = []
@@ -436,7 +436,7 @@ class ReleaseService:
                         '不要标题、表格、代码块和链接；按实际内容写1至5条无序列表；'
                         '每条用 **新增**、**优化**、**修复**、**性能**、**安全** 中最贴切的标签开头，'
                         '格式如“- **新增**：支持……”。同类变化必须合并，不得补写提交中没有的事实。'
-                        'Markdown源码总长度不超过200个字符，不写版本号、commit哈希、发布方式或“本机自动发布”。'
+                        'Markdown源码总长度不超过500个字符，不写版本号、commit哈希、发布方式或“本机自动发布”。'
                     ),
                 },
                 {
@@ -448,7 +448,7 @@ class ReleaseService:
                     ),
                 },
             ],
-            max_tokens=500,
+            max_tokens=1000,
             temperature=0.2,
         )
         normalized = _normalize_release_notes(notes)

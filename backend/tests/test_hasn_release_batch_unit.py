@@ -1,5 +1,6 @@
 """桌面端发布批次纯函数测试。"""
 
+from backend.app.hasn_release.schema.release import REQUIRED_DESKTOP_PLATFORMS
 from backend.app.hasn_release.service.release_service import (
     _completed_platforms,
     _next_patch_version,
@@ -13,12 +14,12 @@ def test_next_patch_version_uses_highest_allocated_version() -> None:
     assert _next_patch_version([]) == '0.0.1'
 
 
-def test_normalize_release_notes_preserves_markdown_and_caps_200_chars() -> None:
-    raw = f'```markdown\n- **新增**：支持批量处理\n- **优化**：{"改进桌面端体验。" * 40}\n```'
+def test_normalize_release_notes_preserves_markdown_and_caps_500_chars() -> None:
+    raw = f'```markdown\n- **新增**：支持批量处理\n- **优化**：{"改进桌面端体验。" * 100}\n```'
     notes = _normalize_release_notes(raw)
     assert '```' not in notes
     assert notes.startswith('- **新增**：支持批量处理\n- **优化**：')
-    assert len(notes) <= 200
+    assert len(notes) <= 500
     assert notes.endswith('。')
 
 
@@ -46,3 +47,12 @@ def test_completed_platforms_requires_installer_and_updater() -> None:
         },
     )
     assert completed == ['darwin-aarch64', 'windows-x86_64']
+
+
+def test_desktop_release_batch_requires_all_supported_platforms() -> None:
+    assert REQUIRED_DESKTOP_PLATFORMS == (
+        'darwin-aarch64',
+        'darwin-x86_64',
+        'windows-x86_64',
+        'linux-x86_64',
+    )

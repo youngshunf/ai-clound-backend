@@ -20,7 +20,12 @@ PLATFORM_TARGETS = ('darwin-aarch64', 'darwin-x86_64', 'windows-x86_64', 'linux-
 HEADLESS_PLATFORM_TARGETS = ('headless-linux-amd64', 'headless-linux-arm64')
 ASSET_KINDS = ('installer', 'updater', 'image')
 CHANNELS = ('stable', 'beta')
-REQUIRED_DESKTOP_PLATFORMS = ('darwin-aarch64', 'darwin-x86_64', 'windows-x86_64')
+REQUIRED_DESKTOP_PLATFORMS = (
+    'darwin-aarch64',
+    'darwin-x86_64',
+    'windows-x86_64',
+    'linux-x86_64',
+)
 
 
 class HeadlessImageRequest(SchemaBase):
