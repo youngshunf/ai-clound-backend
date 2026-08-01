@@ -333,3 +333,81 @@ async def test_export_uses_creation_snapshot_after_rename_and_delete() -> None:
         assert manifest['original_name'] == '创建时名称.txt'
     finally:
         await _cleanup(owner)
+
+
+async def test_export_list_recovers_job_and_emits_completion_notification() -> None:
+    """作业跑完后：① 列表能凭权威数据找回它（客户端换页后恢复状态卡）；② 主人收到完成通知。
+
+    没有这两条，导出就断在半截——`job_id` 只活在页面内存里，切个菜单就再也取不到产物，
+    而产物 24 小时后过期即被清理。
+    """
+    owner = await _seed_owner()
+    service = OwnerStorageService(async_db_session)
+    payload = b'export-list-and-notify'
+    try:
+        await service.upload(
+            owner_hasn_id=owner,
+            chunks=_chunks(payload),
+            declared_size=len(payload),
+            filename='待导出.txt',
+            mime='text/plain',
+            category='private_doc',
+            source_app='export_test',
+            idempotency_key='export-list-source',
+        )
+        job = await service.create_export(
+            owner_hasn_id=owner,
+            mode='manifest',
+            include_trashed=False,
+        )
+
+        # 未完成时列表也要能找回作业（客户端凭它显示「进行中」）。
+        listed = await service.list_exports(owner_hasn_id=owner)
+        assert [item['job_id'] for item in listed['items']] == [job['job_id']]
+        assert listed['items'][0]['status'] == 'pending'
+
+        assert await service.process_jobs(job_type='storage_export', limit=1) == 1
+
+        listed = await service.list_exports(owner_hasn_id=owner)
+        assert listed['items'][0]['status'] == 'succeeded'
+        # 列表与单条查询共用视图构造，形状必须一致（否则客户端两条路径渲染会打架）。
+        status = await service.export_status(owner_hasn_id=owner, job_id=job['job_id'])
+        assert listed['items'][0] == status
+
+        async with async_db_session() as db:
+            notification = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT title, body, data, source, delivery
+                        FROM hasn_notifications
+                        WHERE target_id = :owner
+                          AND type = 'storage_export_ready'
+                        """
+                    ),
+                    {'owner': owner},
+                )
+            ).mappings().one()
+        assert notification['title'] == '云存储导出已完成'
+        assert notification['data']['job_id'] == job['job_id']
+        assert notification['data']['link'] == 'hasn://storage/usage'
+        assert notification['source']['display_name'] == '云存储'
+        # 导出是主人在等的结果 → 允许弹到桌面；但不另开服务号会话。
+        channels = notification['delivery']['channels']
+        assert channels['center'] is True
+        assert channels['card_message'] is False
+    finally:
+        await _cleanup(owner)
+
+
+async def test_export_list_limit_is_validated() -> None:
+    """越界 limit 如实拒绝，不静默截断成别的条数。"""
+    owner = await _seed_owner()
+    service = OwnerStorageService(async_db_session)
+    try:
+        with pytest.raises(errors.RequestError, match='STORAGE_EXPORT_LIST_LIMIT_INVALID'):
+            await service.list_exports(owner_hasn_id=owner, limit=0)
+        with pytest.raises(errors.RequestError, match='STORAGE_EXPORT_LIST_LIMIT_INVALID'):
+            await service.list_exports(owner_hasn_id=owner, limit=51)
+    finally:
+        await _cleanup(owner)
