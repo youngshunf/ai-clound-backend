@@ -364,6 +364,18 @@ def _load_hasn_project() -> None:
     router.include_router(hasn_project_app)
 
 
+def _load_hasn_hosting() -> None:
+    # 无头 hasn-node 托管（hasn_hosting，doc「云端节点托管」）：Owner 面 + 节点面 + 内部面。
+    # 不挂 codegen 的 admin/agent/open 裸 CRUD——授权码是凭据表，通用 CRUD 暴露即越权大洞。
+    from backend.app.hasn_hosting.api.router import app as hasn_hosting_app
+    from backend.app.hasn_hosting.api.router import internal as hasn_hosting_internal
+    from backend.app.hasn_hosting.api.router import node as hasn_hosting_node
+
+    router.include_router(hasn_hosting_app)       # 云端节点 用户端 API（Owner JWT）
+    router.include_router(hasn_hosting_node)      # 节点面（授权码兑换 / grant 校验）
+    router.include_router(hasn_hosting_internal)  # edge / hosting-agent 内部面（Bearer 服务令牌）
+
+
 # 应用名 → loader。改 FBA_DEV_APPS 时用这里的 key（左列）。
 _APP_LOADERS: dict[str, Callable[[], None]] = {
     'task': _load_task,
@@ -396,6 +408,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_stock': _load_hasn_stock,
     'hasn_release': _load_hasn_release,
     'hasn_project': _load_hasn_project,
+    'hasn_hosting': _load_hasn_hosting,
 }
 
 for _name, _loader in _APP_LOADERS.items():

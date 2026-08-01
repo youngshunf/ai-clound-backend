@@ -57,3 +57,26 @@ async def require_publish_internal_token(request: Request) -> None:
         expected=settings.PUBLISH_INTERNAL_TOKEN,
         setting_name='PUBLISH_INTERNAL_TOKEN',
     )
+
+
+async def require_hosting_internal_bearer(request: Request) -> None:
+    """校验 edge / hosting-agent → 云端内部面的 `Authorization: Bearer <hosting 服务令牌>`。
+
+    令牌口径与云端调 hosting-agent 时**完全一致**（`service_endpoint('hosting').token`：显式
+    env/settings 优先，否则由 `derive_service_token(master_secret, 'hosting')` 派生），两端无需各配。
+    令牌为空（主密钥未配且未显式配置）→ 拒绝所有调用，避免空字符串绕过。
+
+    契约：`docs/hasn-node设计文档/云端节点托管/实施/01-切片实施契约(H1-H8).md` §3.3。
+    """
+    # 局部 import：避免 common.security 在导入期反向依赖服务目录（后者读 settings + services.toml）
+    from backend.common.service_registry import service_endpoint
+
+    expected = service_endpoint('hosting').token
+    if not expected:
+        raise errors.TokenError(msg='hosting 内部服务令牌未配置，internal endpoint 不可用')
+    authorization = request.headers.get('Authorization') or ''
+    if not authorization.lower().startswith('bearer '):
+        raise errors.TokenError(msg='缺少 Bearer 内部服务令牌')
+    provided = authorization[7:].strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise errors.TokenError(msg='hosting 内部服务令牌校验失败')

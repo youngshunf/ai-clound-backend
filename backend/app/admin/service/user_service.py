@@ -336,6 +336,13 @@ class UserService:
         user = await user_dao.get(db, pk)
         if not user:
             raise errors.NotFoundError(msg='用户不存在')
+        # 账号注销 → 立即销毁该主人的云端托管节点，不留 30 天保留期（托管设计 §7 末行 / D-14）。
+        # 必须排在删用户行之前：销毁流程要用 user_id 吊销容器那张设备凭据的 JWT session，
+        # 用户行一旦没了就再没人能吊销它，容器会带着一张仍然有效的凭据继续连云端。
+        # 延迟 import 避免 admin 域在模块级耦合 hasn_hosting；方法内部逐节点隔离错误，不会阻断注销。
+        from backend.app.hasn_hosting.service.cloud_node_service import cloud_node_service
+
+        await cloud_node_service.purge_for_account_deletion(db, user_id=user.id)
         count = await user_dao.delete(db, user.id)
         key_prefix = [
             f'{settings.TOKEN_REDIS_PREFIX}:{user.id}',

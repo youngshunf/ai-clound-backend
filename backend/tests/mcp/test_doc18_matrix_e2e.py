@@ -93,7 +93,6 @@ def _ctx(
     *,
     granted: set[str] | None = None,
     external_allowed: set[str] | None = None,
-    runtime_location: str = 'cloud',
     capability_modes: dict | None = None,
     app_access: dict | None = None,
     active_enterprise_id: int | None = None,
@@ -107,7 +106,6 @@ def _ctx(
         owner_hasn_id='h_matrix',
         session_uuid='amk_matrix',
         capability_modes=capability_modes or {},
-        runtime_location=runtime_location,
     )
     ctx.granted_privileged_scopes = frozenset(granted or set())
     ctx.external_allowed_tools = external_allowed or set()
@@ -221,12 +219,13 @@ def _matrix() -> list[tuple[str, _Stub, AgentContext, str, bool, str]]:
             True,
             CALL_EXEC,
         ),
-        # 回归锁（2026-07-10 福仔拍板）：工具暴露与分身在本地/云端无关——本地分身在云端面
-        # 照常可见可调 deck/task/workflow（原 TOOLMIG2-P4「运行位置收口」已整体退役）。
+        # 回归锁（2026-07-10 福仔拍板）：工具暴露与分身跑在哪台机器无关——deck/task/workflow
+        # 等云端工具对任意分身照常可见可调（原 TOOLMIG2-P4「运行位置收口」已整体退役；其依赖
+        # 的运行位置快照已随 H8「云端 Runtime 下线」从 AgentContext 删除，位置门再无处可建）。
         (
-            'runtime 本地·云端工具照常可见可调',
+            '云端工具对任意分身照常可见可调',
             _Stub('hasn.task.mrt', scopes=['task:manage']),
-            _ctx(runtime_location='local'),
+            _ctx(),
             ACTION_ALLOW,
             True,
             CALL_EXEC,

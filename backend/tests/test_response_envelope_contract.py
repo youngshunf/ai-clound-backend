@@ -51,8 +51,6 @@ _GENUINE = {
     'POST /s/{slug}/unlock',
     'GET /s/{slug}/content',
     'GET /s/{slug}/assets/{name:path}',
-    # Runtime 派发代理面 SSE（云端形态）：text/event-stream 逐事件透传，非 JSON 信封
-    'POST /api/v1/hasn/agent/runtime/runs',
     # 重定向 / 外部 OAuth 回调
     'GET /api/v1/oauth2/github/callback',
     'GET /api/v1/oauth2/google/callback',

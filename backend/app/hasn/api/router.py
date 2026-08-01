@@ -44,7 +44,6 @@ from backend.app.hasn.api.v1.admin.owner_storage_migrations import (
     router as admin_owner_storage_migrations_router,
 )
 from backend.app.hasn.api.v1.agent.hasn_agent_profile import router as agent_hasn_agent_profile_router
-from backend.app.hasn.api.v1.agent.hasn_agent_runtime import router as agent_hasn_agent_runtime_router
 from backend.app.hasn.api.v1.agent.hasn_agents import router as agent_hasn_agents_router
 from backend.app.hasn.api.v1.agent.hasn_artifacts import router as agent_hasn_artifacts_router
 from backend.app.hasn.api.v1.agent.hasn_assets import router as agent_hasn_asset_delivery_router
@@ -197,7 +196,8 @@ agent.include_router(agent_hasn_agents_router, prefix='/agents', tags=['Agent管
 agent.include_router(agent_owner_storage_assets_router, prefix='/assets', tags=['HASN Agent 资产'])
 agent.include_router(agent_hasn_asset_delivery_router, prefix='/assets', tags=['HASN 资产逐目标投递'])
 agent.include_router(agent_hasn_agent_profile_router, tags=['Agent Profile（云端权威）'])
-agent.include_router(agent_hasn_agent_runtime_router, prefix='/runtime', tags=['云端 Runtime 派发代理（双形态）'])
+# 已退役（H8）：`/runtime/*` 云端 Runtime 派发代理面随「分身跑在云端沙箱」形态整体下线。
+# 分身一律在 hasn-node 上运行（含云端托管的无头节点），派发走本地 sidecar，云端不再中继。
 agent.include_router(agent_hasn_groups_router, prefix='/groups', tags=['群组（分身只读）'])
 # 保留：legacy 任务调度协议 task-result 上报 + run 读取（Agent JWT）；任务 CRUD 已收口 hasn_task 应用
 agent.include_router(agent_hasn_task_run_router, prefix='/hasn/task/runs', tags=['任务执行记录-任务执行记录'])

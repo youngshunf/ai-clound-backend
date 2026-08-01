@@ -85,7 +85,7 @@ async def _make_agent(
             display_name=f'Agent {suffix}',
             agent_name=f'agent_{hasn_id}',
             type='cloud',
-            runtime_location='cloud',
+            runtime_location='local',
             role=role,
             builtin_agent_key=builtin_key,
             api_key_hash='hash',
