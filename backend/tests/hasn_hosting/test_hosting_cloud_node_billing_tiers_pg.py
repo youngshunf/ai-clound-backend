@@ -1,7 +1,7 @@
 """云端节点计费档位：附赠 + 加购的混合结构（主人 2026-08-01 拍板）——零 mock，打真实 PostgreSQL。
 
 结构：`llm:tier` 五档 free/lite/pro/max/ultra 中**只有 pro 及以上各附赠 1 个**；超出部分走
-`cloud:node` 独立商品**按需加购**（¥128/月 · ¥1228/年）；free 与 lite 都是 0 个且不给试用，
+`cloud:node` 独立商品**按需加购**（¥99/月 · ¥950/年，与 `pro` 同价同折扣）；free 与 lite 都是 0 个且不给试用，
 **未定档的档位一律 fail-closed 为 0**（不回落配置默认值静默送资源）。
 准入取并集、配额求和：
 
@@ -256,9 +256,9 @@ async def test_cloud_node_offering_and_plans_seeded(ctx) -> None:
         ).scalars().all()
     }
     assert set(plans) == {'monthly', 'yearly'}
-    assert plans['monthly'].price_amount == Decimal('128.00')
+    assert plans['monthly'].price_amount == Decimal('99.00')
     assert plans['monthly'].cycle == 'month'
-    assert plans['yearly'].price_amount == Decimal('1228.00')
+    assert plans['yearly'].price_amount == Decimal('950.00')
     assert plans['yearly'].cycle == 'year'
     for plan in plans.values():
         assert plan.price_unit == 'cny'
