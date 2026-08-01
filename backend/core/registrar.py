@@ -93,19 +93,20 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     # 只输出模式与端点描述，绝不输出用户名、密码或完整 DSN。
     from backend.common.messaging.rabbitmq import describe_rabbitmq_endpoint
 
+    # 本模块的 log 是 loguru，不吃 stdlib logging 的 %s 惰性插值——写成 %s 会把
+    # 占位符原样打进日志（2026-08-01 生产实测踩中）。这里统一用 f-string。
+    _rabbitmq_endpoint = describe_rabbitmq_endpoint(
+        host=settings.REALTIME_RABBITMQ_HOST,
+        port=settings.REALTIME_RABBITMQ_PORT,
+        vhost=settings.REALTIME_RABBITMQ_VHOST,
+    )
     log.info(
-        '消息通道：celery_broker=%s socketio_manager=%s realtime_bus=%s '
-        'realtime_shadow=%s offline_recovery=%s rabbitmq[%s]',
-        settings.CELERY_BROKER,
-        settings.SOCKETIO_MANAGER,
-        settings.HASN_REALTIME_BUS,
-        settings.HASN_REALTIME_SHADOW_RABBITMQ,
-        settings.HASN_OFFLINE_RECOVERY,
-        describe_rabbitmq_endpoint(
-            host=settings.REALTIME_RABBITMQ_HOST,
-            port=settings.REALTIME_RABBITMQ_PORT,
-            vhost=settings.REALTIME_RABBITMQ_VHOST,
-        ),
+        f'消息通道：celery_broker={settings.CELERY_BROKER} '
+        f'socketio_manager={settings.SOCKETIO_MANAGER} '
+        f'realtime_bus={settings.HASN_REALTIME_BUS} '
+        f'realtime_shadow={settings.HASN_REALTIME_SHADOW_RABBITMQ} '
+        f'offline_recovery={settings.HASN_OFFLINE_RECOVERY} '
+        f'rabbitmq[{_rabbitmq_endpoint}]'
     )
 
     # 启动 WS 跨 worker 投递总线（每个 worker 进程一份）：多 worker 部署下，消息/同步
@@ -139,6 +140,17 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     from backend.app.hasn_growth.service.lead_pack_callback import register_lead_pack_callback
 
     register_lead_pack_callback()
+
+    # 注册通用 feature_plan 商品履约（MK-2：付款成功 → 按商品目录数据发/续 feature 权益）。
+    # 首个落地商品是云端常驻节点 cloud:node；新增同类商品无需再写 handler。
+    from backend.app.billing.service.feature_plan_callback import register_feature_plan_callback
+
+    register_feature_plan_callback()
+
+    # 注册 cloud_node 用量探针（退款回收后如实告警「配额已低于在跑节点数」）
+    from backend.app.hasn_hosting.service.cloud_node_usage_probe import register_cloud_node_usage_probe
+
+    register_cloud_node_usage_probe()
 
     # v2.1 默认由本地/云端 Runtime Host 调度任务；旧中心 scheduler 仅显式打开时运行。
     if settings.HASN_TASK_CENTER_SCHEDULER_ENABLED:

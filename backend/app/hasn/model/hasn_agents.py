@@ -36,7 +36,7 @@ class HasnAgents(Base):
     runtime_location: Mapped[str] = mapped_column(
         sa.String(16),
         default='local',
-        comment='运行位置 (local:本地:blue/cloud:云端:green)',
+        comment='运行位置 (local:本地:blue)；云端沙箱形态已随 H8 退役，写入恒 local，列保留供存量行读取',
     )
     type: Mapped[str] = mapped_column(
         sa.String(20),

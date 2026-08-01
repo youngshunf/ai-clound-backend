@@ -142,7 +142,9 @@ async def _emit_expiry_reminder(
     await NotificationService.emit(
         db,
         recipient_id=recipient_id,
-        source={'kind': 'system', 'id': 'billing'},
+        # display_name 必填：服务号建号时缺它会回落成英文 ref_id（`billing`），
+        # 主人消息列表里就多出一条英文条目（云存储 owner_storage 已踩过同一坑）。
+        source={'kind': 'system', 'id': 'billing', 'display_name': '费用与账单'},
         category='commerce',
         type='billing_expiry',
         title=title,
@@ -153,8 +155,10 @@ async def _emit_expiry_reminder(
             'label': label,
             'days_left': days_left,
             'target': {'id': ref_id},
-            # 费用账单中心深链（客户端无关 hasn:// URI·MK-8 承载渲染）
-            'primary_action': {'uri': 'hasn://billing/center'},
+            # 费用账单中心深链（客户端无关 hasn:// URI·MK-8 承载渲染）。
+            # 键必须是 `link`：卡片投影 build_card_body 与通知序列化都只认它，
+            # 写成 `primary_action` 则卡片上不会出现「查看」按钮（旧写法的死字段）。
+            'link': 'hasn://billing/center',
         },
         dedupe_key=f'billing_expiry:{billing_kind}:{ref_id}:{days_left}',
     )

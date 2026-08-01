@@ -123,14 +123,6 @@ class HermesRuntimeClient:
             )
         return body
 
-    async def probe(self, trace_id: str | None = None) -> dict[str, Any]:
-        """控制面可达性探活（全局，非 per-agent）：命中 hermes-runtime /runtime/v1/probe。
-
-        与 daemon 本地探活 `RuntimeAdapter.probe` 对端同构——返回成功即「云端 runtime 进程在跑、
-        可服务分身」。不可达由 `_request` 抛 `HermesRuntimeError`（连接失败/超时/4xx/5xx）。
-        """
-        return await self._request('GET', '/runtime/v1/probe', trace_id=trace_id)
-
     async def ensure_agent(self, payload: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
         return await self._request('POST', '/runtime/v1/agents', json=payload, trace_id=trace_id)
 
@@ -144,201 +136,66 @@ class HermesRuntimeClient:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/soul', trace_id=trace_id)
 
     async def put_soul(self, runtime_profile_id: str, content: str, trace_id: str | None = None) -> dict[str, Any]:
-        return await self._request(
-            'PUT', f'/runtime/v1/agents/{runtime_profile_id}/soul', json={'content': content}, trace_id=trace_id
-        )
+        return await self._request('PUT', f'/runtime/v1/agents/{runtime_profile_id}/soul', json={'content': content}, trace_id=trace_id)
 
     async def get_user_profile(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/user-profile', trace_id=trace_id)
 
-    async def put_user_profile(
-        self, runtime_profile_id: str, content: str, trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'PUT', f'/runtime/v1/agents/{runtime_profile_id}/user-profile', json={'content': content}, trace_id=trace_id
-        )
+    async def put_user_profile(self, runtime_profile_id: str, content: str, trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('PUT', f'/runtime/v1/agents/{runtime_profile_id}/user-profile', json={'content': content}, trace_id=trace_id)
 
     async def get_gateway_status(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/gateway/status', trace_id=trace_id)
 
     async def start_gateway(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/gateway/start', json={}, trace_id=trace_id
-        )
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/gateway/start', json={}, trace_id=trace_id)
 
     async def stop_gateway(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/gateway/stop', json={}, trace_id=trace_id
-        )
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/gateway/stop', json={}, trace_id=trace_id)
 
     async def restart_gateway(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/gateway/restart', json={}, trace_id=trace_id
-        )
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/gateway/restart', json={}, trace_id=trace_id)
 
     async def get_gateway_logs(self, runtime_profile_id: str, limit: int = 100, trace_id: str | None = None) -> Any:
-        return await self._request(
-            'GET', f'/runtime/v1/agents/{runtime_profile_id}/gateway/logs', params={'limit': limit}, trace_id=trace_id
-        )
+        return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/gateway/logs', params={'limit': limit}, trace_id=trace_id)
 
     async def get_workspace_status(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        return await self._request(
-            'GET', f'/runtime/v1/agents/{runtime_profile_id}/workspace/status', trace_id=trace_id
-        )
+        return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/workspace/status', trace_id=trace_id)
 
     async def get_channels(self, runtime_profile_id: str, trace_id: str | None = None) -> Any:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/channels', trace_id=trace_id)
 
-    async def start_channel_qr(
-        self, runtime_profile_id: str, channel: str, payload: dict[str, Any], trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'POST',
-            f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/qr/start',
-            json=payload,
-            trace_id=trace_id,
-        )
+    async def start_channel_qr(self, runtime_profile_id: str, channel: str, payload: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/qr/start', json=payload, trace_id=trace_id)
 
-    async def get_channel_qr_status(
-        self, runtime_profile_id: str, channel: str, session_id: str, trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'GET',
-            f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/qr/{session_id}/status',
-            trace_id=trace_id,
-        )
+    async def get_channel_qr_status(self, runtime_profile_id: str, channel: str, session_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/qr/{session_id}/status', trace_id=trace_id)
 
-    async def manual_channel(
-        self, runtime_profile_id: str, channel: str, payload: dict[str, Any], trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'POST',
-            f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/manual',
-            json=payload,
-            trace_id=trace_id,
-        )
+    async def manual_channel(self, runtime_profile_id: str, channel: str, payload: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/manual', json=payload, trace_id=trace_id)
 
-    async def test_channel(
-        self, runtime_profile_id: str, channel: str, payload: dict[str, Any] | None = None, trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'POST',
-            f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/test',
-            json=payload or {},
-            trace_id=trace_id,
-        )
+    async def test_channel(self, runtime_profile_id: str, channel: str, payload: dict[str, Any] | None = None, trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/test', json=payload or {}, trace_id=trace_id)
 
-    async def unbind_channel(
-        self, runtime_profile_id: str, channel: str, payload: dict[str, Any] | None = None, trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'POST',
-            f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/unbind',
-            json=payload or {},
-            trace_id=trace_id,
-        )
+    async def unbind_channel(self, runtime_profile_id: str, channel: str, payload: dict[str, Any] | None = None, trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/channels/{channel}/unbind', json=payload or {}, trace_id=trace_id)
 
-    async def chat_completions(
-        self, runtime_profile_id: str, payload: dict[str, Any], trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/chat/completions', json=payload, trace_id=trace_id
-        )
+    async def chat_completions(self, runtime_profile_id: str, payload: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/chat/completions', json=payload, trace_id=trace_id)
 
     async def get_chat_history(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/chat/history', trace_id=trace_id)
 
-    async def create_run(
-        self, runtime_profile_id: str, payload: dict[str, Any], trace_id: str | None = None
-    ) -> dict[str, Any]:
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/runs', json=payload, trace_id=trace_id
-        )
+    async def create_run(self, runtime_profile_id: str, payload: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
+        return await self._request('POST', f'/runtime/v1/agents/{runtime_profile_id}/runs', json=payload, trace_id=trace_id)
 
     async def get_run_events(self, runtime_profile_id: str, run_id: str, trace_id: str | None = None) -> Any:
-        return await self._request(
-            'GET', f'/runtime/v1/agents/{runtime_profile_id}/runs/{run_id}/events', trace_id=trace_id
-        )
+        return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/runs/{run_id}/events', trace_id=trace_id)
 
-    async def list_skills(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        """列出 profile 的运行时技能（控制面，读 profile skills/ 目录 + config.yaml disabled 列表）。
-
-        与 daemon 本地 `RuntimeAdapter.list_skills` 打的同一个 sidecar 路由对端同构；云端分身经
-        本服务 → 云端 sidecar 读，形态 `{profile_id, skills:[{skill_id,name,description,enabled}]}`。
-        """
-        return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/skills', trace_id=trace_id)
-
-    async def ensure_skill_requirements(
-        self,
-        runtime_profile_id: str,
-        payload: dict[str, Any],
-        trace_id: str | None = None,
-    ) -> dict[str, Any]:
-        """幂等物化并索引本轮 required 技能，返回稳定准备回执。"""
-        return await self._request(
-            'POST',
-            f'/runtime/v1/agents/{runtime_profile_id}/skills/ensure',
-            json=payload,
-            trace_id=trace_id,
-        )
-
-    async def activate_skill_requirements(
-        self,
-        runtime_profile_id: str,
-        payload: dict[str, Any],
-        trace_id: str | None = None,
-    ) -> dict[str, Any]:
-        """基于成功回执构造本轮 guided/preload 激活消息。"""
-        return await self._request(
-            'POST',
-            f'/runtime/v1/agents/{runtime_profile_id}/runs/activate-skills',
-            json=payload,
-            trace_id=trace_id,
-        )
-
-    async def read_skill(self, runtime_profile_id: str, skill_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        """读取 profile 某技能正文（SKILL.md），返回 `{skill_id,name,description,content,enabled}`。"""
-        return await self._request(
-            'GET', f'/runtime/v1/agents/{runtime_profile_id}/skills/{skill_id}', trace_id=trace_id
-        )
-
-    async def enable_skill(self, runtime_profile_id: str, skill_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        """启用技能（从 config.yaml skills.disabled 移除），返回 `{skill_id,enabled:True}`。"""
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/skills/{skill_id}/enable', json={}, trace_id=trace_id
-        )
-
-    async def disable_skill(
-        self, runtime_profile_id: str, skill_id: str, trace_id: str | None = None
-    ) -> dict[str, Any]:
-        """停用技能（加入 config.yaml skills.disabled），返回 `{skill_id,enabled:False}`。"""
-        return await self._request(
-            'POST', f'/runtime/v1/agents/{runtime_profile_id}/skills/{skill_id}/disable', json={}, trace_id=trace_id
-        )
-
-    async def start_gateway_by_profile(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        """Idempotently start the upstream gateway for a profile (control-plane).
-
-        Mirrors the daemon's C2 dispatch self-heal: the data plane (POST /v1/runs +
-        SSE events) goes daemon/relay → upstream gateway directly, but the gateway
-        must be running first. Sidecar keys this by profile_id (e.g. ``100001-assistant``).
-        """
-        return await self._request(
-            'POST', f'/runtime/v1/profiles/{runtime_profile_id}/gateway/start', json={}, trace_id=trace_id
-        )
-
-    async def get_upstream_endpoint(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
-        """Resolve the upstream hermes-agent gateway endpoint for daemon/relay-direct SSE.
-
-        Returns ``{api_server_host, api_server_port, api_server_key, runs_create_path,
-        runs_events_path_template, runs_cancel_path_template}``. The sidecar stays
-        control-plane only; the cloud relay then dispatches POST /v1/runs + SSE events
-        directly to this (same-machine 127.0.0.1) gateway — one less hop, no double
-        SSE parse. See hosted_runtime.upstream_endpoint (C2).
-        """
-        return await self._request(
-            'GET', f'/runtime/v1/profiles/{runtime_profile_id}/upstream_endpoint', trace_id=trace_id
-        )
+    # 已退役（H8）：`probe` / `list_skills` / `read_skill` / `enable_skill` / `disable_skill` /
+    # `start_gateway_by_profile` / `get_upstream_endpoint` 是「分身跑在云端沙箱」形态专用的
+    # 控制面方法（唯一调用方是已删除的云端 Runtime 派发代理），随该形态一并删除。本类其余
+    # 方法归 `/api/v1/hermes/app/*` 应用面所有，与云端 Runtime 形态无关，保留不动。
 
     async def apply_template(
         self,
@@ -403,14 +260,14 @@ class HermesRuntimeClient:
         url = f'{self.base_url}/runtime/v1/agents/{runtime_profile_id}/chat/completions'
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                async with client.stream('POST', url, headers=self._headers(trace_id), json=body) as response:
+                async with client.stream(
+                    'POST', url, headers=self._headers(trace_id), json=body
+                ) as response:
                     if response.status_code >= 400:
                         text = await response.aread()
                         try:
                             data = jsonlib.loads(text or b'{}')
-                            error_code = (
-                                str(data.get('error') or 'runtime_error') if isinstance(data, dict) else 'runtime_error'
-                            )
+                            error_code = str(data.get('error') or 'runtime_error') if isinstance(data, dict) else 'runtime_error'
                         except ValueError:
                             error_code = 'runtime_error'
                         err_payload = jsonlib.dumps({'error': error_code, 'status_code': response.status_code})

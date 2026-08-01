@@ -370,7 +370,17 @@ async def api_logout_device(
 ) -> ResponseModel:
     """远程登出某台设备：吊销其对本 Owner 的 node-binding（强制重认证）+ 清 presence +
     释放其名下 Agent 供他机接管 + 关闭其 WS（若连接在本进程内）。
+
+    若该设备是**云端托管节点**，还要吊销它那一个 JWT session（`hasn_cloud_nodes.credential_session_uuid`）。
+    托管容器持有的是设备级 token，不吊销的话「远程登出」只清了 presence，容器重连即恢复——
+    对主人而言就是登出没生效（契约 §3.1 删除路径同款要求，这里是单独登出路径）。
     """
+    # 局部 import：hasn_hosting 反过来依赖本模块所在的 hasn 应用，顶层 import 会成环
+    from backend.app.hasn_hosting.model import HasnCloudNodes
+    from backend.common.security.jwt import revoke_token
+    from backend.core.conf import settings as _settings
+    from backend.database.redis import redis_client
+
     owner_id = auth['hasn_id']
 
     async with async_db_session() as db:
@@ -391,6 +401,24 @@ async def api_logout_device(
         await hasn_node_bindings_service.remove_owner_binding(
             db=db, node_id=node_id, owner_id=owner_id,
         )
+
+        # 云端托管节点：连同它那一个设备级 JWT session 一起吊销（只影响这台，不碰主人其它设备）
+        cloud_node = (
+            await db.execute(
+                select(HasnCloudNodes).where(
+                    HasnCloudNodes.node_id == node_id,
+                    HasnCloudNodes.owner_hasn_id == owner_id,
+                )
+            )
+        ).scalar_one_or_none()
+        revoked_session = None
+        if cloud_node is not None and cloud_node.credential_session_uuid:
+            revoked_session = cloud_node.credential_session_uuid
+            await revoke_token(cloud_node.user_id, revoked_session)
+            await redis_client.delete(
+                f'{_settings.TOKEN_REFRESH_REDIS_PREFIX}:{cloud_node.user_id}:{revoked_session}'
+            )
+            cloud_node.credential_session_uuid = None
         await db.commit()
 
     # 清 presence + 释放名下 Agent + 关闭 WS（若在本进程）
@@ -400,6 +428,7 @@ async def api_logout_device(
         'node_id': node_id,
         'logged_out': True,
         'disconnected_in_process': disconnected,
+        'cloud_credential_revoked': bool(revoked_session),
     })
 
 

@@ -27,6 +27,7 @@ from backend.app.hasn.schema.hasn_agents import (
 )
 from backend.app.marketplace.service.common_skills_service import get_common_skill_snapshot
 from backend.app.hasn_im.application.provider import get_presence_query
+from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -477,11 +478,10 @@ class SqlAlchemyAgentProfileGateway:
             agent.profile_source = 'cloud'
         if not getattr(agent, 'profile_revision', None):
             agent.profile_revision = 1
-        # 运行位置（双形态 Runtime，设计 08/02）：仅新建分身按请求落库（默认 local）；幂等命中
-        # 已有分身时不改位置——切换位置是 detach + 重新 bind 的显式动作，不在创建路径覆盖。
+        # 运行位置（H8 收窄）：「分身跑在云端沙箱」形态已退役，新建分身恒落 local——分身一律
+        # 在 hasn-node 上运行（云端托管的无头节点同样是 local）。幂等命中已有分身时不改位置。
         if not bool(result.get('already_exists')) and hasattr(agent, 'runtime_location'):
-            location = payload.get('runtime_location') or 'local'
-            agent.runtime_location = location if location in ('local', 'cloud') else 'local'
+            agent.runtime_location = 'local'
         await db.flush()
         # 触发点 2（设计 §6.1）：新建分身后跑 INSERT-only 播种——若有内置任务此前因无对应类型
         # 分身回退绑了主脑则保持现状（INSERT-only 不重绑），尚未播种的条目则补 INSERT 绑到合适分身。
@@ -581,28 +581,9 @@ class HasnAgentProfileService:
                 log.error(f'为 Agent {agent.hasn_id} 签发 JWT 失败: {e}')
                 # JWT 签发失败不影响 Agent 创建
 
-            # 云端形态分身：创建即 provision 到云端 hermes（platform LLM），让新分身首次派发秒回。
-            # best-effort：provision 失败不阻断创建——dispatch 阶段会兜底补 provision（自愈）。
-            if getattr(agent, 'runtime_location', None) == 'cloud':
-                try:
-                    from backend.app.hasn.service.hasn_agent_runtime_provision_service import (
-                        cloud_profile_id_for,
-                        ensure_cloud_profile_provisioned,
-                    )
-
-                    cloud_profile_id = await cloud_profile_id_for(
-                        db, owner_hasn_id=request.owner_id, agent_name=agent.agent_name
-                    )
-                    await ensure_cloud_profile_provisioned(
-                        db,
-                        agent_hasn_id=agent.hasn_id,
-                        owner_hasn_id=request.owner_id,
-                        profile_id=cloud_profile_id,
-                    )
-                except Exception as e:
-                    from backend.common.log import log
-
-                    log.warning(f'云端分身 {agent.hasn_id} 创建时 provision 失败（dispatch 阶段会兜底）: {e}')
+            # 已退役（H8）：此处曾为云端形态分身在创建时 provision 到云端 hermes。「分身跑在
+            # 云端沙箱」形态整体下线后，分身的 runtime profile 一律由其所在 hasn-node 供给，
+            # 云端不再 provision。
 
         return CloudCreateAgentResponse(
             agent=_agent_snapshot(agent),
@@ -704,6 +685,18 @@ class HasnAgentProfileService:
             agent.user_md = provided['user_md']
         if 'memory_md' in provided:
             agent.memory_md = provided['memory_md']
+
+        # doc19 §4.6「正文直编逃生口」：本方法是**主人手工**改 USER.md 的唯一云端写入点
+        # （Owner JWT 的 PATCH `/api/v1/hasn/app/agents/by-hasn-id/{hasn_id}`，daemon
+        # `PUT /api/v1/agents/{id}/memory-files/user` 打过来），所以在这里、也只在这里给该
+        # owner 置 `owner_memory.owner_edited`——USER.md 是主人画像的投影（MEMPUSH 覆盖每个
+        # 分身的 `user_md`），改哪个分身的这一段，改的都是主人画像本身。
+        # 系统写入路径全部不经过本方法（MEMPUSH bulk UPDATE / 合并 apply 写回 / 昵称刷新 /
+        # 建档播种），判据与不置位的代价见 `owner_memory_service.mark_owner_edited` 文档。
+        # 空串（清空 USER.md）不置位：那是「让下一轮从事实重算」，没有需要保留的主人表述，
+        # 与本地 `mark_owner_portrait_edited` 跳过空正文同口径。
+        if (provided.get('user_md') or '').strip():
+            await owner_memory_service.mark_owner_edited(db, owner_id=owner_id)
 
         if hasattr(agent, 'profile_revision'):
             agent.profile_revision = (agent.profile_revision or 1) + 1
@@ -1429,8 +1422,8 @@ def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any 
         if request.memory_md is not None
         else getattr(template, 'default_memory_md', None),
         'runtime_type': request.runtime_type or getattr(template, 'default_runtime_type', None) or 'hermes',
-        # 运行位置（双形态 Runtime，设计 08/02）：local（默认，本地非沙箱）/ cloud（云端 Docker 沙箱）。
-        'runtime_location': (getattr(request, 'runtime_location', None) or 'local'),
+        # 运行位置（H8 收窄）：云端沙箱形态已退役，恒 local；请求体不再携带该字段。
+        'runtime_location': 'local',
         'node_id': request.node_id,
         'agent_type': request.agent_type,
         'role': request.role,

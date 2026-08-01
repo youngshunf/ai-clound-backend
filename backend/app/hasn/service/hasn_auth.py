@@ -675,7 +675,13 @@ async def register_node(
     node_info: dict | None = None,
     allowed_owner_hasn_ids: list[str] | None = None,
 ) -> HasnNodes:
-    """注册 Node（幂等：按 node_id 去重，由于 node_id 客户端基于设备指纹生成，同一物理设备永远只有一条记录）"""
+    """注册 Node（幂等：按 node_id 去重，由于 node_id 客户端基于设备指纹生成，同一物理设备永远只有一条记录）
+
+    **node_type 只在新建行时取参数值**：已有行保留库里的既有 `node_type`。daemon 全链路不上报
+    node_type（握手分支硬写 `'desktop'`），而云端节点的 `node_type='cloud'` 是签发授权码时由云端
+    预分配的权威事实。若这里跟着覆盖，容器一上线就会把自己降级成 desktop，权威被客户端默认值冲掉。
+    事实源：`docs/hasn-node设计文档/云端节点托管/实施/01-切片实施契约(H1-H8).md` §0.2。
+    """
     node_info = node_info or {}
     fingerprint = node_info.get('device_fingerprint')
     device_platform = node_info.get('device_platform') or node_info.get('platform')
@@ -698,7 +704,7 @@ async def register_node(
             existing.user_id = user_id or existing.user_id
             if node_name and existing.node_name != node_name:
                 existing.node_name = node_name
-            existing.node_type = node_type or existing.node_type
+            # node_type 权威在云端预分配记录，不得被客户端握手的默认值覆盖（契约 §0.2）
             existing.capacity = capacity or existing.capacity
             # 合并 allowed_owner_hasn_ids（多用户同设备）
             if owner_hasn_id:

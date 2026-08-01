@@ -16,7 +16,10 @@
 （无 search_path 时默认只解析 public，搬迁后裸名/`public.` 前缀都会失效——billing 踩过的坑）。
 """
 
+from typing import Any
+
 from sqlalchemy.orm import declared_attr
+from sqlalchemy.sql.schema import SchemaItem
 
 from backend.common.model import Base
 
@@ -29,6 +32,8 @@ class HasnMemoryBase(Base):
 
     __abstract__ = True
 
+    # 返回类型与 fba MappedBase.__table_args__ 对齐（dict 或含约束的 tuple）：子类需要声明
+    # CHECK/UNIQUE 时可直接覆盖为 tuple（末位仍是含 schema 的 dict），不必绕开本基类。
     @declared_attr.directive
-    def __table_args__(cls) -> dict:  # noqa: N805
+    def __table_args__(cls) -> dict[str, Any] | tuple[SchemaItem | dict[str, Any], ...]:  # noqa: N805
         return {'comment': cls.__doc__ or '', 'schema': APP_SCHEMA}

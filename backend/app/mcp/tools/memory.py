@@ -14,6 +14,11 @@
 
 owner 隔离由 Agent JWT/MCP Key 解析出的 `agent_context.owner_hasn_id` 强制；分身身份
 （`agent_context.hasn_id`）作 `agent_self` 事实的 agent_id，二者皆**绝不入请求体**。
+
+doc19 S2（§6.2 项目记忆上下文自动带入）：项目语境同样**绝不入请求体**——
+`project_id` 由 `AgentContext.project_id`（streamable 从 daemon header / 工作会话挂靠解析）或
+ContextVar 供给，四个工具的 input_schema **都不暴露它**。理由是权限而非洁癖：分身若能自己指定
+project_id，就等于能往任意项目里写记忆、也能翻任意项目的事实——项目语境必须由系统注入。
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_memory.service.semantic_fact_service import semantic_fact_service
+from backend.app.mcp.context import get_current_project_id
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -33,6 +39,17 @@ SCOPE_WRITE = 'memory:write'
 
 def _s(desc: str) -> dict[str, Any]:
     return {'type': 'string', 'description': desc}
+
+
+def _project_context(agent_context: AgentContext) -> str | None:
+    """取本次调用的项目语境（doc19 §6.2）：**只从系统注入的上下文取，绝不看工具入参**。
+
+    AgentContext 绑定优先（streamable 从 `X-Hasn-Project-Id` header 或工作会话反查，
+    per-request、分身不可伪造）；缺省回落 ContextVar（`_hasn_project_id` 保留参数通路，
+    由 `server.call_tool` 剥离后落入，两者已在那里归一）。
+    None = 不在项目中工作：save 走既有兜底作用域，读三工具不做项目并集收敛。
+    """
+    return agent_context.project_id or get_current_project_id()
 
 
 def _schema(props: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -81,9 +98,17 @@ class _MemorySaveTool(BaseTool):
                 'subject_kind': _s('主体类型：agent_self（默认，自身记忆）| owner（关于主人）| peer | world'),
                 'subject_id': _s('可选：peer/world 主体 id（agent_self/owner 自动推断，无需传）'),
                 'confidence': {'type': 'number', 'description': '可选：置信度 0-1（默认 0.6）'},
-                'scope_kind': _s('可选：作用域 global（默认）/workspace/project/task/conversation/topic'),
-                'scope_id': _s('可选：作用域 id'),
+                'scope_kind': _s(
+                    '可选：作用域 global/workspace/project/task/conversation/topic。'
+                    '**不传时**：在项目里干活会自动落到当前项目，否则落 global——一般无需自己填'
+                ),
+                'scope_id': _s('可选：作用域 id（与 scope_kind 配套；不传即随上一条自动判定）'),
                 'rationale': _s('可选：记录理由（为什么知道这条）'),
+                'supersedes_hint': _s(
+                    '可选：你从前记的某条事实已经错了 → 填那条的 fact_id。'
+                    '这不是直接改它（跨设备的旧账你改不了），而是留一条「本人纠正」线索，'
+                    '下次整理时按它裁决。只对**你自己**记过的事实有直通效力'
+                ),
             },
             ['predicate', 'object'],
         )
@@ -103,9 +128,14 @@ class _MemorySaveTool(BaseTool):
                 subject_kind=arguments.get('subject_kind') or 'agent_self',
                 subject_id=arguments.get('subject_id'),
                 confidence=arguments.get('confidence'),
-                scope_kind=arguments.get('scope_kind') or 'global',
+                # doc19 §6.2：**不再兜底成 'global'**——service 靠「scope_kind 为 None」
+                # 区分「调用方没表达 scope 意图」与「显式要 global」，在这里填死默认值
+                # 会让项目语境自动带入永远触发不了。
+                scope_kind=arguments.get('scope_kind'),
                 scope_id=arguments.get('scope_id'),
                 rationale=arguments.get('rationale'),
+                supersedes_hint=arguments.get('supersedes_hint'),
+                project_id=_project_context(agent_context),
             )
 
 
@@ -131,6 +161,8 @@ class _MemorySearchTool(BaseTool):
             '**被问到某人的事一时答不上来时，先用本工具（或 recall）按那人的 hasn_id 召回**——'
             '关于他的资料可能已被你或同主人的其它分身存过，别急着说不知道或臆造。'
             '可传 subject_id 限定某个人（如某 peer 的 hasn_id）做「按人 + 关键词」组合检索。'
+            '在项目里干活时会自动带上项目语境：本项目的专属事实排在前面，全局常识照样都在，'
+            '只是不会串进别的项目的专属事实。'
         )
 
     @property
@@ -140,6 +172,8 @@ class _MemorySearchTool(BaseTool):
                 'query': _s('搜索关键词（必填）'),
                 'subject_kind': _s('可选：限定主体类型 agent_self/owner/peer/world'),
                 'subject_id': _s('可选：限定某主体 id（如某 peer 的 hasn_id）——按人 + 关键词组合检索'),
+                'scope_kind': _s('可选：限定作用域 global/workspace/project/task/conversation/topic'),
+                'scope_id': _s('可选：限定作用域 id（与 scope_kind 配套）'),
                 'limit': {'type': 'integer', 'description': '可选：返回上限（默认 20，最大 200）'},
             },
             ['query'],
@@ -153,6 +187,9 @@ class _MemorySearchTool(BaseTool):
                 query=arguments.get('query', ''),
                 subject_kind=arguments.get('subject_kind'),
                 subject_id=arguments.get('subject_id'),
+                scope_kind=arguments.get('scope_kind'),
+                scope_id=arguments.get('scope_id'),
+                project_id=_project_context(agent_context),
                 limit=int(arguments.get('limit', 20)),
             )
 
@@ -203,6 +240,7 @@ class _MemoryRecallTool(BaseTool):
                 query=arguments.get('query'),
                 scope_kind=arguments.get('scope_kind'),
                 scope_id=arguments.get('scope_id'),
+                project_id=_project_context(agent_context),
                 min_confidence=float(arguments.get('min_confidence', 0.0)),
                 limit=int(arguments.get('limit', 50)),
             )
@@ -225,12 +263,17 @@ class _MemoryListTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return '分页列出已记的语义事实（默认全主体，可按 subject_kind 过滤）。确定性读，无需授权。'
+        return (
+            '分页列出已记的语义事实（默认全主体，可按 subject_kind / 作用域过滤）。确定性读，无需授权。'
+            '在项目里干活时会自动带上项目语境：本项目的事实排前，全局常识照样都在，别的项目的不串进来。'
+        )
 
     @property
     def input_schema(self) -> dict[str, Any]:
         return _schema({
             'subject_kind': _s('可选：限定主体类型 agent_self/owner/peer/world'),
+            'scope_kind': _s('可选：限定作用域 global/workspace/project/task/conversation/topic'),
+            'scope_id': _s('可选：限定作用域 id（与 scope_kind 配套）'),
             'limit': {'type': 'integer', 'description': '可选：每页条数（默认 50，最大 200）'},
             'offset': {'type': 'integer', 'description': '可选：偏移（默认 0）'},
         })
@@ -241,6 +284,9 @@ class _MemoryListTool(BaseTool):
                 db,
                 owner_id=agent_context.owner_hasn_id or '',
                 subject_kind=arguments.get('subject_kind'),
+                scope_kind=arguments.get('scope_kind'),
+                scope_id=arguments.get('scope_id'),
+                project_id=_project_context(agent_context),
                 limit=int(arguments.get('limit', 50)),
                 offset=int(arguments.get('offset', 0)),
             )

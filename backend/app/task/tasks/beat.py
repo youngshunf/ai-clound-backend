@@ -106,6 +106,13 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天 3:30 以数据库对象行逐 Owner 核实真实对象与计数器，不依赖桶前缀遍历。
         'schedule': TzAwareCrontab('30', '3'),
     },
+    '云端节点生命周期 sweep': {
+        'task': 'cloud_node_retention_sweep',
+        # 每天 04:20（低峰，且排在 2:05 商业化 sweep 之后——订阅 status 先收敛成 expired，
+        # 本任务再据此判「订阅到期」）：进 30 天保留期 → 续订恢复 → 逾期销毁 → 到期前 7/3/1 天提醒。
+        # 托管设计 §7 生命周期表 / D-14。
+        'schedule': TzAwareCrontab('20', '4'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
         # 每 3 天增量同步一次（真 72h 间隔）。只读取元数据与文件清单，技能 ZIP 由 ClawHub 分发。
@@ -132,19 +139,9 @@ LOCAL_BEAT_SCHEDULE = {
         # 到期失败与 worker 崩溃留下的 running 每 5 分钟重投；步骤写点自身保持幂等。
         'schedule': TzAwareCrontab('*/5'),
     },
-    'Owner 记忆 pending 合并兜底重试': {
-        'task': 'owner_memory_retry_pending_merges',
-        # 每 10 分钟扫一次滞留 pending（同步内联合并失败的兜底重试）。只重试最老 pending 已超
-        # 120s 的 owner，避开刚 contribute 的内联路径；网关恢复后下一轮即合并下发，杜绝采访完
-        # coverage 永不更新。
-        'schedule': TzAwareCrontab('*/10'),
-    },
-    'Peer 画像合成 worker': {
-        'task': 'peer_portrait_sweep',
-        # 每 10 分钟扫一次「有新 peer 事实但画像未追上」的 (owner, peer) 对（doc17 PEERSYN-P4）。
-        # peer 事实上游来源为分身主动 hasn.memory.save（doc18 退役自动提取后单一来源）。方案B 脏判定
-        # MAX(peer 事实.updated_at) > 画像.last_synthesized_at；逐对独立事务，跨全部分身聚合合成一份，
-        # 合成后发 memory.peer_portrait.upserted 下行 daemon。
-        'schedule': TzAwareCrontab('5-59/10'),
-    },
+    # doc19 §10 退役（2026-07-31）：'owner_memory_retry_pending_merges' 与 'peer_portrait_sweep'
+    # 两条记忆语义处理调度已随云端 LLM 合并/画像合成整体删除。合并改由**主脑分身在自己的设备上**
+    # 执行（§5.1 判断力应在分身身上、可向主人汇报、成本归位），整轮结果经云端合并闸
+    # `POST /api/v1/hasn/memory/agent/merge/apply` 提交；触发源改为 daemon `task_scheduler` 的
+    # 内置定时任务 `memory_review`（§9）。云端不再有任何记忆语义处理（§8.5）。
 }

@@ -17,6 +17,8 @@ from backend.app.hasn_release.schema.release import (
     CiCallbackRequest,
     CiUploadResponse,
     ConfirmReleaseTagRequest,
+    HeadlessImageDetail,
+    HeadlessImageRequest,
     PrepareReleaseRequest,
     ReleaseBatchResponse,
     ReleaseDetail,
@@ -125,4 +127,24 @@ async def ci_callback(
 ) -> ResponseSchemaModel[ReleaseDetail]:
     _verify_ci_bearer(authorization)
     data = await release_service.ci_callback(db, obj)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/headless-image',
+    summary='登记无头 hasn-node 容器镜像（Bearer CI 密钥）',
+    name='hasn_release_ci_register_headless_image',
+)
+async def register_headless_image(
+    db: CurrentSessionTransaction,
+    obj: HeadlessImageRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[HeadlessImageDetail]:
+    """`release-headless-node.sh` 推私有 registry 后回调此端点，以 **digest** 登记镜像。
+
+    只 upsert 一条 `asset_kind='image'` 资产：不动 `is_latest`、不动桌面端资产、不改批次状态——
+    桌面端发布与自动更新链路行为完全不变（契约 §7「只加不改既有桌面 target 行为」）。
+    """
+    _verify_ci_bearer(authorization)
+    data = await release_service.register_headless_image(db, obj)
     return response_base.success(data=data)

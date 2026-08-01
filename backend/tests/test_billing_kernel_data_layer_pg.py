@@ -128,6 +128,8 @@ async def test_feature_registry_membership() -> None:
     assert feature_registry.is_registered('llm:tier')
     assert feature_registry.is_registered('credits:topup')
     assert feature_registry.is_registered('webapp:hosting')
+    # cloud_node：云端常驻节点（无头 hasn-node 容器），与上面托管网页应用的 webapp:hosting 是两码事
+    assert feature_registry.is_registered('cloud_node')
     assert feature_registry.is_registered('app:deck')  # 前缀族 app:<id>
     assert feature_registry.is_registered('seat:quant')  # 前缀族 seat:<id>
     assert not feature_registry.is_registered('app:')  # 前缀无实例段 → 非法
