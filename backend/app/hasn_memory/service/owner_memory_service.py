@@ -102,7 +102,9 @@ class OwnerMemoryService:
         ).scalar_one_or_none()
         if row is None:
             return {'content': None, 'version': 0}
-        return {'content': row.content, 'version': int(row.version or 1)}
+        # `version=0` 如实返回 0（= 尚未合并过），不折成 1：主人先手工直编、还没整理过时行就是
+        # 这个状态（`mark_owner_edited` 的建行分支），谎报成 1 会让完整度判定误以为画像前进了一版。
+        return {'content': row.content, 'version': int(row.version or 0)}
 
     async def list_contributions(self, db: AsyncSession, *, owner_id: str, limit: int = 50) -> dict[str, Any]:
         """列出该 owner 的记忆贡献流（owner 透明视图，按时间倒序）。"""
