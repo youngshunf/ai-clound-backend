@@ -140,6 +140,17 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
 
     register_lead_pack_callback()
 
+    # 注册通用 feature_plan 商品履约（MK-2：付款成功 → 按商品目录数据发/续 feature 权益）。
+    # 首个落地商品是云端常驻节点 cloud:node；新增同类商品无需再写 handler。
+    from backend.app.billing.service.feature_plan_callback import register_feature_plan_callback
+
+    register_feature_plan_callback()
+
+    # 注册 cloud_node 用量探针（退款回收后如实告警「配额已低于在跑节点数」）
+    from backend.app.hasn_hosting.service.cloud_node_usage_probe import register_cloud_node_usage_probe
+
+    register_cloud_node_usage_probe()
+
     # v2.1 默认由本地/云端 Runtime Host 调度任务；旧中心 scheduler 仅显式打开时运行。
     if settings.HASN_TASK_CENTER_SCHEDULER_ENABLED:
         from backend.app.hasn.service.task_scheduler import task_scheduler
