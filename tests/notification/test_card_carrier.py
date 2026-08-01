@@ -93,7 +93,7 @@ async def test_same_source_reuses_one_service_conversation(
     assert stats.completed == 2
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 2  # 两条卡片
-    assert len({c.conversation_id for c in cards}) == 1  # 同一个服务号会话（微信服务号效果）
+    assert len({str(c.conversation_id) for c in cards}) == 1  # 同一服务号会话；兼容 UUID/字符串映射
 
 
 @pytest.mark.asyncio
