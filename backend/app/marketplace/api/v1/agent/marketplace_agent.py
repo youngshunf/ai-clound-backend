@@ -46,7 +46,11 @@ async def _publish(
     )
 
 
-@router.post('/publish/skills', summary='[Agent] 从 Owner 资产发布技能草稿')
+@router.post(
+    '/publish/skills',
+    name='agent_marketplace_publish_skill',
+    summary='[Agent] 从 Owner 资产发布技能草稿',
+)
 async def publish_skill(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,
@@ -67,7 +71,11 @@ async def publish_skill(
     )
 
 
-@router.post('/publish/templates', summary='[Agent] 从 Owner 资产发布分身模板草稿')
+@router.post(
+    '/publish/templates',
+    name='agent_marketplace_publish_template',
+    summary='[Agent] 从 Owner 资产发布分身模板草稿',
+)
 async def publish_template(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,
@@ -88,7 +96,11 @@ async def publish_template(
     )
 
 
-@router.post('/publish/skill-packs', summary='[Agent] 从 Owner 资产发布技能包草稿')
+@router.post(
+    '/publish/skill-packs',
+    name='agent_marketplace_publish_skill_pack',
+    summary='[Agent] 从 Owner 资产发布技能包草稿',
+)
 async def publish_skill_pack(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,
@@ -186,7 +198,11 @@ async def uninstall_skill_pack(
     )
 
 
-@router.get('/skills', summary='[Agent] 搜索可及技能')
+@router.get(
+    '/skills',
+    name='agent_marketplace_search_skills',
+    summary='[Agent] 搜索可及技能',
+)
 async def search_skills(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSession,
@@ -235,7 +251,11 @@ async def get_skill(
     )
 
 
-@router.get('/templates', summary='[Agent] 搜索可及分身模板')
+@router.get(
+    '/templates',
+    name='agent_marketplace_search_templates',
+    summary='[Agent] 搜索可及分身模板',
+)
 async def search_templates(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSession,
