@@ -250,6 +250,7 @@ async def test_install_bundle_freezes_reference_and_profile_computes_effective_m
     assert bundle['bundle_slug'] == e2e.bundle_slug
     assert bundle['command_key'] == e2e.command_key
     assert set(bundle['skill_ids']) == set(e2e.members)
+    assert bundle['content_hash'] == f'sha256:{hashlib.sha256(e2e.hermes_yaml.encode()).hexdigest()}'
     assert data['profile_revision'] == 4  # 3 → 4
 
     agent_skills = data['agent']['skills']
@@ -268,6 +269,7 @@ async def test_install_bundle_freezes_reference_and_profile_computes_effective_m
     assert len(bundles) == 1, bundles
     assert bundles[0]['bundle_slug'] == e2e.bundle_slug
     assert bundles[0]['command_key'] == e2e.command_key
+    assert bundles[0]['bundle_drift'] is False
     for member in e2e.members:
         assert member in bundles[0]['hermes_yaml']
     assert bundles[0]['member_skills'] == [

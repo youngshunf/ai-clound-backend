@@ -73,7 +73,9 @@ WITH agent_skill_rows AS (
     GROUP BY row.agent_id
 )
 UPDATE public.hasn_agents AS agent
-SET skills = normalized.skill_ids
+SET skills = normalized.skill_ids,
+    profile_revision = COALESCE(agent.profile_revision, 1) + 1,
+    updated_time = now()
 FROM normalized_skills AS normalized
 WHERE agent.id = normalized.agent_id
   AND agent.skills IS DISTINCT FROM normalized.skill_ids;
@@ -125,7 +127,9 @@ WITH bundle_rows AS (
     GROUP BY row.agent_id
 )
 UPDATE public.hasn_agents AS agent
-SET skill_bundles = normalized.bundle_refs
+SET skill_bundles = normalized.bundle_refs,
+    profile_revision = COALESCE(agent.profile_revision, 1) + 1,
+    updated_time = now()
 FROM normalized_bundles AS normalized
 WHERE agent.id = normalized.agent_id
   AND agent.skill_bundles IS DISTINCT FROM normalized.bundle_refs;

@@ -461,6 +461,7 @@ class AgentMarketplaceService:
             hermes_yaml = version.hermes_yaml or ''
             payload.update(
                 {
+                    'content_hash': skill_pack_service.content_hash(hermes_yaml) if hermes_yaml else None,
                     'bundle_slug': version.bundle_slug,
                     'command_key': version.command_key,
                     'member_skill_ids': skill_pack_service.member_skill_ids(hermes_yaml),

@@ -1103,8 +1103,7 @@ class HasnAgentProfileService:
                 await db.execute(
                     sa.text(
                         f"""
-                    SELECT t.template_id, v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
-                           COALESCE(v.content_hash, v.file_hash) AS content_hash
+                    SELECT t.template_id, v.version, v.bundle_slug, v.command_key, v.hermes_yaml
                     FROM hasn_marketplace.marketplace_template t
                     JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id
                     WHERE t.template_id = :package_id
@@ -1122,13 +1121,20 @@ class HasnAgentProfileService:
         if row is None:
             raise errors.NotFoundError(msg='ERR_MARKETPLACE_SKILL_PACK_NOT_FOUND')
 
-        members = skill_pack_service.member_skill_ids(row['hermes_yaml'])
+        hermes_yaml = str(row['hermes_yaml'] or '')
+        if not hermes_yaml:
+            raise errors.RequestError(
+                code=422,
+                msg='skill_pack_snapshot_incomplete: 技能包版本缺少定义',
+            )
+        members = skill_pack_service.member_skill_ids(hermes_yaml)
+        definition_hash = skill_pack_service.content_hash(hermes_yaml)
         resolved_version = row['version']
         current_bundles = list(agent.skill_bundles or [])
         frozen_ref = {
             'package_id': package_id,
             'version': resolved_version,
-            'content_hash': row['content_hash'],
+            'content_hash': definition_hash,
             'bundle_slug': row['bundle_slug'],
         }
         existing_position = next(
@@ -1166,8 +1172,8 @@ class HasnAgentProfileService:
                 'version': resolved_version,
                 'bundle_slug': row['bundle_slug'],
                 'command_key': row['command_key'],
-                'hermes_yaml': row['hermes_yaml'],
-                'content_hash': row['content_hash'],
+                'hermes_yaml': hermes_yaml,
+                'content_hash': definition_hash,
                 'skill_ids': members,
             },
             'profile_revision': int(agent.profile_revision or 1),

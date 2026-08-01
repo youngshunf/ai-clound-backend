@@ -323,3 +323,9 @@ async def test_templates_and_skill_packs_are_independent_first_class_queries(cli
     assert package.status_code == 200, package.text
     assert package.json()['data']['package_id'] == package_id
     assert package.json()['data']['version'] == '1.0.0'
+    expected_definition = (
+        f'name: pack-{tag}\ndescription: 测试技能包\nskills:\n  - huanxing/example\n'
+    )
+    assert package.json()['data']['content_hash'] == (
+        f'sha256:{hashlib.sha256(expected_definition.encode()).hexdigest()}'
+    )

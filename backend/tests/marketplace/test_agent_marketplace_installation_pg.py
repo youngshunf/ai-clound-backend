@@ -45,6 +45,10 @@ _MIGRATION = (
     Path(__file__).parents[2]
     / 'sql/hasn/migrations/2026-08-02-marketplace-profile-origins-and-frozen-bundles.sql'
 )
+_HASH_REPAIR_MIGRATION = (
+    Path(__file__).parents[2]
+    / 'sql/marketplace/migrations/2026-08-02-skill-pack-definition-hash-repair.sql'
+)
 
 _APP = FastAPI()
 _APP.include_router(agent_marketplace_router)
@@ -231,12 +235,16 @@ async def _seed_personal_skill(session, *, personal_skill_id: str, slug: str) ->
     await session.flush()
 
 
-async def _run_profile_migration(session) -> None:
-    sql = _MIGRATION.read_text(encoding='utf-8')
+async def _run_migration(session, path: Path) -> None:
+    sql = path.read_text(encoding='utf-8')
     for statement in sql.split('-- statement-breakpoint'):
         if statement.strip():
             await session.execute(sa.text(statement))
     await session.flush()
+
+
+async def _run_profile_migration(session) -> None:
+    await _run_migration(session, _MIGRATION)
 
 
 async def test_profile_migration_canonicalizes_personal_and_freezes_legacy_bundle_without_losing_effective_set(
@@ -266,6 +274,7 @@ async def test_profile_migration_canonicalizes_personal_and_freezes_legacy_bundl
     await _run_profile_migration(client.session)
     await client.session.refresh(row)
 
+    assert row.profile_revision == 9
     assert row.skills == [direct_id, personal_id, member_id]
     assert set(row.skills) == before
     assert row.skill_bundles == [
@@ -288,6 +297,7 @@ async def test_profile_migration_keeps_unresolvable_bundle_marked_for_refreeze(c
     await _run_profile_migration(client.session)
     await client.session.refresh(row)
 
+    assert row.profile_revision == 8
     assert row.skill_bundles is not None
     bundle = row.skill_bundles[0]
     assert bundle['template_id'].startswith('missing/')
@@ -481,6 +491,105 @@ async def test_skill_pack_install_freezes_definition_hash_instead_of_archive_man
             'bundle_slug': f'{tag}-pack',
         }
     ]
+
+
+async def test_hash_repair_migration_rewrites_legacy_manifest_reference_and_preserves_effective_set(client) -> None:
+    tag = _tag()
+    member_id = await _seed_skill(client.session, skill_id=f'huanxing/{tag}-member')
+    package_id = f'huanxing/{tag}-pack'
+    archive_manifest_hash = f'sha256:{hashlib.sha256(b"legacy-archive-manifest").hexdigest()}'
+    definition_hash, _ = await _seed_pack(
+        client.session,
+        package_id=package_id,
+        version='1.0.0',
+        member_skill_ids=[member_id],
+        is_latest=True,
+        stored_content_hash=archive_manifest_hash,
+    )
+    row = await _seed_agent(
+        client.session,
+        direct_skill_ids=[],
+        skill_bundles=[
+            {
+                'package_id': package_id,
+                'version': '1.0.0',
+                'content_hash': archive_manifest_hash,
+                'bundle_slug': f'{tag}-pack',
+            }
+        ],
+    )
+    before = await client.http.get('/api/v1/hasn/agent/profile')
+    assert before.status_code == 200, before.text
+    before_effective = before.json()['data']['skills']
+
+    await _run_migration(client.session, _HASH_REPAIR_MIGRATION)
+    await client.session.refresh(row)
+    stored_hash = (
+        await client.session.execute(
+            sa.select(MarketplaceTemplateVersion.content_hash).where(
+                MarketplaceTemplateVersion.template_id == package_id,
+                MarketplaceTemplateVersion.version == '1.0.0',
+            )
+        )
+    ).scalar_one()
+    after = await client.http.get('/api/v1/hasn/agent/profile')
+
+    assert stored_hash == definition_hash
+    assert row.profile_revision == 8
+    assert row.skill_bundles == [
+        {
+            'package_id': package_id,
+            'version': '1.0.0',
+            'content_hash': definition_hash,
+            'bundle_slug': f'{tag}-pack',
+        }
+    ]
+    assert after.status_code == 200, after.text
+    assert after.json()['data']['skills'] == before_effective
+
+
+async def test_hash_repair_migration_preserves_real_historical_definition_drift(client) -> None:
+    tag = _tag()
+    member_id = await _seed_skill(client.session, skill_id=f'huanxing/{tag}-member')
+    package_id = f'huanxing/{tag}-pack'
+    archive_manifest_hash = f'sha256:{hashlib.sha256(b"legacy-archive-manifest").hexdigest()}'
+    definition_hash, _ = await _seed_pack(
+        client.session,
+        package_id=package_id,
+        version='1.0.0',
+        member_skill_ids=[member_id],
+        is_latest=True,
+        stored_content_hash=archive_manifest_hash,
+    )
+    historical_hash = f'sha256:{hashlib.sha256(b"historical-definition").hexdigest()}'
+    row = await _seed_agent(
+        client.session,
+        direct_skill_ids=[],
+        skill_bundles=[
+            {
+                'package_id': package_id,
+                'version': '1.0.0',
+                'content_hash': historical_hash,
+                'bundle_slug': f'{tag}-pack',
+            }
+        ],
+    )
+
+    await _run_migration(client.session, _HASH_REPAIR_MIGRATION)
+    await client.session.refresh(row)
+    stored_hash = (
+        await client.session.execute(
+            sa.select(MarketplaceTemplateVersion.content_hash).where(
+                MarketplaceTemplateVersion.template_id == package_id,
+                MarketplaceTemplateVersion.version == '1.0.0',
+            )
+        )
+    ).scalar_one()
+
+    assert stored_hash == definition_hash
+    assert row.profile_revision == 7
+    assert row.skill_bundles is not None
+    assert row.skill_bundles[0]['content_hash'] == historical_hash
 
 
 async def test_agent_cannot_uninstall_common_or_personal_skill(client) -> None:

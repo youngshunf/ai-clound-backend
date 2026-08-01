@@ -173,8 +173,8 @@ async def resolve_frozen_skill_bundles(db: AsyncSession, stored_refs: Any) -> li
             log.warning(f'技能包冻结版本不存在，暂不下发 Runtime: {package_id}@{version}')
             continue
 
-        current_hash = str(row.content_hash or row.file_hash or '').strip()
         hermes_yaml = str(row.hermes_yaml)
+        current_hash = skill_pack_service.content_hash(hermes_yaml)
         member_ids = skill_pack_service.member_skill_ids(hermes_yaml)
         try:
             member_skills = await skill_pack_service.resolve_member_skill_snapshots(
