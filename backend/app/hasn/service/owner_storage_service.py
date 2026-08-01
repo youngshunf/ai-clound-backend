@@ -247,6 +247,29 @@ def _stored_asset_of(row: Any, *, deduplicated: bool) -> StoredAsset:
     )
 
 
+def _export_job_view(row: Any) -> dict[str, Any]:
+    """导出作业行 → 对外视图。单条查询与列表共用，避免两处形状漂移。"""
+    payload = dict(row['payload'])
+    result = dict(row['result'])
+    return {
+        'job_id': str(row['job_id']),
+        'status': str(row['status']),
+        'mode': payload.get('mode'),
+        'total_items': int(row['total_items']),
+        'processed_items': int(row['processed_items']),
+        'failed_items': int(row['failed_items']),
+        'total_bytes': int(payload.get('total_bytes', 0)),
+        'error_code': row['error_code'],
+        'attempt_count': int(row['attempt_count']),
+        'size_bytes': result.get('size_bytes'),
+        'sha256': result.get('sha256'),
+        'failures': list(result.get('failures') or []),
+        'expires_time': row['expires_time'].isoformat() if row['expires_time'] else None,
+        'created_time': row['created_time'].isoformat(),
+        'updated_time': row['updated_time'].isoformat() if row['updated_time'] else None,
+    }
+
+
 class OwnerStorageService:
     """按 Owner 隔离的配额与对象生命周期权威。"""
 
@@ -3718,25 +3741,41 @@ class OwnerStorageService:
             ).mappings().one_or_none()
         if row is None:
             raise errors.NotFoundError(msg='STORAGE_EXPORT_NOT_FOUND')
-        payload = dict(row['payload'])
-        result = dict(row['result'])
-        return {
-            'job_id': str(row['job_id']),
-            'status': str(row['status']),
-            'mode': payload.get('mode'),
-            'total_items': int(row['total_items']),
-            'processed_items': int(row['processed_items']),
-            'failed_items': int(row['failed_items']),
-            'total_bytes': int(payload.get('total_bytes', 0)),
-            'error_code': row['error_code'],
-            'attempt_count': int(row['attempt_count']),
-            'size_bytes': result.get('size_bytes'),
-            'sha256': result.get('sha256'),
-            'failures': list(result.get('failures') or []),
-            'expires_time': row['expires_time'].isoformat() if row['expires_time'] else None,
-            'created_time': row['created_time'].isoformat(),
-            'updated_time': row['updated_time'].isoformat() if row['updated_time'] else None,
-        }
+        return _export_job_view(row)
+
+    async def list_exports(
+        self,
+        *,
+        owner_hasn_id: str,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """按创建时间倒序列出本人的导出作业。
+
+        没有这个接口，客户端只能把 `job_id` 记在页面内存里——换页、重开窗口或换设备后
+        作业就再也找不回来（作业还在云端跑完，产物躺到过期没人取）。列表让客户端每次进页面
+        都能凭权威数据恢复「进行中 / 可下载」的状态卡。
+        """
+        if limit <= 0 or limit > 50:
+            raise errors.RequestError(msg='STORAGE_EXPORT_LIST_LIMIT_INVALID')
+        async with self._sessions() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT job_id, status, total_items, processed_items, failed_items,
+                               error_code, payload, result, attempt_count, expires_time,
+                               created_time, updated_time
+                        FROM hasn_storage_jobs
+                        WHERE owner_hasn_id = :owner
+                          AND job_type = 'storage_export'
+                        ORDER BY created_time DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {'owner': owner_hasn_id, 'limit': limit},
+                )
+            ).mappings().all()
+        return {'items': [_export_job_view(row) for row in rows]}
 
     async def export_download(
         self,
@@ -5166,10 +5205,61 @@ class OwnerStorageService:
                 ).scalar_one_or_none()
                 if updated is None:
                     raise errors.ServerError(msg='STORAGE_JOB_STATE_INVALID')
+                await self._notify_export_ready(
+                    db,
+                    owner_hasn_id=owner_hasn_id,
+                    job_id=str(job['job_id']),
+                    item_count=len(rows),
+                    size_bytes=output_size,
+                )
         finally:
             await asyncio.to_thread(manifest_path.unlink, missing_ok=True)
             if archive_path is not None:
                 await asyncio.to_thread(archive_path.unlink, missing_ok=True)
+
+    @staticmethod
+    async def _notify_export_ready(
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        job_id: str,
+        item_count: int,
+        size_bytes: int,
+    ) -> None:
+        """导出跑完告知主人：这是主人主动发起、要等结果的动作，跑完不吭声等于让人干等。
+
+        产物有保留期（默认 24h），过期即不可下载，所以这条要能弹到桌面（category=system
+        默认带 toast/push），不像后台清理那种纯告知只留通知中心。
+        通知失败不回滚作业——产物已经落桶，告知是 best-effort。
+        """
+        from backend.app.notification.service.notification_service import NotificationService
+
+        try:
+            await NotificationService.emit(
+                db,
+                recipient_id=owner_hasn_id,
+                source={'kind': 'system', 'id': 'owner_storage', 'display_name': '云存储'},
+                category='system',
+                type='storage_export_ready',
+                title='云存储导出已完成',
+                body=f'已打包 {item_count} 个文件（{size_bytes} 字节），可在「设置 → 云存储 → 用量」'
+                '下载。产物保留 24 小时，过期后需重新导出。',
+                payload={
+                    'job_id': job_id,
+                    'item_count': item_count,
+                    'size_bytes': size_bytes,
+                    'target': {'id': job_id},
+                    'link': 'hasn://storage/usage',
+                },
+                dedupe_key=f'storage_export_ready:{job_id}',
+                # 卡片消息会另开一个服务号会话，对「去设置页点下载」这件事是多余的一跳。
+                delivery_hint={'channels': {'card_message': False}},
+            )
+        except Exception as exc:  # noqa: BLE001 - 告知失败不该让已完成的导出回滚
+            log.warning(
+                f'云存储导出完成通知发送失败: owner={owner_hasn_id} job_id={job_id} '
+                f'{type(exc).__name__}: {exc!s}'
+            )
 
     async def _validate_export_sources(
         self,
