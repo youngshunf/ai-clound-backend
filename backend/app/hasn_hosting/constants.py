@@ -152,5 +152,13 @@ IMAGE_ASSET_KIND: Final[str] = 'image'
 #: 无明确订阅档位时的默认云端节点上限（每订阅 1 个）
 DEFAULT_CLOUD_NODE_QUOTA: Final[int] = 1
 
-#: 订阅准入判定用的 feature_key
+#: 订阅准入判定用的 feature_key（已注册进 `billing.core.feature_registry.FIXED_FEATURE_KEYS`）。
+#: 注意与 `webapp:hosting` 区分：那个托管的是主人的**网页应用**（doc06 全栈托管），
+#: 本键托管的是主人的**分身节点**（无头 hasn-node 容器）。
 CLOUD_NODE_FEATURE_KEY: Final[str] = 'cloud_node'
+
+#: 云端节点**加购**商品（超出档位附赠部分按需购买）：¥128/月 · ¥1228/年，与 llm:tier 的 pro 同价同折扣
+CLOUD_NODE_OFFERING_KEY: Final[str] = 'cloud:node'
+
+#: LLM 订阅商品键——按 tier 名反查档位附赠的云端节点数时用（存量合同不写 offering_key）
+LLM_TIER_OFFERING_KEY: Final[str] = 'llm:tier'

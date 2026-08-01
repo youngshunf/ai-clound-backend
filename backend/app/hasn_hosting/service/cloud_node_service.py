@@ -44,6 +44,8 @@ from backend.app.hasn_hosting.constants import (
     FAILURE_INTERNAL_ERROR,
     FAILURE_REASONS,
     IMAGE_ASSET_KIND,
+    LLM_TIER_OFFERING_KEY,
+    NODE_STATUSES,
     NODE_STATUS_DELETED,
     NODE_STATUS_DELETING,
     NODE_STATUS_FAILED,
@@ -52,7 +54,6 @@ from backend.app.hasn_hosting.constants import (
     NODE_STATUS_STARTING,
     NODE_STATUS_STOPPED,
     NODE_STATUS_UPDATING,
-    NODE_STATUSES,
 )
 from backend.app.hasn_hosting.model import HasnCloudNodeEvents, HasnCloudNodes
 from backend.app.hasn_hosting.provider.agent_client import HostingAgentError, hosting_agent_provider
@@ -82,10 +83,29 @@ def _new_cloud_node_id() -> str:
     return f'n_cloud_{uuid.uuid4().hex[:16]}'
 
 
+#: 「持有 cloud_node 加购权益」的判定原因码（`resolve_access` 十态里真的有权益的那几个）。
+#: 特意**不含** `free`——那是「库里没配 cloud:node 商品」时的非门控放行，
+#: 把它当成持有权益会让所有人（含免费档）凭空获得加购资格，付费墙直接失效。
+_ADDON_HELD_REASONS: tuple[str, ...] = ('entitled', 'trialing', 'expired_in_grace')
+
+
 class CloudNodeService:
     """Owner 面 + 内部面共用的托管编排。"""
 
-    # ─── 订阅与配额 ───
+    # ─── 订阅与配额（混合结构，主人 2026-08-01 拍板） ───
+    #
+    # 云端节点的名额有**两个来源**：
+    #   来源 A｜LLM 订阅档附赠：`llm:tier` 的 pro 及以上各档各附赠 1 个，free 档 0 个（不给试用）；
+    #   来源 B｜`cloud:node` 独立商品加购：¥128/月 · ¥1228/年，买几份加几个。
+    #
+    # 两条来源必须**取并集判准入、求和算上限**：
+    #   允许创建 ⟺ （档位附赠数 > 0） 或 （持有有效 cloud_node 权益）
+    #   配额上限  = 档位附赠数 ＋ 权益快照里的加购数
+    #
+    # 少任何一路都是事故：只认权益 → `cloud_node` 一进 `FIXED_FEATURE_KEYS`，
+    # `resolve_access` 就从「未知特征放行」翻成「无权益即拒」，pro 用户的附赠被自家付费墙挡死；
+    # 只认附赠 → 加购的钱白花。`is_entitled`（sweep 判存活）与本口径**逐条对齐**，
+    # 否则附赠用户会被判成「订阅失效」停机，30 天后连数据卷一起销毁。
 
     @staticmethod
     async def _active_subscription(db: AsyncSession, *, user_id: int) -> UserSubscription | None:
@@ -105,11 +125,17 @@ class CloudNodeService:
         return None
 
     @staticmethod
-    async def _quota_of(db: AsyncSession, subscription: UserSubscription) -> int:
-        """该订阅允许的云端节点数上限。
+    async def _tier_grant(db: AsyncSession, subscription: UserSubscription) -> int:
+        """**来源 A**：该订阅所在 LLM 档位**附赠**的云端节点数。
 
-        取值顺序：合同快照 `plan_snapshot.max_cloud_nodes` → 商品档位 `billing_plan.quota_json`
-        → 配置默认（`HOSTING_MAX_NODES_PER_OWNER`，默认 1）。档位没写就是没写，不臆造上限。
+        取值顺序（先命中先返回）：
+
+        1. 合同快照 `plan_snapshot.max_cloud_nodes`——购买时固化的合同参数，权威且不随改价漂移；
+        2. `billing_plan.quota_json`，按合同上的 `(offering_key, plan_key)` 精确命中；
+        3. `billing_plan.quota_json`，按 `tier` 名反查 `llm:tier` 档位——存量合同（尤其
+           `credit_grant_service` 建的 free 档）根本不写 `offering_key`/`plan_key`，没有这一步
+           它们会一路掉到配置默认值，让**免费档白拿一个云端节点**；月付/年付同档附赠数相同，取任一即可；
+        4. 配置默认 `HOSTING_MAX_NODES_PER_OWNER`。档位没写就是没写，不臆造上限。
         """
         snapshot = subscription.plan_snapshot or {}
         raw = snapshot.get('max_cloud_nodes')
@@ -124,6 +150,20 @@ class CloudNodeService:
             ).scalar_one_or_none()
             if plan is not None:
                 raw = (plan.quota_json or {}).get('max_cloud_nodes')
+        if raw is None and subscription.tier:
+            plan = (
+                await db.execute(
+                    select(BillingPlan)
+                    .where(
+                        BillingPlan.offering_key == LLM_TIER_OFFERING_KEY,
+                        BillingPlan.quota_json['tier'].astext == subscription.tier,
+                        BillingPlan.status == 'active',
+                    )
+                    .order_by(BillingPlan.sort_order, BillingPlan.plan_key)
+                )
+            ).scalars().first()
+            if plan is not None:
+                raw = (plan.quota_json or {}).get('max_cloud_nodes')
         if raw is None:
             return int(settings.HOSTING_MAX_NODES_PER_OWNER)
         try:
@@ -132,26 +172,56 @@ class CloudNodeService:
             log.warning(f'[hosting] 订阅 {subscription.id} 的 max_cloud_nodes 非法（{raw!r}），回落配置默认值')
             return int(settings.HOSTING_MAX_NODES_PER_OWNER)
 
-    async def _assert_can_create(self, db: AsyncSession, *, user_id: int, owner_hasn_id: str) -> None:
-        """创建前置闸：统一准入判定 + 有效订阅 + 未超配额。任一不过即抛带错误码的 4xx。"""
+    @staticmethod
+    async def _addon_access(db: AsyncSession, *, owner_hasn_id: str) -> tuple[bool, int]:
+        """**来源 B**：`cloud:node` 加购权益 → `(是否持有有效权益, 加购节点数)`。
+
+        走商业化内核统一判定入口，宽限期 / 下架 / 超额等口径全部复用，不在托管侧另立一套。
+        只有 `_ADDON_HELD_REASONS` 里的原因码才算「真的持有权益」——`reason='free'` 表示库里
+        压根没配 `cloud:node` 商品（非门控放行），此时加购数为 0 且**不**视为持有。
+        """
         decision = await resolve_access(
             db, feature_key=CLOUD_NODE_FEATURE_KEY, subject_type='owner', subject_id=owner_hasn_id
         )
-        if not decision.allowed:
-            log.warning(f'[hosting] 创建云端节点被商业化内核拦下: owner={owner_hasn_id}, reason={decision.reason}')
-            raise errors.ForbiddenError(
-                msg=f'当前订阅不支持云端节点（{decision.reason}）',
-                data={'error': ERR_SUBSCRIPTION_REQUIRED, 'reason': decision.reason},
-            )
+        if not decision.allowed or decision.reason not in _ADDON_HELD_REASONS:
+            return False, 0
+        snapshot = (decision.quota.snapshot if decision.quota else None) or {}
+        raw = snapshot.get('max_cloud_nodes')
+        if raw is None:
+            # 宽限期分支不带配额快照，或权益行漏了该键：持有资格成立，但加不出具体名额。
+            return True, 0
+        try:
+            return True, max(0, int(raw))
+        except (TypeError, ValueError):
+            log.warning(f'[hosting] 主人 {owner_hasn_id} 的 cloud_node 权益 max_cloud_nodes 非法（{raw!r}），按 0 计')
+            return True, 0
 
+    async def _quota_of(
+        self, db: AsyncSession, subscription: UserSubscription | None, *, owner_hasn_id: str
+    ) -> int:
+        """该主人的云端节点数上限 = 档位附赠数 ＋ 加购数（混合结构求和）。"""
+        grant = await self._tier_grant(db, subscription) if subscription is not None else 0
+        _, addon = await self._addon_access(db, owner_hasn_id=owner_hasn_id)
+        return grant + addon
+
+    async def _assert_can_create(self, db: AsyncSession, *, user_id: int, owner_hasn_id: str) -> None:
+        """创建前置闸：附赠/加购并集准入 + 未超配额（求和上限）。任一不过即抛带错误码的 4xx。"""
         subscription = await self._active_subscription(db, user_id=user_id)
-        if subscription is None:
-            log.warning(f'[hosting] 创建云端节点被拒（无有效订阅）: user_id={user_id}')
+        grant = await self._tier_grant(db, subscription) if subscription is not None else 0
+        addon_held, addon = await self._addon_access(db, owner_hasn_id=owner_hasn_id)
+
+        # 准入闸：两个来源取并集。free 档（附赠 0）且无加购权益 → 明确拒绝，
+        # 错误码保持 ERR_SUBSCRIPTION_REQUIRED（WebUI 空态文案「云端节点随订阅开通」按它分支）。
+        if grant <= 0 and not addon_held:
+            log.warning(
+                f'[hosting] 创建云端节点被拒（无档位附赠且无加购权益）: '
+                f'user_id={user_id}, owner={owner_hasn_id}, tier_grant={grant}'
+            )
             raise errors.ForbiddenError(
-                msg='需要有效订阅才能创建云端节点', data={'error': ERR_SUBSCRIPTION_REQUIRED}
+                msg='需要有效订阅或加购云端节点才能创建', data={'error': ERR_SUBSCRIPTION_REQUIRED}
             )
 
-        quota = await self._quota_of(db, subscription)
+        quota = grant + addon
         used = int(
             (
                 await db.execute(
@@ -166,7 +236,10 @@ class CloudNodeService:
             or 0
         )
         if used >= quota:
-            log.warning(f'[hosting] 云端节点配额超限: owner={owner_hasn_id}, used={used}, quota={quota}')
+            log.warning(
+                f'[hosting] 云端节点配额超限: owner={owner_hasn_id}, used={used}, '
+                f'quota={quota}（附赠 {grant} + 加购 {addon}）'
+            )
             raise errors.ForbiddenError(
                 msg=f'已达云端节点配额上限（{used}/{quota}）',
                 data={'error': ERR_QUOTA_EXCEEDED, 'used': used, 'quota': quota},
@@ -175,19 +248,22 @@ class CloudNodeService:
     async def is_entitled(self, db: AsyncSession, *, user_id: int, owner_hasn_id: str) -> bool:
         """该主人当前是否仍有资格持有云端节点（生命周期 sweep 判「订阅到期」/「续订恢复」用）。
 
-        判据与 `_assert_can_create` 的前两道闸**逐条对齐**：统一准入闸放行 **且** 有未过期的
-        active 订阅。配额闸不参与——存量节点不该因为档位下调而被停机销毁，那属于运营决策，
-        不是「订阅到期」。
+        判据与 `_assert_can_create` 的**准入闸逐条对齐**——附赠与加购取并集：
 
+        - 有未过期的 active 订阅，且其档位附赠数 > 0（pro 及以上）；**或**
+        - 持有有效的 `cloud_node` 加购权益。
+
+        两条缺一不可对齐：漏了附赠这一路，pro 用户零加购的节点会被 sweep 判成「订阅失效」
+        而停机，30 天后连数据卷一起销毁——这是本模块最贵的一种误判。
+
+        配额闸刻意不参与：存量节点不该因为档位下调而被停机销毁，那属于运营决策，不是「订阅到期」。
         本方法不抛错、只回布尔：sweep 是批处理，单个主人判定失败不该炸掉整轮。
         """
-        decision = await resolve_access(
-            db, feature_key=CLOUD_NODE_FEATURE_KEY, subject_type='owner', subject_id=owner_hasn_id
-        )
-        if not decision.allowed:
-            return False
         subscription = await self._active_subscription(db, user_id=user_id)
-        return subscription is not None
+        if subscription is not None and await self._tier_grant(db, subscription) > 0:
+            return True
+        addon_held, _ = await self._addon_access(db, owner_hasn_id=owner_hasn_id)
+        return addon_held
 
     async def active_subscription_end(self, db: AsyncSession, *, user_id: int) -> datetime | None:
         """当前有效订阅的到期时刻（到期前提醒用）。
