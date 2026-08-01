@@ -22,6 +22,7 @@ def test_offline_frame_registry_covers_current_production_methods() -> None:
     """当前所有可进入离线路径的生产帧必须显式登记。"""
     assert set(OFFLINE_FRAME_POLICIES) == {
         'WorkspaceSwitched',
+        'hasn.agent.progress',
         'hasn.contact.connected',
         'hasn.contact.removed',
         'hasn.contact.request_received',
@@ -75,6 +76,18 @@ def test_typing_is_transient_and_never_requires_offline_storage() -> None:
     )
     assert decision.category is OfflineFrameCategory.TRANSIENT
     assert decision.identity is None
+
+
+@pytest.mark.parametrize('mode', ('redis', 'dual', 'sync'))
+def test_agent_progress_is_transient_in_every_mode(mode: str) -> None:
+    """分身回复进度是在途状态，任何恢复模式都不得写离线队列（离线补投毫无意义）。"""
+    payload = json.dumps({
+        'hasn': 'hasn/0.2',
+        'method': 'hasn.agent.progress',
+        'params': {'conversation_id': 'conv-1', 'phase': 'update', 'tool_count': 3},
+    })
+    assert classify_offline_frame(payload).category is OfflineFrameCategory.TRANSIENT
+    assert decide_offline_storage(payload, mode) is OfflineStorageAction.SKIP
 
 
 @pytest.mark.parametrize(

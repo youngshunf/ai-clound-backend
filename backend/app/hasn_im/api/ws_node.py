@@ -831,6 +831,42 @@ async def _handle_typing(params: dict, active_entities: set[str]) -> None:
     await ws_node_runtime.push_message_to(to_id=to_id, payload=typing_payload)
 
 
+async def _handle_agent_progress(params: dict, active_entities: set[str]) -> None:
+    """处理 hasn.agent.progress（分身回复进度，瞬态转发）。
+
+    只转「阶段 + 工具计数」这类状态，**协议层不含正文**——发送端的出站披露闸拿完整回复
+    判决，边流边送未完成正文会让拦截失效（设计文档 §3.2）。不落库、不入离线队列。
+    """
+    from_id = params.get('from_id', '')
+    conversation_id = params.get('conversation_id', '')
+    phase = params.get('phase', '')
+
+    if not from_id or not conversation_id or phase not in {'start', 'update', 'end'}:
+        return
+    # from_id 必须是本连接已上报的实体（与 hasn.message.send 同口径）；瞬态帧不回错误，静默丢弃。
+    if from_id not in active_entities:
+        return
+
+    payload = _frame(
+        'hasn.agent.progress',
+        {
+            'from_id': from_id,
+            'conversation_id': conversation_id,
+            'phase': phase,
+            'tool_count': params.get('tool_count', 0),
+            'elapsed_ms': params.get('elapsed_ms', 0),
+            'seq': params.get('seq', 0),
+        },
+    )
+    async with im_service_db_session() as db:
+        await ws_node_runtime.relay_agent_progress(
+            db,
+            from_id=from_id,
+            conversation_id=conversation_id,
+            payload=payload,
+        )
+
+
 async def _handle_ping(
     websocket: WebSocket,
     node_id: str,
@@ -870,6 +906,7 @@ _HANDLERS: dict[str, Any] = {
     'hasn.message.send': _handle_send,
     'hasn.message.read': _handle_read,
     'hasn.typing': _handle_typing,
+    'hasn.agent.progress': _handle_agent_progress,
     'hasn.ping': _handle_ping,
 }
 

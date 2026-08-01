@@ -72,6 +72,8 @@ HANDLER_SPECS: dict[str, HandlerSpec] = {
     'hasn.message.send': HandlerSpec('hasn.message.send', (_WS, _NODE, _PARAMS, _ENTITIES)),
     'hasn.message.read': HandlerSpec('hasn.message.read', (_PARAMS, _ENTITIES)),
     'hasn.typing': HandlerSpec('hasn.typing', (_PARAMS, _ENTITIES)),
+    # 分身回复进度（瞬态：不落库、不入离线队列）。与 typing 同族，只多一步群扇出。
+    'hasn.agent.progress': HandlerSpec('hasn.agent.progress', (_PARAMS, _ENTITIES)),
     'hasn.ping': HandlerSpec('hasn.ping', (_WS, _NODE, _CONN, _PARAMS), may_close_loop=True),
 }
 
