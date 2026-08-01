@@ -215,10 +215,13 @@ async def test_owner_entry_push_worker_pull_uses_separate_transactions(
     )
     try:
         await _seed_identity(api_sessions, owner_id, agent_id)
-        async with api_sessions.begin() as sync_db:
+        # doc19 §8.3-4：push 端点另收一个只读 `memory_db`，专供语义事实上行的入队前裁决。
+        # 本用例推的是 session 事件，裁决路径不会碰它，但签名要求必须给足。
+        async with api_sessions.begin() as sync_db, api_sessions() as memory_db:
             response = await push_sync_events(
                 _request(owner_id),
                 sync_db,
+                memory_db,
                 request,
             )
         assert response.accepted == 1

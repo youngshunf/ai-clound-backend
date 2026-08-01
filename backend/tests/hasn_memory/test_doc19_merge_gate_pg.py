@@ -297,8 +297,10 @@ async def test_master_brain_apply_writes_overlay_derived_memory_and_portrait(env
     assert memory.last_merge_node_id == fx.node_a
     assert memory.last_merge_summary == body.summary
     # 身份兜底（_ensure_identity_lines）：昵称与 Owner HASN ID 必须被补回，绝不因合并丢失
-    assert '称呼: 合并闸主人' in memory.content
-    assert fx.owner_id in memory.content
+    merged_content = memory.content
+    assert merged_content is not None
+    assert '称呼: 合并闸主人' in merged_content
+    assert fx.owner_id in merged_content
 
     portrait = (
         await db.execute(select(PeerPortrait).where(PeerPortrait.owner_id == fx.owner_id))
@@ -317,13 +319,14 @@ async def test_master_brain_apply_writes_overlay_derived_memory_and_portrait(env
 async def test_master_brain_apply_bumps_agent_user_md_for_mempush(env: tuple[AsyncSession, Fixture]) -> None:
     """MEMPUSH（doc19 §10 保留）：合并后覆盖该 owner 全部分身 user_md 并 bump profile_revision。"""
     db, fx = env
-    before = dict(
-        (
+    before: dict[str, int] = {
+        row.hasn_id: row.profile_revision
+        for row in (
             await db.execute(
                 sa.select(HasnAgents.hasn_id, HasnAgents.profile_revision).where(HasnAgents.owner_id == fx.owner_id)
             )
         ).all()
-    )
+    }
     body = _request(fx, owner_memory=MergeOwnerMemoryPayload(content='工作: 主人主攻 Rust'))
     await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
 
