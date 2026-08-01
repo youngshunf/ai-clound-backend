@@ -27,6 +27,7 @@ from backend.app.hasn.schema.hasn_agents import (
 )
 from backend.app.marketplace.service.common_skills_service import get_common_skill_snapshot
 from backend.app.hasn_im.application.provider import get_presence_query
+from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -704,6 +705,18 @@ class HasnAgentProfileService:
             agent.user_md = provided['user_md']
         if 'memory_md' in provided:
             agent.memory_md = provided['memory_md']
+
+        # doc19 §4.6「正文直编逃生口」：本方法是**主人手工**改 USER.md 的唯一云端写入点
+        # （Owner JWT 的 PATCH `/api/v1/hasn/app/agents/by-hasn-id/{hasn_id}`，daemon
+        # `PUT /api/v1/agents/{id}/memory-files/user` 打过来），所以在这里、也只在这里给该
+        # owner 置 `owner_memory.owner_edited`——USER.md 是主人画像的投影（MEMPUSH 覆盖每个
+        # 分身的 `user_md`），改哪个分身的这一段，改的都是主人画像本身。
+        # 系统写入路径全部不经过本方法（MEMPUSH bulk UPDATE / 合并 apply 写回 / 昵称刷新 /
+        # 建档播种），判据与不置位的代价见 `owner_memory_service.mark_owner_edited` 文档。
+        # 空串（清空 USER.md）不置位：那是「让下一轮从事实重算」，没有需要保留的主人表述，
+        # 与本地 `mark_owner_portrait_edited` 跳过空正文同口径。
+        if (provided.get('user_md') or '').strip():
+            await owner_memory_service.mark_owner_edited(db, owner_id=owner_id)
 
         if hasattr(agent, 'profile_revision'):
             agent.profile_revision = (agent.profile_revision or 1) + 1

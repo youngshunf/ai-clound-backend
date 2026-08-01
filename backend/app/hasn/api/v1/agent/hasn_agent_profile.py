@@ -22,7 +22,7 @@ from backend.app.hasn.schema.hasn_agents import (
     MemoryContributeResponse,
     OwnerMemoryResponse,
 )
-from backend.app.hasn.service.owner_memory_service import owner_memory_service
+from backend.app.hasn.service.owner_memory_service import MEMORY_CONTRIBUTE_PENDING_NOTE, owner_memory_service
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
@@ -32,7 +32,6 @@ from backend.app.marketplace.service.common_skills_service import (
 )
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
-from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -215,17 +214,20 @@ async def get_agent_profile_revision(
 
 @router.post(
     '/memory/contribute',
-    summary='Agent 上传 owner 记忆观察（触发云端合并下发）',
+    summary='Agent 上传 owner 记忆观察（入贡献流，待主脑下次整理并入）',
 )
 async def contribute_owner_memory(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,
     body: MemoryContributeRequest,
 ) -> ResponseSchemaModel[MemoryContributeResponse]:
-    """Agent 把本地 USER.md 观察上传为 contribution，并尽力触发一次合并下发。
+    """Agent 把本地 USER.md 观察上传为 contribution。
 
     owner/agent 身份恒取自 agent JWT（owner_hasn_id / agent_hasn_id），不读 body。
-    合并失败不影响贡献入库：contribution 留待下次合并（零 fake，不产生假合并）。
+
+    **doc19 §10（2026-07-31）**：端点与语义保留，实现改为「只落贡献流，不再内联合并」——
+    云端 LLM 合并已整体退役，合并由**主脑分身在它自己的设备上**做（§5.1）。响应如实反映
+    「已记录，将在下次整理时并入」，**不假装已合并**（零 fake）。
     """
     accepted = await owner_memory_service.contribute(
         db,
@@ -233,28 +235,16 @@ async def contribute_owner_memory(
         agent_hasn_id=agent.agent_hasn_id,
         content=body.content,
     )
-    merged = False
-    version: int | None = None
-    merge_deferred = False
-    merge_error: str | None = None
-    if accepted.get('accepted'):
-        try:
-            outcome = await owner_memory_service.merge_owner_memory(db, owner_id=agent.owner_hasn_id)
-            merged = bool(outcome.get('merged'))
-            version = outcome.get('version')
-        except Exception as exc:
-            # 合并失败如实透出（merge_deferred + 原因摘要），让 runtime/分身别误以为已合并、
-            # 也别编造不存在的「后台异步合并」；贡献已入库、留待下次重试（零 fake）。
-            merge_deferred = True
-            merge_error = (str(exc).strip() or exc.__class__.__name__)[:200]
-            log.warning(f'owner memory merge deferred for {agent.owner_hasn_id}: {exc}')
+    memory = await owner_memory_service.get_owner_memory(db, owner_id=agent.owner_hasn_id)
+    is_accepted = bool(accepted.get('accepted'))
     return response_base.success(
         data=MemoryContributeResponse(
-            accepted=bool(accepted.get('accepted')),
-            merged=merged,
-            version=version,
-            merge_deferred=merge_deferred,
-            merge_error=merge_error,
+            accepted=is_accepted,
+            contribution_id=accepted.get('contribution_id'),
+            pending_merge=is_accepted,
+            merge_note=MEMORY_CONTRIBUTE_PENDING_NOTE if is_accepted else '',
+            owner_memory_version=int(memory.get('version') or 0),
+            reason=None if is_accepted else accepted.get('reason'),
         )
     )
 

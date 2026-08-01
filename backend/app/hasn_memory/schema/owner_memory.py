@@ -19,20 +19,24 @@ class MemoryContributeRequest(SchemaBase):
 
 
 class MemoryContributeResponse(SchemaBase):
-    """记忆贡献结果（含本轮是否触发合并）。
+    """记忆贡献结果。
 
-    诚实约束：观察已收录（accepted=True）但 LLM 合并失败时，``merged=False`` +
-    ``merge_deferred=True`` + ``merge_error`` 给出原因——调用方/分身据此如实告知主人
-    「已记录、合并稍后自动重试」，**禁止编造「后台异步合并完成」之类不存在的机制**。
+    **doc19 §10（2026-07-31）**：云端内联合并已退役，贡献只入流、不再当场并入 USER.md。
+    旧字段 ``merged`` / ``version`` / ``merge_deferred`` / ``merge_error`` 一并删除——它们描述的
+    是「云端这次合并成没成」，那个动作已经不存在，留着就是在描述一个不发生的机制（零 fake）。
+
+    显式承认的体验回退：贡献进 USER.md 由「即时」变为「最长至下次整理」（主脑离线更久）。
+    调用方/分身必须据 ``merge_note`` 如实告知主人，**禁止**说「已合并」或编造「后台异步合并完成」。
     """
 
     accepted: bool = Field(description='是否已接收为待合并贡献')
-    merged: bool = Field(default=False, description='本次是否触发了合并')
-    version: int | None = Field(None, description='合并后 owner 记忆版本（未合并则 None）')
-    merge_deferred: bool = Field(
-        default=False, description='本次合并失败、贡献留待下次重试（已收录但尚未合并进 owner_memory）'
+    contribution_id: int | None = Field(None, description='贡献 ID（accepted=False 时为 None）')
+    pending_merge: bool = Field(
+        default=False, description='已收录、等待主脑下次整理时并入（accepted=True 时恒为 True）'
     )
-    merge_error: str | None = Field(None, description='合并失败原因摘要（merge_deferred 时给出，否则 None）')
+    merge_note: str = Field(default='', description='面向主人的如实说明（分身照此转述，别加工）')
+    owner_memory_version: int = Field(default=0, description='当前合并态版本（本次调用不会改变它）')
+    reason: str | None = Field(None, description='未接收的原因（如 empty_content）')
 
 
 class OwnerMemoryResponse(SchemaBase):

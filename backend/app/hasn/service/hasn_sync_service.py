@@ -577,6 +577,8 @@ class SqlAlchemySyncGateway:
                     continuation_enabled,
                     enable_subagents,
                     created_by_kind,
+                    -- 内置任务广播语义（doc19 §9 / D-24）：assignment 变更重放下行事件时一并带出
+                    target_scope,
                     next_run_at,
                     run_count,
                     repeat_times,
@@ -833,6 +835,7 @@ class SqlAlchemySyncGateway:
                     created_by_kind,
                     builtin_key,
                     builtin_synced_revision,
+                    target_scope,
                     project_id,
                     app_id,
                     execution_kind,
@@ -879,6 +882,7 @@ class SqlAlchemySyncGateway:
                     :created_by_kind,
                     :builtin_key,
                     :builtin_synced_revision,
+                    :target_scope,
                     CAST(:project_id AS uuid),
                     :app_id,
                     :execution_kind,
@@ -928,6 +932,8 @@ class SqlAlchemySyncGateway:
                     builtin_synced_revision = COALESCE(
                         EXCLUDED.builtin_synced_revision, hasn_task.task.builtin_synced_revision
                     ),
+                    -- 内置任务广播语义（doc19 §9 / D-24）：随 catalog 定义更新（refresh-builtin 也走这里）
+                    target_scope = EXCLUDED.target_scope,
                     project_id = EXCLUDED.project_id,
                     app_id = EXCLUDED.app_id,
                     execution_kind = EXCLUDED.execution_kind,

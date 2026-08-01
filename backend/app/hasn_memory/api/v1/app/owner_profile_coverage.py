@@ -8,32 +8,19 @@ URL：`/api/v1/hasn/app/owner/profile-coverage`（由 `app/hasn/api/router.py` �
 前缀下挂载，daemon 代理）。读时惰性 assess（owner_memory 版本领先时重判，否则快读）。
 """
 
-import sqlalchemy as sa
-
 from fastapi import APIRouter, Request
 
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_memory.api.v1.app.owner_scope import resolve_owner_id as _resolve_owner_id
 from backend.app.hasn_memory.schema.owner_profile_coverage import (
     OwnerProactiveClaimResponse,
     OwnerProfileCoverageResponse,
 )
 from backend.app.hasn_memory.service.owner_profile_coverage_service import owner_profile_coverage_service
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
-
-
-async def _resolve_owner_id(request: Request, db: CurrentSession) -> str:
-    user_id = request.user.id
-    owner = (
-        await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id).limit(1))
-    ).scalar_one_or_none()
-    if not owner:
-        raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
-    return owner
 
 
 @router.get(
