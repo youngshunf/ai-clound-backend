@@ -56,7 +56,7 @@ from backend.app.hasn_memory.schema.merge_gate import (
     PendingMergeRequest,
     SkippedVerdict,
 )
-from backend.app.hasn_memory.service.fact_uplink_service import fact_uplink_service
+from backend.app.hasn_memory.service.fact_uplink_service import bump_memory_invalidate, fact_uplink_service
 from backend.app.hasn_memory.service.merge_request_service import merge_request_service
 from backend.app.hasn_memory.service.merge_run_service import merge_run_service
 from backend.app.hasn_memory.service.owner_memory_service import _ensure_identity_lines, _estimate_tokens
@@ -167,6 +167,9 @@ class MergeGateService:
         # 生效可见性与云端不一致——「本机查不到、别的设备查得到」正是要消灭的困惑。
         for fact_id in dict.fromkeys(touched_fact_ids):
             await fact_uplink_service.emit_fact_downlink(db, owner_id=owner_id, fact_id=fact_id)
+        # 只发事件不唤醒，各节点要等到下次登录才知道裁决变了（daemon 侧拉记忆命名空间的唯一
+        # 触发器就是这条 invalidate）。合并的产出恰恰是「全网可见性」，静默等于没合并。
+        await bump_memory_invalidate(db, owner_id)
 
         await self._upsert_run(
             db,

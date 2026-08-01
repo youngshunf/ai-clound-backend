@@ -528,6 +528,27 @@ def _parse_purge(payload: Mapping[str, Any], *, owner_id: str) -> ParsedPurge:
 # ======================================================================================
 # 七、服务
 # ======================================================================================
+# 回灌唤醒（doc19 §5.3 / D-9「全量回灌所有节点」）
+# ======================================================================================
+
+
+async def bump_memory_invalidate(db: AsyncSession, owner_id: str) -> None:
+    """记忆权威变更后，推 ``hasn.sync.invalidate{kind:memory}`` 唤醒该主人的**全部在线节点**。
+
+    没有这一步，回灌事件只会静静躺在 ``hasn_sync_events`` 里：daemon 侧唯一会拉记忆命名空间的
+    触发器就是这条 invalidate（`sync_invalidate.rs::reconcile_memory`）与登录时的一次性 pull。
+    实测（doc19 多节点 E2E）：node_A 写下一条事实并成功上行后，node_B 直到重新登录才看得到它,
+    D-9「每节点都是完整视图」当场落空。
+
+    与 `peer_portrait_service` 同款 best-effort：权威已落库，推送失败不回滚业务写，靠下一次
+    写点或重连握手追平。
+    """
+    try:
+        from backend.app.hasn.service.sync_invalidate_service import KIND_MEMORY, bump_owner
+
+        await bump_owner(KIND_MEMORY, db, owner_id)
+    except Exception as exc:  # noqa: BLE001 推送失败不该拖垮已落库的权威写
+        log.warning(f'记忆回灌 WSPUSH invalidate 失败 owner={owner_id}: {exc}')
 
 
 @dataclass
@@ -814,12 +835,15 @@ class FactUplinkService:
             return {'outcome': 'replay', 'reason': decision.reason, 'event_type': event_type}
 
         if event_type == 'memory.fact.purged':
-            return await self._apply_purge(db, owner_id=owner_id, node_id=node_id, payload=payload)
-        if event_type == 'memory.fact.merge_verdict':
-            return await self._apply_merge_verdict(db, owner_id=owner_id, payload=payload)
-        return await self._apply_business(
-            db, owner_id=owner_id, event_type=event_type, payload=payload, existed=decision.current is not None
-        )
+            result = await self._apply_purge(db, owner_id=owner_id, node_id=node_id, payload=payload)
+        elif event_type == 'memory.fact.merge_verdict':
+            result = await self._apply_merge_verdict(db, owner_id=owner_id, payload=payload)
+        else:
+            result = await self._apply_business(
+                db, owner_id=owner_id, event_type=event_type, payload=payload, existed=decision.current is not None
+            )
+        await bump_memory_invalidate(db, owner_id)
+        return result
 
     async def _apply_business(
         self,
