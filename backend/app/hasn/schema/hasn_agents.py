@@ -19,7 +19,9 @@ class HasnAgentsSchemaBase(SchemaBase):
     type: str = Field(
         description='Agent 类型 (desktop:桌面端:blue/mobile:手机端:green/cloud:云端:purple/web:网页端:orange)'
     )
-    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
+    # 运行位置：「分身跑在云端沙箱」形态已随 H8 退役，取值恒为 local（分身一律在 hasn-node 上
+    # 运行，云端托管的无头节点也是 local）。字段保留只为读存量行，禁止再写入 cloud。
+    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue)；云端形态已退役')
     role: str = Field(description='Agent 角色 (primary:主要:blue/specialist:专家:green/service:服务:orange)')
     node_id: str | None = Field(None, description='Agent 驻留节点 ID（设备指纹派生）')
     home_client_id: int | None = Field(None, description='本地 Agent 归属客户端 ID')
@@ -78,7 +80,8 @@ class AgentSnapshot(SchemaBase):
     description: str | None = Field(None, description='Agent 简介')
     avatar: str | None = Field(None, description='Agent 头像')
     type: str = Field(default='desktop', description='Agent 类型')
-    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
+    # 读模型保留（daemon read-through 需要）；云端沙箱形态已随 H8 退役，取值恒为 local。
+    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue)；云端形态已退役')
     role: str = Field(default='specialist', description='Agent 角色')
     profession: str | None = Field(None, description='领域专家头衔（如「金融专家」）')
     builtin_agent_key: str | None = Field(
@@ -134,10 +137,8 @@ class CloudCreateAgentRequest(SchemaBase):
     user_md: str | None = Field(None, description='USER.md 内容')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）；空则取模板种子')
     runtime_type: str | None = Field(None, description='期望本地绑定 Runtime 类型')
-    runtime_location: str = Field(
-        default='local',
-        description='运行位置 (local:本地非沙箱可访问授权目录/cloud:云端 Docker 沙箱)；默认 local',
-    )
+    # 创建入参不再接受 runtime_location（H8）：「分身跑在云端沙箱」形态已下线，分身一律落
+    # local。传了也不认——服务端恒写 local，避免客户端残留字段把已退役形态写回库。
     node_id: str | None = Field(None, description='创建发起节点 ID')
     agent_type: str = Field(default='desktop', description='Agent 类型')
     role: str = Field(default='specialist', description='Agent 角色')
@@ -339,7 +340,8 @@ class AgentProfileResponse(SchemaBase):
 
     hasn_id: str = Field(description='HASN Agent ID')
     display_name: str = Field(description='Agent 显示名')
-    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
+    # 读模型保留（Runtime read-through 需要）；云端沙箱形态已随 H8 退役，取值恒为 local。
+    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue)；云端形态已退役')
     soul_md: str | None = Field(None, description='SOUL.md 内容')
     agents_md: str | None = Field(None, description='AGENTS.md 内容')
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
@@ -375,84 +377,9 @@ class AgentProfileResponse(SchemaBase):
     )
 
 
-class RuntimeRunRequest(SchemaBase):
-    """云端 runtime 派发请求（Agent JWT，仅 runtime_location=cloud 分身）。
-
-    daemon 把它本地为 local 分身组装的 /v1/runs 派发信封（input/message/stream/
-    dispatch_id/instructions/tools/...）整体放进 payload，并携带其 binding metadata
-    里的 runtime_profile_id；云端据 profile_id 经 sidecar 控制面拿上游 gateway 端点，
-    直连 POST /v1/runs 启动 run，并把 SSE 事件逐帧中继回 daemon。
-    """
-
-    runtime_profile_id: str = Field(description='hermes 上游 profile_id（如 100001-assistant），由 daemon 携带')
-    payload: dict[str, Any] = Field(description='/v1/runs 派发信封（daemon 组装，云端不重组）')
-    trace_id: str | None = Field(None, description='链路追踪 ID（透传到 runtime header）')
-
-
-class RuntimeRunCancelRequest(SchemaBase):
-    """取消进行中的云端 run。"""
-
-    runtime_profile_id: str = Field(description='hermes 上游 profile_id')
-    trace_id: str | None = Field(None, description='链路追踪 ID')
-
-
-class RuntimeRunCancelResponse(SchemaBase):
-    run_id: str = Field(description='被取消的 run_id')
-    cancelled: bool = Field(description='是否成功取消')
-
-
-class RuntimeHealthResponse(SchemaBase):
-    """云端分身运行时健康（供 daemon 判可达性，双形态 Runtime 设计 08/02 §81）。
-
-    语义：云端 runtime 控制面可达 = `online=True`（对齐「关机后仍在线」——云端常驻、
-    网关按需起，冷网关不判降级）；控制面不可达 = `online=False`（零 fake，如实报离线）。
-    daemon 据此写本地 `binding_runtime_state`，让云端分身的可达性来自云端真实健康，
-    而非本地 hermes 探活（本地对云端分身根本没有它的网关）。
-    """
-
-    online: bool = Field(description='云端 runtime 控制面是否可达（可服务该分身）')
-    health: str = Field(description="健康度：'ok'（可达）/'offline'（不可达）")
-    detail: str | None = Field(None, description='细节（gateway_running/gateway_idle/不可达原因等，仅供观测）')
-
-
-class RuntimeSkillItem(SchemaBase):
-    """云端分身运行时的单个技能条目（列表用，与本地 hermes sidecar list_skills 同形态）。"""
-
-    skill_id: str = Field(description='技能 ID（profile skills/ 目录名）')
-    name: str = Field(description='技能名称')
-    description: str = Field(description='技能描述')
-    enabled: bool = Field(description='是否启用（未在 config.yaml skills.disabled 中）')
-
-
-class RuntimeSkillsListResponse(SchemaBase):
-    """列出云端分身运行时技能（双形态 Runtime，设计 04：云端 Runtime 收敛到 RuntimeAdapter）。"""
-
-    skills: list[RuntimeSkillItem] = Field(default_factory=list, description='技能列表（未 provision 则为空）')
-
-
-class RuntimeSkillReadResponse(SchemaBase):
-    """读取云端分身某个技能的正文（SKILL.md）。"""
-
-    skill_id: str = Field(description='技能 ID')
-    name: str = Field(description='技能名称')
-    description: str = Field(description='技能描述')
-    content: str = Field(description='SKILL.md 正文')
-    enabled: bool = Field(description='是否启用')
-
-
-class RuntimeSkillMutateRequest(SchemaBase):
-    """启用/停用云端分身某技能的请求（Agent JWT，仅 runtime_location=cloud 分身）。"""
-
-    runtime_profile_id: str = Field(description='hermes 上游 profile_id，由 daemon 携带')
-    trace_id: str | None = Field(None, description='链路追踪 ID')
-
-
-class RuntimeSkillMutateResponse(SchemaBase):
-    """启用/停用云端分身某技能的返回。"""
-
-    skill_id: str = Field(description='技能 ID')
-    enabled: bool = Field(description='操作后是否启用')
-    success: bool = Field(description='是否达成目标状态（enable→enabled / disable→disabled）')
+# 已退役（H8）：云端 Runtime 派发/技能请求响应体（RuntimeRunRequest / RuntimeRunCancel* /
+# RuntimeHealthResponse / RuntimeSkill*）随 `/api/v1/hasn/agent/runtime/*` 代理面整体删除。
+# 分身一律在 hasn-node 上运行，派发与技能读写走本地 sidecar，云端不再中继。
 
 
 class AgentProfileRevisionResponse(SchemaBase):

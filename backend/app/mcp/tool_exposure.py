@@ -7,8 +7,9 @@
 `evaluate`，各面消费同一投影（D6 四面同源铁律）。
 
 ⚠️ 暴露只受「权限 + 付费墙」限制，与工具在本地还是云端无关（福仔 2026-07-10 原则）：
-能搜就能用；本地分身两面（hasn-local + hasn-cloud）都能调、云端分身只连云端面。故本管线
-**不含**任何按 `runtime_location` 隐藏云端工具的门（原 TOOLMIG2-P4「运行位置收口」已整体退役）。
+能搜就能用，分身两面（hasn-local + hasn-cloud）都能调。故本管线**不含**任何按运行位置
+隐藏云端工具的门（原 TOOLMIG2-P4「运行位置收口」已整体退役；其依赖的运行位置快照亦已
+随 H8「云端 Runtime 下线」从 AgentContext 删除）。
 
 分期（实施/103）：U1 零行为变化收编，只装 G2 来源门 + G5 主人三态门（现状
 收编，不新建语义）；G1 平台特权门（U2 = diag P3a）、G3 应用权益门（U3）、
@@ -112,9 +113,9 @@ class ToolExposurePolicy:
         # 资格按本 Agent binding（gate1 owner 启用 + gate2 allowed_tools，由 server 每次调用前
         # 注入）per-request 过滤——不在授权集合的一律不可见，杜绝跨 Agent 串号。
         #
-        # 注：曾在此按 runtime_location 隐藏 deck/task/workflow（TOOLMIG2-P4「运行位置收口」），
+        # 注：曾在此按运行位置隐藏 deck/task/workflow（TOOLMIG2-P4「运行位置收口」），
         # 2026-07-10 福仔拍板整体退役——工具暴露只受权限 + 付费墙限制，与工具在本地/云端无关；
-        # 能搜就能用，本地分身两面都能调、云端分身只连云端面。故此处不再有按位置的隐藏门。
+        # 能搜就能用。故此处不再有按位置的隐藏门（该位置快照已随 H8 从 AgentContext 删除）。
         tool_name = getattr(tool, 'name', '')
         if getattr(tool, 'source', 'platform') == 'external':
             allowed: set[str] = getattr(agent_context, 'external_allowed_tools', set()) or set()

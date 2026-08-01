@@ -37,7 +37,6 @@ class AgentContext:
         token_payload: AgentTokenPayload | None = None,
         default_mode: str = 'allow',
         capability_modes: dict | None = None,
-        runtime_location: str = 'cloud',
     ) -> None:
         self.hasn_id = hasn_id
         self.owner_id = owner_id
@@ -47,11 +46,10 @@ class AgentContext:
         self.owner_hasn_id = owner_hasn_id
         self.session_uuid = session_uuid
         self._token_payload = token_payload
-        # 运行位置（local/cloud/remote）快照，鉴权时从 HasnAgents.runtime_location 灌入。
-        # ⚠️ 不参与工具暴露判定——工具暴露只受权限 + 付费墙限制，与分身在本地/云端无关
-        # （福仔 2026-07-10 拍板退役原 TOOLMIG2-P4「运行位置收口」）。此字段仅供其它用途
-        # （如 runtime 派发分叉：cloud 走云端 runtime、local 走本地 sidecar）。
-        self.runtime_location = runtime_location
+        # 已退役（H8）：此处曾挂一份 `runtime_location` 快照，唯一用途是 runtime 派发分叉
+        # （cloud 走云端 runtime / local 走本地 sidecar）。云端沙箱形态整体下线后该分叉不复
+        # 存在，快照无任何读取方，随形态删除。工具暴露本就不看运行位置（福仔 2026-07-10
+        # 拍板退役原 TOOLMIG2-P4「运行位置收口」），不受影响。
         # 维度① 三态能力授权（D3：消费时活取，凭证不再承载授权权威）。
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。
         self.default_mode = default_mode
@@ -104,7 +102,6 @@ class AgentContext:
         metadata: dict | None = None,
         default_mode: str = 'allow',
         capability_modes: dict | None = None,
-        runtime_location: str = 'cloud',
     ) -> 'AgentContext':
         return cls(
             hasn_id=payload.agent_hasn_id,
@@ -117,7 +114,6 @@ class AgentContext:
             token_payload=payload,
             default_mode=default_mode,
             capability_modes=capability_modes,
-            runtime_location=runtime_location,
         )
 
     def apply_policy(self, policy: dict) -> None:
@@ -243,7 +239,6 @@ async def get_agent_context(
         context = AgentContext.from_token_payload(
             payload,
             agent_status=agent.status,
-            runtime_location=getattr(agent, 'runtime_location', 'cloud') or 'cloud',
         )
         # D3 消费时活取：JWT scopes 仅审计快照，三态判定现查 DB（凭证与授权解耦）。
         policy = await get_agent_scopes_cached(x_hasn_agent_id, db)

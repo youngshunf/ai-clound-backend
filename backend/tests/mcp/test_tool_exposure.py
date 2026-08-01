@@ -9,9 +9,12 @@ U1 = 零行为变化收编：G2（external 白名单）与 G5（owner 三态）�
    逐位一致（G1 特权 / G4 角色→TOOL_NOT_FOUND；三态 deny→PermissionError——
    「deny 执行面也归 TOOL_NOT_FOUND」属行为变化，留 U5 拍板，此处锁现状）。
 
-⚠️ 原 TOOLMIG2-P4「运行位置收口」（按 runtime_location 对本地分身隐藏
-deck/task/workflow）已于 2026-07-10 整体退役——工具暴露只受权限 + 付费墙限制，
-与工具在本地/云端无关。本文件锁「无按位置隐藏」这一现状。
+⚠️ 原 TOOLMIG2-P4「运行位置收口」（按运行位置对本地分身隐藏 deck/task/workflow）
+已于 2026-07-10 整体退役——工具暴露只受权限 + 付费墙限制，与工具在本地/云端无关。
+H8「云端 Runtime 下线」后 AgentContext 已无运行位置快照，位置门再无处可建，故
+「逐位置对比可见性」的锁已成恒真、随字段一并删除；仍然有效的正向锁
+（任意分身都能发现 deck/task/workflow）保留在
+`test_cloud_tools_discoverable_without_location_gate`。
 
 工具加载/审计落库被 no-op（与 test_capability_ticket 同款接缝），判定本体零 mock。
 """
@@ -73,7 +76,6 @@ class _StubTool(BaseTool):
 
 def _ctx(
     *,
-    runtime_location: str = 'cloud',
     default_mode: str = 'allow',
     capability_modes: dict | None = None,
     external_allowed: set[str] | None = None,
@@ -87,7 +89,6 @@ def _ctx(
         session_uuid='amk_exposure_test',
         default_mode=default_mode,
         capability_modes=capability_modes or {},
-        runtime_location=runtime_location,
     )
     ctx.external_allowed_tools = external_allowed or set()
     return ctx
@@ -121,10 +122,10 @@ def test_g2_external_not_bound_hidden_and_bound_allowed() -> None:
     assert bound.action == ACTION_ALLOW
 
 
-def test_no_runtime_location_hiding_for_any_agent() -> None:
-    """回归锁（2026-07-10 福仔拍板）：工具暴露与分身在本地/云端无关——deck/task/workflow
-    等云端工具对任意 runtime_location 的分身都放行（原 TOOLMIG2-P4「运行位置收口」已整体
-    退役）。能搜就能用：暴露只受权限 + 付费墙限制。"""
+def test_cloud_tools_allowed_without_location_gate() -> None:
+    """回归锁（2026-07-10 福仔拍板）：deck/task/workflow 等云端工具对分身一律放行，
+    不得因「分身跑在哪」被隐藏（原 TOOLMIG2-P4「运行位置收口」已整体退役）。
+    能搜就能用：暴露只受权限 + 付费墙限制。"""
     policy = ToolExposurePolicy()
     for name, scope in (
         ('hasn.deck.create', 'deck:write'),
@@ -132,9 +133,8 @@ def test_no_runtime_location_hiding_for_any_agent() -> None:
         ('hasn.workflow.create', 'workflow:manage'),
     ):
         tool = _StubTool(name=name, scopes=[scope])
-        for loc in ('local', 'cloud', 'remote', '', 'unknown'):
-            decision = policy.evaluate(_ctx(runtime_location=loc), tool)
-            assert decision.action == ACTION_ALLOW, f'{name}@{loc} 应放行，不得按位置隐藏'
+        decision = policy.evaluate(_ctx(), tool)
+        assert decision.action == ACTION_ALLOW, f'{name} 应放行，不得按运行位置隐藏'
 
 
 def test_g5_tristate_deny_ask_allow() -> None:
@@ -177,32 +177,23 @@ def test_discovery_face_equals_evaluate_projection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_location_does_not_affect_exposure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """回归锁（2026-07-10 福仔拍板）：runtime_location 不再参与暴露判定。
+async def test_cloud_tools_discoverable_without_location_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归锁（2026-07-10 福仔拍板）：分身能在云端面**发现** deck/task/workflow
+    （其云端唯一/孪生工具）——这些曾被 TOOLMIG2-P4「运行位置收口」按运行位置隐藏，
+    该门已整体退役，不管分身跑在哪都能调云端工具。
 
-    ① 逐工具锁：本地分身与云端分身对每个真实注册工具的可见性**完全一致**（位置不影响暴露，
-       原按位置隐藏 deck/task/workflow 的门已退役）。
-    ② 正向锁：本地分身能在云端面**发现** deck/task/workflow（其云端唯一/孪生工具），
-       曾被运行位置收口隐藏，现已放行——不管分身在哪都能调云端工具。
+    注：原「本地 ctx 与云端 ctx 逐工具可见性一致」那半个断言已随 H8 删除——
+    AgentContext 不再有运行位置快照，两个 ctx 完全相同，断言恒真无锁定力。
     """
     server = _server_with_noop_io(monkeypatch)
-    local_ctx = _ctx(runtime_location='local')
-    cloud_ctx = _ctx(runtime_location='cloud')
+    ctx = _ctx()
 
-    # ① 本地与云端可见性逐工具一致
-    for tool in server.tool_registry.get_all_tools():
-        assert server.tool_directory._can_discover(local_ctx, tool) == server.tool_directory._can_discover(
-            cloud_ctx, tool
-        ), tool.name
-
-    # ② 本地分身能发现 deck/task/workflow（默认 ctx 无付费墙/特权限制）
+    # 默认 ctx 无付费墙/特权限制 → deck/task/workflow 必须可发现
     discoverable = {
-        tool.name
-        for tool in server.tool_registry.get_all_tools()
-        if server.tool_directory._can_discover(local_ctx, tool)
+        tool.name for tool in server.tool_registry.get_all_tools() if server.tool_directory._can_discover(ctx, tool)
     }
     for prefix in ('hasn.deck.', 'hasn.task.', 'hasn.workflow.'):
-        assert any(n.startswith(prefix) for n in discoverable), f'本地分身应能发现 {prefix}*（云端工具与位置无关）'
+        assert any(n.startswith(prefix) for n in discoverable), f'分身应能发现 {prefix}*（云端工具与运行位置无关）'
 
 
 @pytest.mark.asyncio
