@@ -149,3 +149,20 @@ async def test_grant_with_wrong_typ_is_invalid() -> None:
     claims, error = await access_ticket_service.verify_grant(wrong_typ)
     assert claims is None
     assert error == ERR_GRANT_INVALID
+
+
+async def test_grant_invalid_is_403_not_401(monkeypatch) -> None:
+    """grant 无效必须回 403，绝不能回 401。
+
+    401 会被 daemon transport（`transports/huanxing.rs` 对 401 丢弃整个信封）归一成
+    「凭据失效」，把「grant 坏 / 过期 / 重放」误报成「本容器设备凭据失效」，
+    进而把运维指向错误的自救动作（去点「重新授权」）——2026-07-31 E2E 实测到的真 bug。
+    口径：**401 专指调用方凭据问题；grant 不可接受一律 403。**
+    """
+    import inspect
+
+    from backend.app.hasn_hosting.api.v1.node import cloud as cloud_api
+
+    source = inspect.getsource(cloud_api.verify_session_grant)
+    assert 'HTTP_401' not in source, 'grant 校验失败分支不得使用 401'
+    assert source.count('ForbiddenError') >= 3, 'grant 无效/跨用户/跨节点三条拒绝都应是 403'

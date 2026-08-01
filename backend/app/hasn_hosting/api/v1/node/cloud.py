@@ -97,7 +97,13 @@ async def verify_session_grant(
     claims, error = await access_ticket_service.verify_grant(obj.grant)
     if claims is None:
         assert error is not None
-        raise errors.RequestError(code=StandardResponseCode.HTTP_401, msg='会话授予无效', data={'error': error})
+        # 用 403 而不是 401：调用方的设备 token 上面刚被 `jwt_authentication` 验过，它**是**已认证的；
+        # 无效的是请求体里那张 grant。用 401 会被 daemon transport 归一成「凭据失效」
+        # （`transports/huanxing.rs` 对 401 丢弃整个信封），从而把「grant 坏/过期/重放」
+        # 误报成「本容器设备凭据失效」，把运维指向错误的自救动作（去点「重新授权」）。
+        # 与下面两条同类拒绝保持一致：**401 专指凭据问题，grant 不可接受一律 403**。
+        log.error(f'[hosting] session grant 校验失败: reason={error}, caller_user={user_info.id}')
+        raise errors.ForbiddenError(msg='会话授予无效', data={'error': error})
 
     if claims.user_id != user_info.id:
         # 跨用户核销：不变量破坏级的越权尝试 → error
