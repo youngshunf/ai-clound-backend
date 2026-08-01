@@ -29,6 +29,44 @@ class AgentProfileSkillSources:
     origins: dict[str, list[str]]
 
 
+async def get_personal_skill_immutable_snapshots(
+    db: AsyncSession,
+    *,
+    personal_skill_ids: list[str],
+    owner_user_id: int,
+    owner_hasn_id: str,
+) -> dict[str, dict[str, str]]:
+    """返回当前主人个人技能的可验证版本快照，不泄露其他主人的同名资源。"""
+    ids = sorted({skill_id for skill_id in personal_skill_ids if skill_id})
+    if not ids:
+        return {}
+    rows = (
+        (
+            await db.execute(
+                sa.select(MarketplacePersonalSkill).where(
+                    MarketplacePersonalSkill.personal_skill_id.in_(ids),
+                    sa.or_(
+                        MarketplacePersonalSkill.user_id == owner_user_id,
+                        MarketplacePersonalSkill.hasn_id == owner_hasn_id,
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    snapshots: dict[str, dict[str, str]] = {}
+    for row in rows:
+        content_hash = str(row.content_hash or row.file_hash or '').strip()
+        version = int(row.version or 0)
+        if row.personal_skill_id and content_hash and version > 0:
+            snapshots[row.personal_skill_id] = {
+                'version': f'{version}.0.0',
+                'content_hash': content_hash,
+            }
+    return snapshots
+
+
 def normalize_skill_ids(value: Any) -> list[str]:
     """把历史 JSONB 形态归一为保序去重的技能引用。"""
     candidates: list[str] = []

@@ -172,7 +172,12 @@ async def get_common_skill_ids(db: AsyncSession) -> list[str]:
     return skill_ids
 
 
-async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) -> str:
+async def get_installed_skills_revision(
+    db: AsyncSession,
+    skill_ids: list[str],
+    *,
+    extra_fingerprints: dict[str, str] | None = None,
+) -> str:
     """Agent 自装技能的内容修订号（doc14 §B4）。
 
     = sha256(sorted "id@指纹" 行)[:16]，指纹取 ``COALESCE(content_hash, file_hash, version)``。
@@ -185,7 +190,7 @@ async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) 
         return EMPTY_COMMON_SKILLS_REVISION
     latest_version = _latest_skill_version_subquery(ids)
     rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.fingerprint))).all()
-    by_id: dict[str, str] = {}
+    by_id: dict[str, str] = dict(extra_fingerprints or {})
     for skill_id, fingerprint in rows:
         key = str(skill_id)
         if key not in by_id:

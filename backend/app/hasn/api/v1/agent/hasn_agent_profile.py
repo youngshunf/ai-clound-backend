@@ -26,6 +26,7 @@ from backend.app.hasn.service.owner_memory_service import MEMORY_CONTRIBUTE_PEND
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
 from backend.app.marketplace.service.agent_profile_sources import (
     build_agent_profile_skill_sources,
+    get_personal_skill_immutable_snapshots,
     normalize_skill_ids,
 )
 from backend.app.marketplace.service.common_skills_service import (
@@ -75,14 +76,26 @@ async def get_agent_profile(
         owner_hasn_id=agent.owner_hasn_id,
     )
     # 自装技能内容修订号（doc14 §B4）：自装技能内容升级即变，Runtime 据此重拉已装技能。
+    personal_snapshots = await get_personal_skill_immutable_snapshots(
+        db,
+        personal_skill_ids=sources.personal_skill_ids,
+        owner_user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+    )
+    personal_fingerprints = {
+        skill_id: snapshot['content_hash'] for skill_id, snapshot in personal_snapshots.items()
+    }
     installed_rev = await get_installed_skills_revision(
         db,
         [skill_id for skill_id in sources.effective_skill_ids if skill_id not in common_ids],
+        extra_fingerprints=personal_fingerprints,
     )
     merged_skill_ids = sources.effective_skill_ids
     # per-skill 指纹映射（doc14 §C4）：让 hermes 只重下指纹变化的技能，省全量重拉。
     skill_fingerprints = await get_skills_content_fingerprints(db, merged_skill_ids)
     skill_versions = await get_skills_immutable_snapshots(db, merged_skill_ids)
+    skill_fingerprints.update(personal_fingerprints)
+    skill_versions.update(personal_snapshots)
 
     # PDC：把平台默认 agent 运行时四槽 coalesce 进 runtime_config（runtime-facing 拉取式兜底）。
     # agent 显式非空必胜，None → 平台默认；agent 无配置且平台四槽全空 → None（保持"全默认"）。
@@ -156,9 +169,18 @@ async def get_agent_profile_revision(
         owner_user_id=agent.owner_user_id,
         owner_hasn_id=agent.owner_hasn_id,
     )
+    personal_snapshots = await get_personal_skill_immutable_snapshots(
+        db,
+        personal_skill_ids=sources.personal_skill_ids,
+        owner_user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+    )
     installed_rev = await get_installed_skills_revision(
         db,
         [skill_id for skill_id in sources.effective_skill_ids if skill_id not in common_ids],
+        extra_fingerprints={
+            skill_id: snapshot['content_hash'] for skill_id, snapshot in personal_snapshots.items()
+        },
     )
     return response_base.success(
         data=AgentProfileRevisionResponse(

@@ -212,6 +212,7 @@ async def _seed_agent(session, *, direct_skill_ids: list[str], skill_bundles: li
 
 
 async def _seed_personal_skill(session, *, personal_skill_id: str, slug: str) -> None:
+    content_hash = hashlib.sha256(personal_skill_id.encode()).hexdigest()
     session.add(
         MarketplacePersonalSkill(
             personal_skill_id=personal_skill_id,
@@ -221,7 +222,9 @@ async def _seed_personal_skill(session, *, personal_skill_id: str, slug: str) ->
             name='个人技能',
             origin='user-upload',
             visibility='private',
-            version=1,
+            content_hash=content_hash,
+            file_hash=content_hash,
+            version=3,
         )
     )
     await session.flush()
@@ -345,6 +348,11 @@ async def test_profile_returns_direct_personal_common_and_cross_pack_origins(cli
     assert profile['origins'][common_id] == ['common']
     assert profile['origins'][direct_id] == ['direct']
     assert profile['origins'][personal_id] == ['personal']
+    assert profile['skill_content_hashes'][personal_id] == hashlib.sha256(personal_id.encode()).hexdigest()
+    assert profile['skill_versions'][personal_id] == {
+        'version': '3.0.0',
+        'content_hash': hashlib.sha256(personal_id.encode()).hexdigest(),
+    }
     assert profile['origins'][shared_id] == [
         f'skill_pack:{first_package}@1.0.0',
         f'skill_pack:{second_package}@2.0.0',
@@ -356,6 +364,7 @@ async def test_profile_returns_direct_personal_common_and_cross_pack_origins(cli
     assert desired['profile_revision'] == 7
     assert desired['direct_skill_ids'] == [direct_id]
     assert desired['personal_skill_ids'] == [personal_id]
+    assert desired['skill_versions'][personal_id] == profile['skill_versions'][personal_id]
     assert {common_id, direct_id, personal_id, shared_id} <= set(desired['effective_skill_ids'])
     assert desired['origins'][shared_id] == [
         f'skill_pack:{first_package}@1.0.0',
@@ -394,6 +403,15 @@ async def test_skill_and_pack_mutations_are_idempotent_and_preserve_cross_source
     assert first_pack.status_code == 200, first_pack.text
     assert first_pack.json()['data']['changed'] is True
     assert first_pack.json()['data']['bundle']['content_hash'] == package_hash
+    assert first_pack.json()['data']['bundle']['hermes_yaml']
+    assert first_pack.json()['data']['bundle']['member_skill_ids'] == [shared_id]
+    assert first_pack.json()['data']['bundle']['member_skills'] == [
+        {
+            'skill_id': shared_id,
+            'version': '1.0.0',
+            'content_hash': hashlib.sha256(f'{shared_id}@1.0.0'.encode()).hexdigest(),
+        }
+    ]
     await client.session.refresh(row)
     assert row.skills == [direct_id]
     assert row.skill_bundles == [

@@ -20,8 +20,12 @@ from backend.app.marketplace.service import skill_pack_service
 from backend.app.marketplace.service.agent_profile_sources import (
     build_agent_profile_skill_sources,
     classify_stored_skill_refs,
+    get_personal_skill_immutable_snapshots,
 )
-from backend.app.marketplace.service.common_skills_service import get_common_skill_snapshot
+from backend.app.marketplace.service.common_skills_service import (
+    get_common_skill_snapshot,
+    get_skills_immutable_snapshots,
+)
 from backend.app.marketplace.service.resource_id import parse_resource_id
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
@@ -96,6 +100,15 @@ class AgentMarketplaceInstallationService:
             owner_user_id=identity.owner_user_id,
             owner_hasn_id=identity.owner_hasn_id,
         )
+        skill_versions = await get_skills_immutable_snapshots(db, sources.effective_skill_ids)
+        skill_versions.update(
+            await get_personal_skill_immutable_snapshots(
+                db,
+                personal_skill_ids=sources.personal_skill_ids,
+                owner_user_id=identity.owner_user_id,
+                owner_hasn_id=identity.owner_hasn_id,
+            )
+        )
         return {
             'changed': changed,
             'profile_revision': int(row.profile_revision or 1),
@@ -103,6 +116,7 @@ class AgentMarketplaceInstallationService:
             'personal_skill_ids': sources.personal_skill_ids,
             'effective_skill_ids': sources.effective_skill_ids,
             'origins': sources.origins,
+            'skill_versions': skill_versions,
             'skill_bundles': sources.skill_bundles,
         }
 
@@ -289,10 +303,17 @@ class AgentMarketplaceInstallationService:
             await self._append_sync_event(db, row)
 
         state = await self._state(db, identity=identity, row=row, changed=changed)
+        member_skill_ids = skill_pack_service.member_skill_ids(str(version_row.hermes_yaml))
         state['bundle'] = {
             **frozen_ref,
             'command_key': version_row.command_key,
-            'member_skill_ids': skill_pack_service.member_skill_ids(str(version_row.hermes_yaml)),
+            'hermes_yaml': version_row.hermes_yaml,
+            'member_skill_ids': member_skill_ids,
+            'member_skills': await skill_pack_service.resolve_member_skill_snapshots(
+                db,
+                member_skill_ids,
+                version_row.skill_dependencies_versioned,
+            ),
         }
         return state
 
