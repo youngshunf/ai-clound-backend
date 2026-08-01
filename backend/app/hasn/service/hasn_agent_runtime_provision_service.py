@@ -26,6 +26,8 @@ from backend.core.conf import settings
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from backend.app.hasn.schema.hasn_agent_mcp_keys import IssuedAgentMcpKey
+
 
 def _platform_llm_model() -> str:
     model = getattr(settings, 'HUANXING_HERMES_PLATFORM_LLM_MODEL', None) or getattr(
@@ -59,20 +61,23 @@ async def _owner_llm_credentials(db: AsyncSession, user_id: int) -> tuple[str, s
     return f'sk-{mapping.newapi_token_key}', base_url
 
 
-async def _platform_main_model(db: AsyncSession) -> str:
-    """主模型取 PDC 平台默认（Admin 配的 agnes-2.0-flash）；空/失败回落静态默认。
+async def _effective_main_model(db: AsyncSession, runtime_config: dict | None) -> str:
+    """按 per-agent → PDC 的稳定优先级解析主模型；全空/读取失败才回落静态默认。
 
-    云端 hermes 无 daemon 的主模型解析链（per_agent→owner→platform_default→configured），
-    provision 必须给死值；取 PDC main 与本地最终落点（owner=None→platform_default_main）一致。
+    云端 Hermes 不经过 daemon，仍必须遵守同一份 ``runtime_config_json`` 权威配置，不能
+    无条件用平台默认覆盖 Agent 显式主模型。``build_effective_runtime_config`` 已实现
+    per-agent 优先、空槽回落 PDC 的稳定契约，这里只取合并后的 main。
     """
     from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
 
     try:
-        models = await platform_default_config_service.get_platform_runtime_models(db)
-        if models and models.main:
-            return models.main
+        effective = await platform_default_config_service.build_effective_runtime_config(db, runtime_config)
+        models = effective.get('models') if isinstance(effective, dict) else None
+        main = models.get('main') if isinstance(models, dict) else None
+        if isinstance(main, str) and main:
+            return main
     except Exception as exc:
-        log.warning(f'PDC 主模型读取失败，回落静态默认: {exc}')
+        log.warning(f'Agent 主模型解析失败，回落静态默认: {exc}')
     return _platform_llm_model()
 
 
@@ -107,14 +112,14 @@ async def cloud_profile_id_for(db: AsyncSession, *, owner_hasn_id: str, agent_na
     return f'{star_id}-{agent_name}'
 
 
-async def _ensure_cloud_agent_mcp_key(
+async def _issue_cloud_agent_mcp_key(
     db: AsyncSession,
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
     owner_user_id: int,
-) -> str:
-    """给云端 profile 铸一把 node-agnostic Agent MCP Key，返回明文（仅签发时返回一次）。
+) -> IssuedAgentMcpKey:
+    """给云端 profile 铸一把 node-agnostic Agent MCP Key，并返回一次性签发结果。
 
     云端 hermes 用它作 cloud MCP server 的 Bearer。``node_id=None`` 让 streamable 跳过 node
     绑定校验（云端 runtime 不是用户设备节点）。明文不回库（库内只存哈希），由 hermes 落进
@@ -123,13 +128,47 @@ async def _ensure_cloud_agent_mcp_key(
     from backend.app.hasn.schema.hasn_agent_mcp_keys import IssueAgentMcpKeyParam
     from backend.app.hasn.service.hasn_agent_mcp_keys_service import hasn_agent_mcp_keys_service
 
-    issued = await hasn_agent_mcp_keys_service.issue(
+    return await hasn_agent_mcp_keys_service.issue(
         db,
         obj=IssueAgentMcpKeyParam(agent_hasn_id=agent_hasn_id, scopes=['tool.call'], node_id=None),
         owner_hasn_id=owner_hasn_id,
         owner_user_id=owner_user_id,
     )
+
+
+async def _ensure_cloud_agent_mcp_key(
+    db: AsyncSession,
+    *,
+    agent_hasn_id: str,
+    owner_hasn_id: str,
+    owner_user_id: int,
+) -> str:
+    """兼容既有调用：在调用方事务中签发并只返回明文。"""
+    issued = await _issue_cloud_agent_mcp_key(
+        db,
+        agent_hasn_id=agent_hasn_id,
+        owner_hasn_id=owner_hasn_id,
+        owner_user_id=owner_user_id,
+    )
     return issued.key
+
+
+async def _issue_cloud_agent_mcp_key_committed(
+    *,
+    agent_hasn_id: str,
+    owner_hasn_id: str,
+    owner_user_id: int,
+) -> IssuedAgentMcpKey:
+    """独立提交云端 profile key，确保 Runtime 回调权威 API 前凭据已经可见。"""
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as credential_db:
+        return await _issue_cloud_agent_mcp_key(
+            credential_db,
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            owner_user_id=owner_user_id,
+        )
 
 
 async def ensure_cloud_profile_provisioned(
@@ -153,11 +192,14 @@ async def ensure_cloud_profile_provisioned(
     client = runtime_client or HermesRuntimeClient()
 
     # 幂等探测：profile 是否已在 hermes。「不存在」→ 走完整 provision（建骨架 + 人设）；
-    # 「已存在」→ 跳过建骨架/人设，但仍刷新凭据（自愈）。「runtime 不可达」等真错误如实抛。
+    # 「已存在且活跃」→ 跳过建骨架/人设，但仍刷新凭据（自愈）。Hermes 的 DELETE 是
+    # 软删除，GET 仍会返回 lifecycle_status=deleted；该状态必须重走 ensure_agent 才能复活，
+    # 否则后续 skills/ensure 的 active_only 路由会报 agent_not_found。
+    # 「runtime 不可达」等真错误如实抛。
     profile_exists = False
     try:
-        await client.get_agent(profile_id, trace_id=trace_id)
-        profile_exists = True
+        runtime_agent = await client.get_agent(profile_id, trace_id=trace_id)
+        profile_exists = runtime_agent.get('lifecycle_status') != 'deleted'
     except HermesRuntimeError as exc:
         not_found = exc.status_code == 404 or 'not_found' in (exc.error or '')
         if not not_found:
@@ -178,7 +220,7 @@ async def ensure_cloud_profile_provisioned(
     # 上游报 `Insufficient account balance`（本地用 owner token 余额充足能聊，云端却报余额
     # 不足，根因即此）。统一成 owner 凭据后云端与本地行为一致。
     owner_token, base_url = await _owner_llm_credentials(db, user_id)
-    llm_model = await _platform_main_model(db)
+    llm_model = await _effective_main_model(db, getattr(agent_row, 'runtime_config_json', None))
 
     # 1. ensure_agent：建 profile 骨架 + LLM 配置（agent_id 用 profile_id，与 daemon
     #    dispatch/adapter 同口径）。仅新建时调；已存在则下方只刷新凭据。
@@ -192,9 +234,12 @@ async def ensure_cloud_profile_provisioned(
         # 铸一把 **node-agnostic**（node_id=None）的 key：云端 runtime 不是用户设备节点，绑 node
         # 会被 streamable 的 node 校验拒。scopes 仅审计快照（streamable 消费时按 agent_hasn_id
         # 活取三态策略判权，见 streamable.py D3），给 tool.call 与 daemon 本地铸 key 对齐即可。
-        agent_mcp_key = await _ensure_cloud_agent_mcp_key(
-            db, agent_hasn_id=agent_hasn_id, owner_hasn_id=owner_hasn_id, owner_user_id=user_id
+        issued_agent_mcp_key = await _issue_cloud_agent_mcp_key_committed(
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            owner_user_id=user_id,
         )
+        agent_mcp_key = issued_agent_mcp_key.key
         cloud_base_url = str(settings.HUANXING_CLOUD_INTERNAL_BASE_URL or '').rstrip('/')
         if not cloud_base_url:
             raise errors.ServerError(msg='云端 Runtime 权威目录内部地址未配置')

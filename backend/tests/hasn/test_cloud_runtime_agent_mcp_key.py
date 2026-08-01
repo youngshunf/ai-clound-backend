@@ -27,7 +27,12 @@ from fastapi import FastAPI
 
 from backend.app.admin.model.user import User
 from backend.app.hasn.model import HasnAgentMcpKeys, HasnAgents
-from backend.app.hasn.service.hasn_agent_runtime_provision_service import _ensure_cloud_agent_mcp_key
+from backend.app.hasn.service.hasn_agent_runtime_provision_service import (
+    _effective_main_model,
+    _ensure_cloud_agent_mcp_key,
+    _issue_cloud_agent_mcp_key_committed,
+)
+from backend.app.hasn.service.hasn_agent_mcp_keys_service import hasn_agent_mcp_keys_service
 from backend.app.marketplace.api.v1.agent.marketplace_skill_pack import (
     router as agent_skill_pack_router,
 )
@@ -36,6 +41,77 @@ from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import async_db_session, get_db
 
 pytestmark = pytest.mark.asyncio(loop_scope='session')
+
+
+async def test_cloud_profile_prefers_agent_explicit_main_model() -> None:
+    """云端 provision 必须遵守 per-agent 主模型，不能被 PDC 默认值覆盖。"""
+    async with async_db_session() as db:
+        resolved = await _effective_main_model(
+            db,
+            {'models': {'main': 'agnes-task12-explicit'}},
+        )
+    assert resolved == 'agnes-task12-explicit'
+
+
+async def test_cloud_profile_key_is_visible_before_runtime_fetches_authority() -> None:
+    """云端 profile 拿到明文 key 时，另一真实数据库会话必须已经能完成鉴权。"""
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_cloudrt_visible_{tag}'
+    agent = f'a_cloudrt_visible_{tag}'
+    user_id: int | None = None
+    try:
+        async with async_db_session.begin() as db:
+            user = User(
+                username=f'cloudrt_visible_{tag}',
+                nickname='云端凭据可见性主人',
+                password=None,
+                salt=None,
+            )
+            db.add(user)
+            await db.flush()
+            user_id = user.id
+            db.add(
+                HasnAgents(
+                    hasn_id=agent,
+                    star_id=f'100003#{tag}',
+                    owner_id=owner,
+                    display_name='云端凭据可见性分身',
+                    agent_name=f'cloud_visible_{tag}',
+                    type='cloud',
+                    runtime_location='cloud',
+                    role='specialist',
+                    api_key_hash='hash',
+                    status='active',
+                    created_via='client',
+                )
+            )
+
+        issued = await _issue_cloud_agent_mcp_key_committed(
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            owner_user_id=user_id,
+        )
+
+        async with async_db_session() as verifier:
+            verified = await hasn_agent_mcp_keys_service.verify(
+                verifier,
+                presented_key=issued.key,
+            )
+            assert verified.id == issued.id
+            assert verified.agent_hasn_id == agent
+            assert verified.node_id is None
+    finally:
+        if user_id is not None:
+            async with async_db_session.begin() as cleanup:
+                await cleanup.execute(
+                    sa.delete(HasnAgentMcpKeys).where(
+                        HasnAgentMcpKeys.agent_hasn_id == agent
+                    )
+                )
+                await cleanup.execute(
+                    sa.delete(HasnAgents).where(HasnAgents.hasn_id == agent)
+                )
+                await cleanup.execute(sa.delete(User).where(User.id == user_id))
 
 
 async def test_mints_node_agnostic_cloud_agent_mcp_key() -> None:

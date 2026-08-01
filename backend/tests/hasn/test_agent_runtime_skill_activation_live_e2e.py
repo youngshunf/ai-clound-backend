@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -23,23 +24,22 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.api.v1.agent.hasn_agent_runtime import router as runtime_router
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model import HasnAgentMcpKeys, HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.schema.hasn_agent_mcp_keys import IssueAgentMcpKeyParam
 from backend.app.hasn.service.hasn_agent_mcp_keys_service import hasn_agent_mcp_keys_service
 from backend.app.hasn.service.hasn_agent_runtime_dispatch_service import (
     hasn_agent_runtime_dispatch_service,
 )
-from backend.app.hermes.service.hermes_runtime_client import HermesRuntimeClient
+from backend.app.hermes.service.hermes_runtime_client import HermesRuntimeClient, HermesRuntimeError
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.common.exception.errors import BaseExceptionError
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 
 pytestmark = pytest.mark.asyncio
 
-OWNER_USER_ID = 4
-AGENT_ID = 'a_ca572221-f667-4dd8-b767-d06910f86f01'
-PROFILE_ID = '100001-content_operator'
+OWNER_USER_ID = int(os.environ.get('HASN_SKILL_E2E_OWNER_USER_ID', '4'))
+PROFILE_ID = os.environ.get('HASN_SKILL_E2E_PROFILE_ID', '100001-content_operator')
 PACKAGE_ID = 'huanxing/creator-playbook'
 PACKAGE_VERSION = '1.0.0'
 PACKAGE_HASH = 'sha256:4cf323f77cb19a92aab60ac960f787835e52f0a022a453cb5b9a3d6e8191bdbc'
@@ -54,6 +54,7 @@ MEMBER_IDS = [
 ]
 REQUIREMENTS_HASH = '98a29de25ca6f3fdfedabdf3b0ba4c6b3282752e21eb471d97905647b1d00b22'
 MODEL_MARKER = 'TASK12-CLOUD-HERMES-OK'
+MODEL_ID = os.environ.get('HASN_SKILL_E2E_MODEL', 'agnes-2.5-flash')
 
 _APP = FastAPI()
 _APP.include_router(runtime_router, prefix='/api/v1/hasn/agent/runtime')
@@ -157,29 +158,32 @@ def _write_evidence(
     temporary.replace(path)
 
 
-def _live_paths_and_llm_key() -> tuple[Path, Path, str]:
+def _live_paths_and_llm_key() -> tuple[Path, Path, Path, str]:
     """同步读取活体路径和已有真实凭据，避免在异步 fixture 中阻塞事件循环。"""
     profile_root = Path(_required_env('HASN_SKILL_E2E_PROFILE_ROOT')).resolve()
+    shared_skills_root = Path(_required_env('HASN_SKILL_E2E_SHARED_SKILLS_ROOT')).resolve()
     evidence_path = Path(_required_env('HASN_SKILL_E2E_EVIDENCE_PATH')).resolve()
-    secrets_path = profile_root / 'secrets.json'
+    llm_source_root = Path(
+        os.environ.get('HASN_SKILL_E2E_LLM_SOURCE_PROFILE_ROOT', str(profile_root))
+    ).resolve()
+    secrets_path = llm_source_root / 'secrets.json'
     if not secrets_path.is_file():
         pytest.fail(f'云端活体验收档案缺少凭据文件: {secrets_path}')
     profile_secrets = json.loads(secrets_path.read_text(encoding='utf-8'))
     llm_api_key = str(profile_secrets.get('llm_api_key') or '')
     if not llm_api_key:
         pytest.fail('云端活体验收档案缺少真实 LLM 凭据')
-    return profile_root, evidence_path, llm_api_key
+    return profile_root, shared_skills_root, evidence_path, llm_api_key
 
 
 @pytest_asyncio.fixture
 async def live_cloud_runtime() -> Any:
     runtime_url = _required_env('HASN_SKILL_E2E_RUNTIME_URL')
     runtime_token = _required_env('HASN_SKILL_E2E_RUNTIME_TOKEN')
-    profile_root, evidence_path, llm_api_key = _live_paths_and_llm_key()
+    profile_root, shared_skills_root, evidence_path, llm_api_key = _live_paths_and_llm_key()
 
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     session = async_sessionmaker(engine, expire_on_commit=False)()
-    transaction = await session.begin()
     original_client = hasn_agent_runtime_dispatch_service.runtime_client
     runtime_client = HermesRuntimeClient(
         base_url=runtime_url,
@@ -187,9 +191,13 @@ async def live_cloud_runtime() -> Any:
         timeout_seconds=300,
     )
     original_llm_payload: dict[str, Any] | None = None
+    original_mapping_token: str | None = None
     switched_to_platform = False
+    profile_existed = True
+    agent_id: str | None = None
     try:
         identity_suffix = uuid.uuid4().hex[:8]
+        agent_id = f'a_task12_cloud_{identity_suffix}'
         owner = (
             await session.execute(select(HasnHumans).where(HasnHumans.user_id == OWNER_USER_ID).limit(1))
         ).scalar_one_or_none()
@@ -203,12 +211,13 @@ async def live_cloud_runtime() -> Any:
         ).scalar_one_or_none()
         if mapping is None:
             pytest.fail(f'真实 PostgreSQL 缺少活体验收用户 {OWNER_USER_ID} 的 NewAPI 映射')
-        # 云端 provision 必须经过真实 owner 凭据解析。测试事务内仅把失效的测试库缓存
-        # 对齐到当前活体档案已验证可用的真实 key，事务结束回滚；不跳过签发链，也不打印凭据。
+        # 云端 provision 必须经过真实 owner 凭据解析。跨进程 Runtime 会立刻回调云端权威 API，
+        # 因此测试 Agent 与凭据必须先真实提交，最后再按主键精确删除并恢复映射。
+        original_mapping_token = mapping.newapi_token_key
         mapping.newapi_token_key = llm_api_key.removeprefix('sk-')
         session.add(
             HasnAgents(
-                hasn_id=AGENT_ID,
+                hasn_id=agent_id,
                 star_id=f'task12a{identity_suffix}',
                 owner_id=owner_id,
                 display_name='Task12云端内容运营',
@@ -217,19 +226,20 @@ async def live_cloud_runtime() -> Any:
                 runtime_location='cloud',
                 role='specialist',
                 api_key_hash='task12-live-e2e',
+                runtime_config_json={'models': {'main': MODEL_ID}},
                 status='active',
                 created_via='client',
                 profile_revision=1,
             )
         )
-        await session.flush()
+        await session.commit()
         issued = await hasn_agent_mcp_keys_service.issue(
             session,
-            obj=IssueAgentMcpKeyParam(agent_hasn_id=AGENT_ID, scopes=[], node_id=None),
+            obj=IssueAgentMcpKeyParam(agent_hasn_id=agent_id, scopes=[], node_id=None),
             owner_hasn_id=owner_id,
             owner_user_id=OWNER_USER_ID,
         )
-        await session.flush()
+        await session.commit()
 
         def _yield_session() -> Iterator[Any]:
             yield session
@@ -238,30 +248,36 @@ async def live_cloud_runtime() -> Any:
         _APP.dependency_overrides[get_db_transaction] = _yield_session
         hasn_agent_runtime_dispatch_service.runtime_client = runtime_client
 
-        llm_status = await runtime_client._request(
-            'GET',
-            f'/runtime/v1/profiles/{PROFILE_ID}/llm/status',
-        )
-        current_llm = llm_status.get('config') if isinstance(llm_status, dict) else None
-        if not isinstance(current_llm, dict):
-            pytest.fail(f'云端活体验收档案 {PROFILE_ID} 缺少 LLM 配置')
-        original_llm_payload = {
-            'mode': current_llm['mode'],
-            'provider': current_llm['provider'],
-            'base_url': current_llm['base_url'],
-            'api_key': llm_api_key,
-            'model': current_llm['model'],
-            'fallback_models': current_llm.get('fallback_models', []),
-        }
-        if current_llm.get('plan_id'):
-            original_llm_payload['plan_id'] = current_llm['plan_id']
-        platform_payload = {**original_llm_payload, 'mode': 'platform'}
-        await runtime_client._request(
-            'PUT',
-            f'/runtime/v1/profiles/{PROFILE_ID}/llm',
-            json=platform_payload,
-        )
-        switched_to_platform = True
+        try:
+            llm_status = await runtime_client._request(
+                'GET',
+                f'/runtime/v1/profiles/{PROFILE_ID}/llm/status',
+            )
+        except HermesRuntimeError as error:
+            if error.status_code != 404:
+                raise
+            profile_existed = False
+        else:
+            current_llm = llm_status.get('config') if isinstance(llm_status, dict) else None
+            if not isinstance(current_llm, dict):
+                pytest.fail(f'云端活体验收档案 {PROFILE_ID} 缺少 LLM 配置')
+            original_llm_payload = {
+                'mode': current_llm['mode'],
+                'provider': current_llm['provider'],
+                'base_url': current_llm['base_url'],
+                'api_key': llm_api_key,
+                'model': current_llm['model'],
+                'fallback_models': current_llm.get('fallback_models', []),
+            }
+            if current_llm.get('plan_id'):
+                original_llm_payload['plan_id'] = current_llm['plan_id']
+            platform_payload = {**original_llm_payload, 'mode': 'platform'}
+            await runtime_client._request(
+                'PUT',
+                f'/runtime/v1/profiles/{PROFILE_ID}/llm',
+                json=platform_payload,
+            )
+            switched_to_platform = True
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=_APP),
@@ -273,23 +289,53 @@ async def live_cloud_runtime() -> Any:
                 authorization={'Authorization': f'Bearer {issued.key}'},
                 runtime_token=runtime_token,
                 agent_key=issued.key,
+                agent_id=agent_id,
                 owner_id=owner_id,
                 profile_root=profile_root,
+                shared_skills_root=shared_skills_root,
                 evidence_path=evidence_path,
             )
     finally:
-        if switched_to_platform and original_llm_payload is not None:
-            await runtime_client._request(
-                'PUT',
-                f'/runtime/v1/profiles/{PROFILE_ID}/llm',
-                json=original_llm_payload,
-            )
-        hasn_agent_runtime_dispatch_service.runtime_client = original_client
-        _APP.dependency_overrides.clear()
-        if transaction.is_active:
-            await transaction.rollback()
-        await session.close()
-        await engine.dispose()
+        try:
+            if switched_to_platform and original_llm_payload is not None:
+                await runtime_client._request(
+                    'PUT',
+                    f'/runtime/v1/profiles/{PROFILE_ID}/llm',
+                    json=original_llm_payload,
+                )
+            if not profile_existed:
+                for resource in ('credential', ''):
+                    try:
+                        await runtime_client._request(
+                            'DELETE',
+                            f'/runtime/v1/profiles/{PROFILE_ID}/{resource}'.rstrip('/'),
+                        )
+                    except HermesRuntimeError as error:
+                        if error.status_code != 404:
+                            raise
+        finally:
+            hasn_agent_runtime_dispatch_service.runtime_client = original_client
+            _APP.dependency_overrides.clear()
+            try:
+                await session.rollback()
+                if agent_id is not None:
+                    await session.execute(
+                        sa.delete(HasnAgentMcpKeys).where(HasnAgentMcpKeys.agent_hasn_id == agent_id)
+                    )
+                    await session.execute(sa.delete(HasnAgents).where(HasnAgents.hasn_id == agent_id))
+                if original_mapping_token is not None:
+                    mapping = (
+                        await session.execute(
+                            select(LlmNewapiUserMapping)
+                            .where(LlmNewapiUserMapping.huanxing_user_id == OWNER_USER_ID)
+                            .limit(1)
+                        )
+                    ).scalar_one()
+                    mapping.newapi_token_key = original_mapping_token
+                await session.commit()
+            finally:
+                await session.close()
+                await engine.dispose()
 
 
 async def test_cloud_runtime_required_skill_live_e2e(
@@ -343,7 +389,7 @@ async def test_cloud_runtime_required_skill_live_e2e(
                 ],
                 'dispatch_id': trace_id,
                 'conversation_id': trace_id,
-                'hasn_id': AGENT_ID,
+                'hasn_id': live.agent_id,
                 'tool_execution': 'enabled',
             },
         },
@@ -364,11 +410,29 @@ async def test_cloud_runtime_required_skill_live_e2e(
             'sha256': hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
         }
     ]
+    receipt_skills = {
+        item['skill_id']: item
+        for item in receipt['skills']
+        if isinstance(item, dict)
+    }
     for skill_id in MEMBER_IDS:
         slug = skill_id.rsplit('/', 1)[-1]
-        files = _directory_fingerprints(live.profile_root / 'skills' / slug)
+        location_kind = receipt_skills[skill_id].get('location_kind')
+        if location_kind == 'profile':
+            skill_root = live.profile_root / 'skills' / slug
+        elif location_kind == 'shared':
+            skill_root = live.shared_skills_root / slug
+        else:
+            pytest.fail(f'云端 Runtime 返回不支持的技能物化域: {skill_id}={location_kind}')
+        files = _directory_fingerprints(skill_root)
         assert files, f'云端 Runtime 缺少技能包成员 {skill_id}'
-        runtime_files.extend({**item, 'path': f'skills/{slug}/{item["path"]}'} for item in files)
+        runtime_files.extend(
+            {
+                **item,
+                'path': f'{location_kind}/skills/{slug}/{item["path"]}',
+            }
+            for item in files
+        )
 
     assert global_before == _directory_fingerprints(global_bundle_root)
     log_text = caplog.text
@@ -384,8 +448,9 @@ async def test_cloud_runtime_required_skill_live_e2e(
             'status': 'passed',
             'device_online_required': False,
             'auth': 'agent_mcp_key',
-            'agent_id': AGENT_ID,
+            'agent_id': live.agent_id,
             'profile_id': PROFILE_ID,
+            'model': MODEL_ID,
             'requirements_hash': REQUIREMENTS_HASH,
             'receipt': {
                 'receipt_id': receipt['receipt_id'],
