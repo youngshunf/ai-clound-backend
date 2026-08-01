@@ -38,6 +38,7 @@ from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.growth_attribution_event import GrowthAttributionEvent
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
+from backend.app.hasn_growth.model.growth_review_suggestion import GrowthReviewSuggestion
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
@@ -64,6 +65,7 @@ _REPO = Path(__file__).resolve().parents[4]
 _S6_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
 _S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
 _S9_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-opportunity-version-review-task.sql'
+_S11_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-review-v8.sql'
 
 
 @pytest_asyncio.fixture
@@ -83,6 +85,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_S9_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_S11_MIGRATION_SQL.read_text(encoding='utf-8'))
     tag = uuid.uuid4().hex[:8]
     owner = f'h_gtc_{tag}'
     owner_uid = 94_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -197,7 +200,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: ignore[unused-async]
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 33
+    assert len(handlers) == 35
     for h in (
         'growth.project_get',
         'growth.project_create',
@@ -212,6 +215,8 @@ async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: 
     for h in ('growth.lookup_company', 'growth.search_companies', 'growth.enrich_company'):
         assert h in handlers, h
     for h in ('growth.outreach_draft', 'growth.outreach_submit'):
+        assert h in handlers, h
+    for h in ('growth.report_performance', 'growth.review_suggest'):
         assert h in handlers, h
     for h in handlers:
         assert h.startswith('growth.'), h
@@ -524,10 +529,7 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleName
     opportunity_contributions = await s.scalar(
         select(sa.func.count())
         .select_from(HasnArtifactContributions)
-        .where(
-            HasnArtifactContributions.artifact_id
-            == opportunity_artifact.artifact_id
-        )
+        .where(HasnArtifactContributions.artifact_id == opportunity_artifact.artifact_id)
     )
     assert opportunity_contributions == 3
     assert (
@@ -554,6 +556,79 @@ async def test_growth_cloud_tools_legacy_pii_scope_stays_masked(ctx: SimpleNames
     assert masked and masked[0]['email'] == 'w***@acme.com'
     revealed = await _REG['growth.lead_search'](s, ctx.agent(['agent', 'growth:read', 'growth:pii']), {'query': 'Acme'})
     assert revealed and revealed[0]['email'] == 'w***@acme.com'
+
+
+async def test_growth_review_tools_read_real_report_and_register_stable_write_artifact(
+    ctx: SimpleNamespace,
+) -> None:
+    """周期复盘工具读取真实项目报表，建议写入后登记可打开的项目产物。"""
+    session = ctx.session
+    agent = ctx.agent(['agent', 'growth:read', 'growth:manage'])
+    work_session_id = f'ws_growth_review_{uuid.uuid4().hex[:8]}'
+    set_current_work_session_id(work_session_id)
+    set_current_project_id(str(ctx.lead_platform_project_id))
+    try:
+        report = await _REG['growth.report_performance'](
+            session,
+            agent,
+            {'growth_project_id': str(ctx.growth_project_id)},
+        )
+        assert report['growth_project_id'] == str(ctx.growth_project_id)
+        assert 'performance' in report
+        payload = {
+            'growth_project_id': str(ctx.growth_project_id),
+            'suggestion_kind': 'channel',
+            'proposal': {
+                'quiet_hours_start': 22,
+                'quiet_hours_end': 8,
+                'daily_outreach_limit': 12,
+                'monthly_budget': None,
+                'budget_currency': 'CNY',
+            },
+            'evidence': {
+                'scope': report['cycle']['started_time'],
+                'event_count': report['performance']['event_count'],
+                'insufficient_data': True,
+                'limitations': ['当前周期真实事件样本不足'],
+                'guaranteed_outcome': False,
+            },
+            'idempotency_key': f'gateway:review:{ctx.growth_project_id}:channel:2026-07',
+        }
+        created = await _REG['growth.review_suggest'](session, agent, payload)
+        replayed = await _REG['growth.review_suggest'](session, agent, payload)
+        assert replayed['id'] == created['id']
+        assert created['status'] == 'pending'
+        assert created['uri'] == f'hasn://growth/projects/{ctx.growth_project_id}'
+        assert (
+            await session.scalar(
+                select(sa.func.count())
+                .select_from(GrowthReviewSuggestion)
+                .where(
+                    GrowthReviewSuggestion.growth_project_id == ctx.growth_project_id,
+                    GrowthReviewSuggestion.idempotency_key == payload['idempotency_key'],
+                )
+            )
+            == 1
+        )
+        project_artifact = (
+            await session.execute(
+                select(HasnArtifacts).where(
+                    HasnArtifacts.agent_hasn_id == ctx.agent_hasn,
+                    HasnArtifacts.resource_uri == f'hasn://growth/projects/{ctx.growth_project_id}',
+                )
+            )
+        ).scalar_one()
+        contribution = await session.scalar(
+            select(HasnArtifactContributions).where(
+                HasnArtifactContributions.artifact_id == project_artifact.artifact_id,
+                HasnArtifactContributions.work_session_id == work_session_id,
+            )
+        )
+        assert contribution is not None
+        assert contribution.source_tool == 'hasn.growth.review.suggest'
+    finally:
+        clear_current_project_id()
+        clear_current_work_session_id()
 
 
 async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace) -> None:

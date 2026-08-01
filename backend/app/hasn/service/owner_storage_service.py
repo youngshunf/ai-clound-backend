@@ -3067,6 +3067,35 @@ class OwnerStorageService:
             'status': str(row['status']),
         }
 
+    @staticmethod
+    async def bind_private_attachment_in_transaction(
+        db: AsyncSession,
+        *,
+        asset_id: str,
+        conversation_id: str,
+        message_id: int,
+    ) -> None:
+        """经窄化数据库接缝原子写入私有附件授权与删除保护。"""
+        resource_uri = f'hasn://messages/c/{conversation_id}#{message_id}'
+        await db.execute(
+            text(
+                """
+                SELECT public.hasn_bind_private_attachment(
+                    CAST(:asset_id AS varchar),
+                    CAST(:conversation_id AS uuid),
+                    CAST(:resource_uri AS varchar),
+                    CAST(:binding_id AS varchar)
+                )
+                """
+            ),
+            {
+                'asset_id': asset_id,
+                'conversation_id': conversation_id,
+                'resource_uri': resource_uri,
+                'binding_id': f'bnd_{uuid4().hex}',
+            },
+        )
+
     async def asset_references(
         self,
         *,

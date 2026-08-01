@@ -50,7 +50,10 @@ async def _apply_release_batch_migration(session: AsyncSession) -> None:
     """使用 asyncpg simple-query 协议执行可重复迁移。"""
     connection = await session.connection()
     raw = await connection.get_raw_connection()
-    await raw.driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
+    driver_connection = raw.driver_connection
+    if driver_connection is None:
+        raise RuntimeError('无法取得 asyncpg driver connection')
+    await driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -181,6 +184,101 @@ async def test_updater_manifest_offers_update_when_newer(session: AsyncSession) 
         session, target='darwin', arch='aarch64', current_version='99.9.0', channel='stable'
     )
     assert newer is None
+
+
+async def test_partial_batch_exposes_completed_platform_immediately(session: AsyncSession) -> None:
+    """Windows 先完成时立即公开新包，macOS 继续使用正式版并留在同一草稿批次。"""
+    published_req = _publish_req('99.4.1')
+    published_req.assets.extend([
+        _asset(
+            'windows-x86_64',
+            'installer',
+            url=f'{_CDN}/99.4.1/windows-installer.exe',
+        ),
+        _asset(
+            'windows-x86_64',
+            'updater',
+            sig='SIG_WINDOWS_OLD',
+            url=f'{_CDN}/99.4.1/windows-updater.zip',
+        ),
+    ])
+    published = await release_service.publish(session, published_req, source='manual')
+
+    partial = AppRelease(
+        version='99.4.2',
+        channel='stable',
+        release_notes_md='Windows 启动与发布流程已更新。',
+        status='draft',
+        is_latest=False,
+        source='manual',
+        release_tag='v99.4.2',
+        source_commit='b' * 40,
+        tag_status='ready',
+        required_platforms=['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'],
+        completed_platforms=['windows-x86_64'],
+        release_commits=[],
+        release_notes_status='ready',
+    )
+    session.add(partial)
+    await session.flush()
+    windows_installer = ReleaseAsset(
+        release_id=partial.id,
+        platform_target='windows-x86_64',
+        asset_kind='installer',
+        download_url=f'{_CDN}/99.4.2/windows-installer.exe',
+        file_name='windows-installer.exe',
+        file_size=5678,
+        sha256='b' * 64,
+    )
+    windows_updater = ReleaseAsset(
+        release_id=partial.id,
+        platform_target='windows-x86_64',
+        asset_kind='updater',
+        download_url=f'{_CDN}/99.4.2/windows-updater.zip',
+        file_name='windows-updater.zip',
+        file_size=5678,
+        sha256='c' * 64,
+        signature='SIG_WINDOWS_NEW',
+    )
+    session.add_all([windows_installer, windows_updater])
+    await session.flush()
+
+    latest = await release_service.get_latest(session, channel='stable')
+    assert latest.version == '99.4.2'
+    assert latest.release_notes_md == 'Windows 启动与发布流程已更新。'
+    assert latest.platform_versions == {
+        'darwin-aarch64': '99.4.1',
+        'darwin-x86_64': '99.4.1',
+        'windows-x86_64': '99.4.2',
+    }
+    assert latest.installers['windows-x86_64'].id == windows_installer.id
+    assert latest.installers['darwin-aarch64'].download_url.endswith('99.4.1/arm64.dmg')
+
+    windows_manifest = await release_service.build_updater_manifest(
+        session,
+        target='windows',
+        arch='x86_64',
+        current_version='99.4.1',
+        channel='stable',
+    )
+    assert windows_manifest is not None
+    assert windows_manifest.version == '99.4.2'
+    assert windows_manifest.platforms['windows-x86_64'].signature == 'SIG_WINDOWS_NEW'
+
+    mac_manifest = await release_service.build_updater_manifest(
+        session,
+        target='darwin',
+        arch='aarch64',
+        current_version='99.4.1',
+        channel='stable',
+    )
+    assert mac_manifest is None
+
+    partial_row = (await session.execute(select(AppRelease).where(AppRelease.id == partial.id))).scalar_one()
+    assert partial_row.status == 'draft'
+    assert partial_row.is_latest is False
+    published_row = (await session.execute(select(AppRelease).where(AppRelease.id == published.id))).scalar_one()
+    assert published_row.is_latest is True
 
 
 async def test_resolve_download_increments_count(session: AsyncSession) -> None:

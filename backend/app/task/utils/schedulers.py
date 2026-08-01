@@ -5,15 +5,17 @@ import heapq
 import json
 import math
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from multiprocessing.util import Finalize
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from celery import current_app, schedules
-from celery.beat import ScheduleEntry, Scheduler, event_t as BeatEvent
+from celery.beat import ScheduleEntry, Scheduler
+from celery.beat import event_t as BeatEvent  # noqa: N812 — 避免与 tick 参数同名
 from celery.signals import beat_init
 from celery.utils.log import get_logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import DatabaseError, InterfaceError
 
 from backend.app.task.enums import PeriodType, TaskSchedulerType
@@ -37,6 +39,8 @@ DEFAULT_MAX_INTERVAL = 5  # seconds
 # 计划锁时长，避免重复创建
 DEFAULT_MAX_LOCK_TIMEOUT = DEFAULT_MAX_INTERVAL * 5  # seconds
 
+RETIRED_CELERY_DEMO_TASKS = frozenset({'task_demo', 'task_demo_async', 'task_demo_params'})
+
 logger = get_logger('fba.schedulers')
 
 
@@ -45,7 +49,7 @@ class ModelEntry(ScheduleEntry):
 
     def __init__(self, model: TaskScheduler, app: Any = None) -> None:  # noqa: C901
         super().__init__(
-            app=app or getattr(current_app, '_get_current_object')(),
+            app=app or cast('Any', current_app)._get_current_object(),
             name=model.name,
             task=model.task,
         )
@@ -186,7 +190,7 @@ class ModelEntry(ScheduleEntry):
 
         async with async_db_session() as db:
             if isinstance(normalized_schedule, schedules.schedule):
-                run_every = cast(timedelta, getattr(normalized_schedule, 'run_every'))
+                run_every = cast('timedelta', cast('Any', normalized_schedule).run_every)
                 every = max(run_every.total_seconds(), 0)
                 spec = {
                     'name': name,
@@ -200,12 +204,13 @@ class ModelEntry(ScheduleEntry):
                 if not obj:
                     obj = TaskScheduler(**CreateTaskSchedulerParam(task=task, **spec).model_dump(by_alias=True))
             elif isinstance(normalized_schedule, schedules.crontab):
+                crontab_schedule = cast('Any', normalized_schedule)
                 crontab = (
-                    f'{getattr(normalized_schedule, "_orig_minute")} '
-                    f'{getattr(normalized_schedule, "_orig_hour")} '
-                    f'{getattr(normalized_schedule, "_orig_day_of_month")} '
-                    f'{getattr(normalized_schedule, "_orig_month_of_year")} '
-                    f'{getattr(normalized_schedule, "_orig_day_of_week")}'
+                    f'{crontab_schedule._orig_minute} '
+                    f'{crontab_schedule._orig_hour} '
+                    f'{crontab_schedule._orig_day_of_month} '
+                    f'{crontab_schedule._orig_month_of_year} '
+                    f'{crontab_schedule._orig_day_of_week}'
                 )
                 crontab_verify(crontab)
                 spec = {
@@ -237,10 +242,7 @@ class ModelEntry(ScheduleEntry):
         model_schedule = await cls.to_model_schedule(name, task, schedule)
         model_dict = select_as_dict(model_schedule)
         for k in ['id', 'created_time', 'updated_time']:
-            try:
-                del model_dict[k]
-            except KeyError:
-                continue
+            model_dict.pop(k, None)
         model_dict.update(
             args=json.dumps(args, ensure_ascii=False) if args else None,
             kwargs=json.dumps(kwargs, ensure_ascii=False) if kwargs else None,
@@ -318,9 +320,25 @@ class DatabaseScheduler(Scheduler):
     def setup_schedule(self) -> None:
         """重写父函数"""
         logger.info('setup_schedule')
+        retired_count = run_await(self.disable_retired_task_schedulers)()
+        if retired_count:
+            logger.warning(f'已禁用 {retired_count} 条遗留 Celery 示例调度')
         tasks = self.schedule
         self.install_default_entries(tasks)
         self.update_from_dict(self.app.conf.beat_schedule)
+
+    async def disable_retired_task_schedulers(self) -> int:
+        """在加载调度表前禁用遗留示例任务，防止旧数据库行继续向生产队列投递。"""
+        async with async_db_session.begin() as db:
+            result = await db.execute(
+                update(TaskScheduler)
+                .where(
+                    TaskScheduler.enabled.is_(True),
+                    TaskScheduler.task.in_(RETIRED_CELERY_DEMO_TASKS),
+                )
+                .values(enabled=False)
+            )
+        return int(cast('Any', result).rowcount or 0)
 
     def sync(self) -> None:
         """重写父函数"""
@@ -442,7 +460,11 @@ class DatabaseScheduler(Scheduler):
             )
 
         # logger.debug(self._schedule)
-        return self._schedule or {}
+        # 空调度表也必须返回同一个可变映射；`or {}` 会生成临时字典，
+        # 导致 setup_schedule 随后写入的默认计划与 beat_schedule 全部丢失。
+        if self._schedule is None:
+            self._schedule = {}
+        return self._schedule
 
     @schedule.setter
     def schedule(self, value: dict[str, ScheduleEntry]) -> None:

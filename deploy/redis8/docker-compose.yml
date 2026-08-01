@@ -1,0 +1,38 @@
+services:
+  redis8:
+    image: redis:8.8.0@sha256:0b13f549ab871acafaa84b673c4e29bd7dce8d12526aaafe3b4ea3366c322daf
+    container_name: huanxing-redis8
+    network_mode: host
+    user: "999:999"
+    restart: unless-stopped
+    read_only: true
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+    volumes:
+      - ${REDIS8_DATA_DIR:-/data2/huanxing-redis8}/data:/data
+      - ${REDIS8_DATA_DIR:-/data2/huanxing-redis8}/secrets/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./healthcheck.sh:/usr/local/bin/redis8-healthcheck:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/redis8-healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"

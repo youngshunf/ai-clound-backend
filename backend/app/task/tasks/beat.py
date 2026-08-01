@@ -6,20 +6,6 @@ from backend.app.task.utils.tzcrontab import TzAwareCrontab
 
 # 参考：https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html
 LOCAL_BEAT_SCHEDULE = {
-    '测试同步任务': {
-        'task': 'task_demo',
-        'schedule': schedule(30),
-    },
-    '测试异步任务': {
-        'task': 'task_demo_async',
-        'schedule': TzAwareCrontab('1'),
-    },
-    '测试传参任务': {
-        'task': 'task_demo_params',
-        'schedule': TzAwareCrontab('1'),
-        'args': ['你好，'],
-        'kwargs': {'world': '世界'},
-    },
     '清理操作日志': {
         'task': 'backend.app.task.tasks.db_log.tasks.delete_db_opera_log',
         'schedule': TzAwareCrontab('0', '0', day_of_week='6'),
@@ -69,6 +55,11 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'hasn_relation_outbox_dispatch',
         # 提交后即时唤醒失败时，每分钟扫描一次持久命令，保证控制边最终落入 IM 关系域。
         'schedule': TzAwareCrontab('*'),
+    },
+    'HASN 离线恢复影子对账': {
+        'task': 'hasn_offline_shadow_reconcile',
+        # 仅 dual 模式执行真实 Redis/PG 集合对账；其余模式任务显式 no-op。
+        'schedule': TzAwareCrontab('*/5'),
     },
     '履约对账': {
         'task': 'credit_outbox_reconcile',
@@ -130,6 +121,11 @@ LOCAL_BEAT_SCHEDULE = {
     '获客-触达发送 worker': {
         'task': 'growth_dispatch_approved_outreach',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）
+    },
+    '获客-采集 pending 作业恢复投递': {
+        'task': 'lead_automation_reconcile_pending',
+        # early ACK 后若 worker 在事务提交前退出，作业仍为 pending；每 5 分钟按数据库权威状态重投。
+        'schedule': TzAwareCrontab('*/5'),
     },
     '获客-项目开通恢复对账': {
         'task': 'growth_project_provision_reconcile',

@@ -984,7 +984,7 @@ def _designsystem_resource_descriptor() -> Any:
 
     正常路径必然命中（registry 同步读 builtin manifest）。**不再兜底手写一份等价 descriptor**
     （doc36 §8.3，对齐 `_deck_resource_descriptor`）：registry 查不到 = designsystem manifest 坏了，
-    调用方 warn + 不发卡。旧兜底还踩过 `{'window':'designsystem'}` 与 ResourceWindow∈{deck,design}
+    调用方 warn + 不发卡。旧兜底还踩过 `{'window':'designsystem'}` 与当时封闭的 window 枚举∈{deck,design}
     矛盾即 ValidationError 的坑——正是「手写副本与真 manifest 漂移」的活教训，一并删除。
     """
     from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry

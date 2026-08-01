@@ -764,7 +764,7 @@ wheels = [
 
 [[package]]
 name = "celery"
-version = "5.6.2"
+version = "5.6.3"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 dependencies = [
     { name = "billiard" },
@@ -778,9 +778,9 @@ dependencies = [
     { name = "tzlocal" },
     { name = "vine" },
 ]
-sdist = { url = "https://mirrors.aliyun.com/pypi/packages/8f/9d/3d13596519cfa7207a6f9834f4b082554845eb3cd2684b5f8535d50c7c44/celery-5.6.2.tar.gz", hash = "sha256:4a8921c3fcf2ad76317d3b29020772103581ed2454c4c042cc55dcc43585009b" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/e8/b4/a1233943ab5c8ea05fb877a88a0a0622bf47444b99e4991a8045ac37ea1d/celery-5.6.3.tar.gz", hash = "sha256:177006bd2054b882e9f01be59abd8529e88879ef50d7918a7050c5a9f4e12912" }
 wheels = [
-    { url = "https://mirrors.aliyun.com/pypi/packages/dd/bd/9ecd619e456ae4ba73b6583cc313f26152afae13e9a82ac4fe7f8856bfd1/celery-5.6.2-py3-none-any.whl", hash = "sha256:3ffafacbe056951b629c7abcf9064c4a2366de0bdfc9fdba421b97ebb68619a5" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/cf/c9/6eccdda96e098f7ae843162db2d3c149c6931a24fda69fe4ab84d0027eb5/celery-5.6.3-py3-none-any.whl", hash = "sha256:0808f42f80909c4d5833202360ffafb2a4f83f4d8e23e1285d926610e9a7afa6" },
 ]
 
 [[package]]
@@ -2222,6 +2222,7 @@ wheels = [
 name = "huanxing-backend"
 source = { editable = "." }
 dependencies = [
+    { name = "aio-pika" },
     { name = "aiosmtplib" },
     { name = "alembic" },
     { name = "asgiref" },
@@ -2316,12 +2317,12 @@ lint = [
     { name = "prek" },
 ]
 server = [
-    { name = "aio-pika" },
     { name = "wait-for-it" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aio-pika", specifier = ">=9.5.8" },
     { name = "aiosmtplib", specifier = ">=5.0.0" },
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "asgiref", specifier = ">=3.11.1" },
@@ -2331,7 +2332,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=5.0.0" },
     { name = "cachebox", specifier = ">=5.2.2" },
     { name = "cappa", specifier = ">=0.31.0" },
-    { name = "celery", specifier = ">=5.6.2" },
+    { name = "celery", specifier = "==5.6.3" },
     { name = "celery-aio-pool", specifier = ">=0.1.0rc8" },
     { name = "croniter", specifier = ">=6.0.0" },
     { name = "cryptography", specifier = ">=46.0.5" },
@@ -2382,7 +2383,7 @@ requires-dist = [
     { name = "python-jose", specifier = ">=3.5.0" },
     { name = "python-socketio", specifier = ">=5.16.1" },
     { name = "qiniu", specifier = ">=7.17.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=7.2.0" },
+    { name = "redis", extras = ["hiredis"], specifier = "==8.0.1" },
     { name = "rtoml", specifier = ">=0.13.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.46" },
     { name = "sqlalchemy-crud-plus", specifier = ">=1.13.1" },
@@ -2413,10 +2414,7 @@ dev = [
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 lint = [{ name = "prek", specifier = ">=0.3.3" }]
-server = [
-    { name = "aio-pika", specifier = ">=9.5.8" },
-    { name = "wait-for-it", specifier = ">=2.3.0" },
-]
+server = [{ name = "wait-for-it", specifier = ">=2.3.0" }]
 
 [[package]]
 name = "huggingface-hub"
@@ -4728,14 +4726,14 @@ wheels = [
 
 [[package]]
 name = "redis"
-version = "7.2.0"
+version = "8.0.1"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 dependencies = [
     { name = "async-timeout", marker = "python_full_version < '3.11.3'" },
 ]
-sdist = { url = "https://mirrors.aliyun.com/pypi/packages/9f/32/6fac13a11e73e1bc67a2ae821a72bfe4c2d8c4c48f0267e4a952be0f1bae/redis-7.2.0.tar.gz", hash = "sha256:4dd5bf4bd4ae80510267f14185a15cba2a38666b941aff68cccf0256b51c1f26" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/cc/c3/928b290c2c0ca99ab96eea5b4ff8f30be8112b075301a7d3ba214a3c8c12/redis-8.0.1.tar.gz", hash = "sha256:afc5a7a2f5a084f5b1880dec548dd45be17db7e43c82a30d84f952aefb05cfb0" }
 wheels = [
-    { url = "https://mirrors.aliyun.com/pypi/packages/86/cf/f6180b67f99688d83e15c84c5beda831d1d341e95872d224f87ccafafe61/redis-7.2.0-py3-none-any.whl", hash = "sha256:01f591f8598e483f1842d429e8ae3a820804566f1c73dca1b80e23af9fba0497" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/fd/0a/c2345ebf1ebe70840ce3f6c6ee612f8fa749cfbd1b03069c53bf0c62aaad/redis-8.0.1-py3-none-any.whl", hash = "sha256:47daa35a058c23468d6437f17a8c76882cb316b838ef763036af99b96cedd743" },
 ]
 
 [package.optional-dependencies]

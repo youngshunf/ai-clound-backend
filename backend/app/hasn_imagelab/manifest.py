@@ -1,12 +1,12 @@
-"""唤星图像处理应用（imagelab / 图坊，自研本地引擎，模块 14 doc30）AI-Native 内置 manifest。
+"""唤星图像处理应用（imagelab / 图坊，自研本地引擎）AI-Native 内置 manifest。
 
 设计事实源：
-- docs/hasn-node设计文档/14-AI-Native应用平台/30-图像处理AI-Native应用(自研引擎·图坊)架构设计.md §5.4/§5.5
+- docs/hasn-node设计文档/14-AI-Native应用平台/30-图坊/01-架构设计.md §5.4/§5.5
 - docs/hasn-node设计文档/14-AI-Native应用平台/16-应用目录与商业化管理统一设计.md（catalog/manifest 四正交概念）
 
 图坊是 **Tool-First** 自研本地图像处理应用：把已跑通的图像处理流水线（ffmpeg 抽帧 + rembg ML 抠图 +
-Pillow 光栅编辑 + scipy 形态学 + libwebp 动画组装）收编为一个自研本地引擎。主人在 /apps/imagelab 用可视
-编辑器/批处理台手动处理图片；分身经 hasn.imagelab.* 本地 MCP 工具用「处理配方（Recipe）」编排完成复杂批量
+Pillow 光栅编辑 + scipy 形态学 + libwebp 动画组装）收编为一个自研本地引擎。主人在 /apps/imagelab
+快速处理或批量处理图片；分身经 hasn.imagelab.* 本地 MCP 工具用「处理配方（Recipe）」编排完成复杂批量
 图片处理；产物默认存用户本地路径，点「分享」才上传云端发好友/群。确定性像素操作走本地引擎（快、私有、零算力
 成本），生成类操作复用平台既有 hasn.image.generate（new-api）。
 
@@ -172,12 +172,13 @@ IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
             'display_name': '图坊',
         }
     },
-    # 资源描述符（doc31 §2，RC-P6）：图坊修图项目 → hasn://imagelab/projects/{server_id}，单入口 + ?project= 透传
+    # 资源描述符（doc31 §2，RC-P6）：平台项目内的图坊工作区
+    # → hasn://imagelab/projects/{platform_project_id}，单入口 + ?project= 透传
     # （模式 sidebar 全页应用，非独立窗口）。entry_query·id 经 ?project 透传，图库据此定位项目。
     'resources': [
         {
             'resource_kind': 'imagelab.project',
-            'uri_domain': 'imagelab/projects',  # → hasn://imagelab/projects/{server_id}（doc08 §3 已登记域）
+            'uri_domain': 'imagelab/projects',  # → hasn://imagelab/projects/{platform_project_id}
             'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'project'},
             'card': {'verb': '图像项目', 'action_label': '打开图坊'},
             'artifact_kind': 'resource',
@@ -416,12 +417,13 @@ IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
 def build_imagelab_app() -> App:
     """imagelab（图坊）App（local_tool / 内联路由 /apps/imagelab / 非自动挂载）。
 
-    - ``install_policy='manual'``：图坊是自研本地引擎应用（doc30 §3.2/§5.5），按需装，不自动挂载到工作台
+    - ``install_policy='manual'``：图坊是自研本地引擎应用（图坊架构 §3.2/§5.5），按需装，不自动挂载到工作台
       （``default_mount=FALSE`` 由 install_policy 推导）。用户可见的启动入口随 webui + ``hasn_app_catalog``
       目录行落地（同 film/reel/designsystem 先例）。
       注册到 app_catalog_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)`` 必须与 manifest 对齐（validate 闸门）。
-    - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui 模式 B 五分区（图库/编辑器/产物/配方/批处理），
+    - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 WebUI 页头壳六分区
+      （图库/快速处理/产物/配方/批处理/设置），
       非 embedded sidecar、非 iframe。
     - ``entry_route='/apps/imagelab'``：路由统一在 /apps 前缀下。
 

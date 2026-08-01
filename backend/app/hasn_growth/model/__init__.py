@@ -12,6 +12,8 @@ from backend.app.hasn_growth.model.growth_pii_key_state import GrowthPiiKeyState
 from backend.app.hasn_growth.model.growth_pii_migration_quarantine import (
     GrowthPiiMigrationQuarantine as GrowthPiiMigrationQuarantine,
 )
+from backend.app.hasn_growth.model.growth_profile_suggestion import GrowthProfileSuggestion as GrowthProfileSuggestion
+from backend.app.hasn_growth.model.growth_profile_version import GrowthProfileVersion as GrowthProfileVersion
 from backend.app.hasn_growth.model.growth_project import GrowthProject as GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead as GrowthProjectLead
 from backend.app.hasn_growth.model.growth_project_migration_quarantine import (
@@ -19,6 +21,7 @@ from backend.app.hasn_growth.model.growth_project_migration_quarantine import (
 )
 from backend.app.hasn_growth.model.growth_project_playbook import GrowthProjectPlaybook as GrowthProjectPlaybook
 from backend.app.hasn_growth.model.growth_project_provision import GrowthProjectProvision as GrowthProjectProvision
+from backend.app.hasn_growth.model.growth_review_suggestion import GrowthReviewSuggestion as GrowthReviewSuggestion
 from backend.app.hasn_growth.model.industry_tag import IndustryTag as IndustryTag
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog as LeadAuditLog
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob as LeadCollectionJob
@@ -38,5 +41,3 @@ from backend.app.hasn_growth.model.outreach_message import OutreachMessage as Ou
 from backend.app.hasn_growth.model.outreach_message_event import OutreachMessageEvent as OutreachMessageEvent
 from backend.app.hasn_growth.model.playbook import Playbook as Playbook
 from backend.app.hasn_growth.model.playbook_version import PlaybookVersion as PlaybookVersion
-from backend.app.hasn_growth.model.growth_profile_version import GrowthProfileVersion as GrowthProfileVersion
-from backend.app.hasn_growth.model.growth_profile_suggestion import GrowthProfileSuggestion as GrowthProfileSuggestion

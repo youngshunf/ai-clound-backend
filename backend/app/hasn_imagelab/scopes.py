@@ -1,6 +1,6 @@
-"""imagelab（图坊，自研本地图像处理引擎，模块 14 doc30）scope 展示元数据。
+"""imagelab（图坊，自研本地图像处理引擎）scope 展示元数据。
 
-设计事实源：docs/hasn-node设计文档/14-AI-Native应用平台/30-图像处理AI-Native应用(自研引擎·图坊)架构设计.md §5.4/§5.5；
+设计事实源：docs/hasn-node设计文档/14-AI-Native应用平台/30-图坊/01-架构设计.md §5.4/§5.5；
 16-工具授权统一 D-v3-3（app 域 scope 元数据随应用目录落地，由 `app/mcp/scopes.py` 聚合）。
 判定真相是工具 required_scopes + 三态 mode；本表仅展示元数据。
 
@@ -10,9 +10,11 @@ imagelab.rs `capability_scopes()` 须与之对齐——同 film/reel 的跨仓�
 - 非破坏性处理类（process/pipeline/animate/enhance/recipe.save/list/get/import）统一 `imagelab:process`
   （出厂 Allow——默认不覆盖原图、产物只落本地、可回滚）；
 - 写盘导出类（export，写本地输出目录 + 登记产物）`imagelab:export`（出厂 Allow——写盘动作，非读，不挂 read）；
-- 大批量类（batch，配方批量应用到 N 图/目录）`imagelab:batch`（出厂 Ask——耗算力/可能计费）；
-- 破坏性类（retouch=inpaint/水印去除/物体消除，伪造/抹除像素）`imagelab:destructive`（出厂 Ask）；
-- 生成类（generate，桥接平台 hasn.image.generate 花积分）`imagelab:generate`（出厂 Ask）；
+- 大批量类（batch，配方批量应用到 N 图/目录）`imagelab:batch`（出厂 Allow，主人可改为 Ask/Deny）；
+- 破坏性类（retouch=inpaint/水印去除/物体消除，另存新产物且不覆盖原图）
+  `imagelab:destructive`（出厂 Allow，主人可改为 Ask/Deny）；
+- 生成类（generate，桥接平台 hasn.image.generate 并消耗生成配额）
+  `imagelab:generate`（出厂 Allow，主人可改为 Ask/Deny）；
 - 外发分享类（share，产物上云发好友/群）`imagelab:share`（出厂 Ask——外发上云）。
 
 注：图坊生成能力不自建，桥接平台 hasn.image.generate（new-api）；本应用只铸自身 imagelab:* 域 scope。

@@ -16,7 +16,9 @@ Tauri 客户端持公钥自行验签才是安全执行点。云端只**存储 + 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
 
 from pathlib import PurePosixPath
@@ -78,14 +80,45 @@ def _next_patch_version(versions: list[str]) -> str:
     return f'{highest[0]}.{highest[1]}.{highest[2] + 1}'
 
 
-def _normalize_release_notes(raw: str) -> str:
-    """把 LLM 输出收敛成官网可直接展示的 200 字以内纯文本。"""
+def _normalize_release_notes(raw: str, *, max_chars: int = _RELEASE_NOTES_MAX_CHARS) -> str:
+    """清理 LLM 输出并保留 Markdown 结构，确定性限制源码长度。"""
     text_value = (raw or '').strip()
-    text_value = re.sub(r'\A```(?:markdown|md|text)?\s*', '', text_value, flags=re.IGNORECASE)
-    text_value = re.sub(r'\s*```\Z', '', text_value)
-    text_value = text_value.strip('`"“”')
-    text_value = re.sub(r'\s+', ' ', text_value).strip()
-    return text_value[:_RELEASE_NOTES_MAX_CHARS]
+    text_value = re.sub(
+        r'\A```(?:markdown|md|text)?[^\n]*\n?',
+        '',
+        text_value,
+        flags=re.IGNORECASE,
+    )
+    text_value = re.sub(r'\n?```\s*\Z', '', text_value)
+    if len(text_value) >= 2 and (text_value[0], text_value[-1]) in {
+        ('"', '"'),
+        ('“', '”'),
+    }:
+        text_value = text_value[1:-1]
+    lines = [
+        re.sub(r'[ \t]+', ' ', line.strip())
+        for line in text_value.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        if line.strip()
+    ]
+    normalized = '\n'.join(lines).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    candidate = normalized[:max_chars].rstrip()
+    last_line_start = candidate.rfind('\n') + 1
+    sentence_end = max(candidate.rfind(mark) for mark in '。！？；')
+    if sentence_end >= last_line_start:
+        return candidate[: sentence_end + 1].rstrip()
+    clause_end = max(candidate.rfind(mark) for mark in '，,、;')
+    if clause_end >= last_line_start:
+        return f'{candidate[:clause_end].rstrip()}。'
+    if last_line_start > 0:
+        return candidate[: last_line_start - 1].rstrip()
+    return f'{candidate[: max_chars - 1].rstrip()}…'
+
+
+def _should_generate_release_notes(status: str) -> bool:
+    """同一发布批次只生成一次；失败状态允许下一台打包机器重试。"""
+    return status != 'ready'
 
 
 def _completed_platforms(
@@ -102,6 +135,48 @@ def _completed_platforms(
 
 class ReleaseService:
     # --------- 云端发布批次（跨机器版本与 tag 单一事实源） ---------
+
+    async def _get_public_release_candidates(
+        self,
+        db: AsyncSession,
+        channel: str,
+    ) -> list[AppRelease]:
+        """返回公开消费候选：正式最新版 + 已有平台完成的当前草稿批次。"""
+        releases = list(
+            (
+                await db.execute(
+                    select(AppRelease).where(
+                        AppRelease.channel == channel,
+                        AppRelease.status.in_(('draft', 'published')),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        published = [release for release in releases if release.status == 'published']
+        latest_published = [release for release in published if release.is_latest]
+        published_head = max(
+            latest_published or published,
+            key=lambda release: _semver_tuple(release.version),
+            default=None,
+        )
+        partial_releases = [
+            release
+            for release in releases
+            if release.status == 'draft'
+            and release.tag_status == 'ready'
+            and release.release_notes_status == 'ready'
+            and bool(release.release_tag)
+            and bool(release.completed_platforms)
+        ]
+        candidates = partial_releases + ([published_head] if published_head is not None else [])
+        return sorted(candidates, key=lambda release: _semver_tuple(release.version), reverse=True)
+
+    @staticmethod
+    def _platform_is_public(release: AppRelease, platform_target: str) -> bool:
+        """正式版全部公开；草稿只公开 installer/updater 已成套上传的平台。"""
+        return release.status == 'published' or platform_target in set(release.completed_platforms or [])
 
     @staticmethod
     def _to_batch(release: AppRelease) -> ReleaseBatchResponse:
@@ -207,17 +282,18 @@ class ReleaseService:
         return self._to_batch(release)
 
     async def _resolve_remote_tag_commit(self, release_tag: str) -> str:
-        """通过 GitHub API 解析轻量或附注 tag 最终指向的 commit。"""
+        """解析轻量或附注 tag 最终指向的 commit；无 REST token 时使用只读 deploy key。"""
         repo = (settings.RELEASE_GITHUB_REPO or '').strip()
         if not repo:
             raise errors.ServerError(msg='未配置 RELEASE_GITHUB_REPO，无法核验 release tag')
         token = (settings.RELEASE_GITHUB_TOKEN or '').strip()
+        if not token:
+            return await self._resolve_remote_tag_commit_via_ssh(repo, release_tag)
         headers = {
             'Accept': 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
+            'Authorization': f'Bearer {token}',
         }
-        if token:
-            headers['Authorization'] = f'Bearer {token}'
         base_url = f'https://api.github.com/repos/{repo}'
         ref_url = f'{base_url}/git/ref/tags/{quote(release_tag, safe="")}'
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
@@ -242,6 +318,52 @@ class ReleaseService:
                 obj = (tag_response.json() or {}).get('object') or {}
         raise errors.ServerError(msg=f'无法解析 release tag 指向的 commit：{release_tag}')
 
+    async def _resolve_remote_tag_commit_via_ssh(
+        self,
+        repo: str,
+        release_tag: str,
+    ) -> str:
+        """通过生产机现有 GitHub 只读 deploy key 校验私有仓 tag，不接触写权限。"""
+        direct_ref = f'refs/tags/{release_tag}'
+        peeled_ref = f'{direct_ref}^{{}}'
+        env = os.environ.copy()
+        env['GIT_TERMINAL_PROMPT'] = '0'
+        env['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes'
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'git',
+                'ls-remote',
+                '--tags',
+                f'git@github.com:{repo}.git',
+                direct_ref,
+                peeled_ref,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                raise errors.ServerError(msg='GitHub SSH tag 校验超时') from None
+        except FileNotFoundError:
+            raise errors.ServerError(msg='生产环境缺少 git，无法通过 deploy key 校验 release tag') from None
+
+        if process.returncode != 0:
+            detail = stderr.decode('utf-8', errors='replace').strip()[:300]
+            raise errors.ServerError(msg=f'GitHub SSH tag 校验失败：{detail or process.returncode}')
+
+        refs: dict[str, str] = {}
+        for raw_line in stdout.decode('utf-8', errors='replace').splitlines():
+            parts = raw_line.split()
+            if len(parts) == 2:
+                refs[parts[1]] = parts[0].lower()
+        commit = refs.get(peeled_ref) or refs.get(direct_ref)
+        if not commit:
+            raise errors.RequestError(msg=f'远端 release tag 尚不存在：{release_tag}')
+        return commit
+
     async def _generate_release_notes(
         self,
         *,
@@ -250,7 +372,7 @@ class ReleaseService:
         release_tag: str,
         commits: list[ReleaseCommitInput],
     ) -> str:
-        """调用统一 LLM 客户端，把 Git 历史整理成 200 字以内用户更新说明。"""
+        """调用统一 LLM 客户端，把 Git 历史整理成 200 字以内 Markdown 更新说明。"""
         if not llm_client.is_configured:
             raise LLMError('统一 LLM 网关未配置')
         commit_lines: list[str] = []
@@ -295,7 +417,8 @@ class ReleaseService:
                     max_tokens=800,
                     temperature=0.1,
                 )
-                chunk_summaries.append(_normalize_release_notes(chunk_summary)[:400])
+                normalized_chunk = _normalize_release_notes(chunk_summary, max_chars=400)
+                chunk_summaries.append(re.sub(r'\s+', ' ', normalized_chunk))
             summary_source = '\n'.join(
                 f'- 分段{index}：{summary}' for index, summary in enumerate(chunk_summaries, start=1)
             )
@@ -306,8 +429,11 @@ class ReleaseService:
                     'content': (
                         '你是唤星AI桌面端的版本说明编辑。只能依据提供的Git提交事实，'
                         '合并重复内容，优先概括用户可感知的新功能、问题修复、性能与安全改进。'
-                        '忽略merge、chore、版本号调整和纯工程噪音。输出一段自然中文纯文本，'
-                        '不写标题、版本号、commit哈希、发布方式或“本机自动发布”，总长度不超过200个汉字。'
+                        '忽略merge、chore、版本号调整和纯工程噪音。输出可直接展示的Markdown：'
+                        '不要标题、表格、代码块和链接；按实际内容写1至5条无序列表；'
+                        '每条用 **新增**、**优化**、**修复**、**性能**、**安全** 中最贴切的标签开头，'
+                        '格式如“- **新增**：支持……”。同类变化必须合并，不得补写提交中没有的事实。'
+                        'Markdown源码总长度不超过200个字符，不写版本号、commit哈希、发布方式或“本机自动发布”。'
                     ),
                 },
                 {
@@ -319,7 +445,7 @@ class ReleaseService:
                     ),
                 },
             ],
-            max_tokens=400,
+            max_tokens=500,
             temperature=0.2,
         )
         normalized = _normalize_release_notes(notes)
@@ -363,7 +489,7 @@ class ReleaseService:
         if req.previous_release_tag:
             release.previous_release_tag = req.previous_release_tag.strip()
 
-        if release.release_notes_status != 'ready':
+        if _should_generate_release_notes(release.release_notes_status):
             release.release_notes_status = 'pending'
             release.release_notes_error = None
             try:
@@ -640,38 +766,45 @@ class ReleaseService:
     # --------- 官网 / 桌面端消费 ---------
 
     async def get_latest(self, db: AsyncSession, channel: str = 'stable') -> LatestReleaseResponse:
-        """当前 channel 最新已发布版本 + 各平台 installer（官网 Hero + 下载页）。"""
-        release = (
-            await db.execute(
-                select(AppRelease)
-                .where(
-                    AppRelease.channel == channel,
-                    AppRelease.is_latest.is_(True),
-                    AppRelease.status == 'published',
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if release is None:
+        """返回当前最高版本说明，并为每个平台选择已经可用的最新 installer。"""
+        releases = await self._get_public_release_candidates(db, channel)
+        if not releases:
             return LatestReleaseResponse(channel=channel)
 
-        assets = (
+        release_ids = [release.id for release in releases]
+        assets = list(
             (
                 await db.execute(
                     select(ReleaseAsset).where(
-                        ReleaseAsset.release_id == release.id, ReleaseAsset.asset_kind == 'installer'
+                        ReleaseAsset.release_id.in_(release_ids),
+                        ReleaseAsset.asset_kind == 'installer',
                     )
                 )
             )
             .scalars()
             .all()
         )
-        installers = {a.platform_target: ReleaseAssetDetail.model_validate(a) for a in assets}
+        assets_by_release: dict[int, list[ReleaseAsset]] = {}
+        for asset in assets:
+            assets_by_release.setdefault(asset.release_id, []).append(asset)
+
+        installers: dict[str, ReleaseAssetDetail] = {}
+        platform_versions: dict[str, str] = {}
+        for release in releases:
+            for asset in assets_by_release.get(release.id, []):
+                platform_target = asset.platform_target
+                if platform_target in installers or not self._platform_is_public(release, platform_target):
+                    continue
+                installers[platform_target] = ReleaseAssetDetail.model_validate(asset)
+                platform_versions[platform_target] = release.version
+
+        headline = releases[0]
         return LatestReleaseResponse(
-            version=release.version,
+            version=headline.version,
             channel=channel,
-            published_time=release.published_time,
-            release_notes_md=release.release_notes_md,
+            published_time=headline.published_time,
+            release_notes_md=headline.release_notes_md,
+            platform_versions=platform_versions,
             installers=installers,
         )
 
@@ -683,31 +816,39 @@ class ReleaseService:
         target/arch 形如 darwin/aarch64 → platform_target=darwin-aarch64。
         """
         platform_target = f'{target}-{arch}'
-        release = (
-            await db.execute(
-                select(AppRelease)
-                .where(
-                    AppRelease.channel == channel,
-                    AppRelease.is_latest.is_(True),
-                    AppRelease.status == 'published',
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if release is None or not _is_newer(release.version, current_version):
+        releases = await self._get_public_release_candidates(db, channel)
+        eligible_releases = [
+            release
+            for release in releases
+            if self._platform_is_public(release, platform_target) and _is_newer(release.version, current_version)
+        ]
+        if not eligible_releases:
             return None
 
-        updater = (
-            await db.execute(
-                select(ReleaseAsset).where(
-                    ReleaseAsset.release_id == release.id,
-                    ReleaseAsset.asset_kind == 'updater',
-                    ReleaseAsset.platform_target == platform_target,
+        release_ids = [release.id for release in eligible_releases]
+        updaters = list(
+            (
+                await db.execute(
+                    select(ReleaseAsset).where(
+                        ReleaseAsset.release_id.in_(release_ids),
+                        ReleaseAsset.asset_kind == 'updater',
+                        ReleaseAsset.platform_target == platform_target,
+                    )
                 )
             )
-        ).scalar_one_or_none()
-        if updater is None or not (updater.signature or '').strip():
+            .scalars()
+            .all()
+        )
+        updater_by_release = {updater.release_id: updater for updater in updaters}
+        selected: tuple[AppRelease, ReleaseAsset] | None = None
+        for release in eligible_releases:
+            updater = updater_by_release.get(release.id)
+            if updater is not None and (updater.signature or '').strip():
+                selected = (release, updater)
+                break
+        if selected is None:
             return None
+        release, updater = selected
 
         pub_date = None
         if release.published_time is not None:

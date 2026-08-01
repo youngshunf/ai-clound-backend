@@ -11,9 +11,9 @@ def test_delivery_bus_is_implemented_inside_routing_layer() -> None:
     assert isinstance(delivery_bus.ws_delivery_bus, delivery_bus.WsDeliveryBus)
 
 
-def test_delivery_claim_supports_redis_6_0() -> None:
-    """领取待投帧不能依赖 Redis 6.2 才提供的 LMOVE。"""
+def test_delivery_claim_supports_redis_6_lua_and_redis_8_lmove() -> None:
+    """领取待投帧同时保留 Redis 6 Lua 与 Redis 8 LMOVE 路径。"""
     source = inspect.getsource(delivery_bus)
 
-    assert '.lmove(' not in source
+    assert '.lmove(' in source
     assert '_MOVE_PENDING_TO_PROCESSING_LUA' in source

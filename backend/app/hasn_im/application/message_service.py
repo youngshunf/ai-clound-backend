@@ -6,7 +6,7 @@
 
 import uuid
 
-from typing import Any, cast
+from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,26 +48,7 @@ from backend.database.schema_names import SCHEMA_NAMES
 from backend.utils.timezone import timezone
 
 
-_node_session_gateway = None
-
-
-def _get_node_session_gateway():
-    """延迟获取会话网关，避免 provider 与 message_router 的循环依赖。"""
-    global _node_session_gateway
-    if _node_session_gateway is None:
-        from backend.app.hasn_im.application.provider import get_node_session_gateway
-
-        _node_session_gateway = get_node_session_gateway()
-    return _node_session_gateway
-
-
 # ─── 目标解析 ───
-
-
-async def _push_message_to(hasn_id: str, payload: dict[str, Any]) -> None:
-    """延迟导入 WS 路由器，避免服务模块启动时与 binding_event_service 循环导入。"""
-    gateway = cast(Any, _get_node_session_gateway())
-    await gateway.push_message_to(hasn_id, payload)
 
 
 async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None:
@@ -587,13 +568,11 @@ async def _grant_private_attachments(
     assets = await hasn_asset_service.get_many(db, asset_ids)
     for asset in assets.values():
         if asset.access == 'private':
-            await hasn_asset_service.grant_to_conversation(db, asset_id=asset.asset_id, conversation_id=conversation_id)
-            await OwnerStorageService.bind_asset_in_transaction(
+            await OwnerStorageService.bind_private_attachment_in_transaction(
                 db,
-                owner_hasn_id=asset.owner_hasn_id,
                 asset_id=asset.asset_id,
-                resource_uri=f'hasn://messages/c/{conversation_id}#{message_id}',
-                role='attachment',
+                conversation_id=conversation_id,
+                message_id=message_id,
             )
 
 
@@ -1463,15 +1442,10 @@ async def recall_message(
     msg.recalled_by = hasn_id
     await db.commit()
 
-    # 通知对方
-    recall_payload = {
-        'cmd': 'MESSAGE_RECALLED',
-        'msg_id': msg_id,
-        'conversation_id': str(msg.conversation_id),
-        'recalled_by': hasn_id,
-    }
-    await _push_message_to(msg.to_id, recall_payload)
-
+    # 不再从这里直推遗留 `cmd: MESSAGE_RECALLED` 帧：该 payload 没有 `method`，
+    # 接收方离线时会被离线帧策略判为未登记帧；而现行撤回通知已由
+    # `local_gateway.recall_message` 写 integration event、经 `RealtimeNotifier`
+    # 下发 `hasn.message.invalidated`（已在 durable 覆盖矩阵中登记）。
     return {'error': False, 'msg_id': msg_id}
 
 

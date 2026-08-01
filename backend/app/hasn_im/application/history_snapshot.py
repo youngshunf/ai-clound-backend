@@ -80,8 +80,6 @@ async def _owner_identity_ids(
             await db.execute(
                 select(HasnAgents.hasn_id).where(
                     HasnAgents.owner_id == owner_id,
-                    HasnAgents.status == 'active',
-                    HasnAgents.deleted_at.is_(None),
                 )
             )
         )
@@ -191,6 +189,10 @@ def _conversation_projection(
         if membership.history_complete_from_seq is not None
     ]
     projection['status'] = conversation.status or 'active'
+    projection['snapshot_message_seq_upper_bound'] = max(
+        0,
+        int(conversation.current_seq),
+    )
     projection['history_complete'] = bool(visible_epochs) and len(complete_starts) == len(visible_epochs)
     projection['history_complete_from_seq'] = min(complete_starts) if complete_starts else None
     projection['read_state'] = [
@@ -221,6 +223,7 @@ def _message_projection(
         'message_id': str(message.id),
         'conversation_seq': int(message.conversation_seq),
         'sender_hasn_id': message.from_id,
+        'sender_is_owned': message.from_id in identity_set,
         'recipient_hasn_id': message.to_id,
         'origin_node_id': message.origin_node_id,
         'content_type': content_type_to_mime(message.content_type),

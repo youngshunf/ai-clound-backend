@@ -5,9 +5,9 @@ from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from typing import BinaryIO
 from urllib.parse import unquote, urlsplit
 
+import boto3  # type: ignore[import-untyped]
 import httpx
 
-import boto3  # type: ignore[import-untyped]
 from botocore.config import Config  # type: ignore[import-untyped]
 from fastapi import UploadFile
 from opendal import AsyncOperator
@@ -18,6 +18,17 @@ from backend.common.log import log
 from backend.plugin.s3.model import S3Storage
 
 IMMUTABLE_SPEECH_PACKAGE_PREFIX = 'speech/sha256/'
+# 制品包分片大小；与语音包上传保持一致。
+PUBLIC_PACKAGE_PART_BYTES = 4 * 1024 * 1024
+
+
+def _package_upload_timeout(size: int) -> float:
+    """按 100 KiB/s 的保守下限推算大包上传超时，至少 30 分钟。
+
+    `write_stream` 默认按 500 KiB/s 推算且硬顶 1800 秒，对 GB 级制品包必然不够；
+    这里给制品包一条独立的、随体积线性增长的预算。
+    """
+    return max(1800.0, size / (100 * 1024))
 
 
 def normalize_storage_root(prefix: str | None) -> str:
@@ -493,14 +504,19 @@ async def write_stream(
     *,
     size: int,
     content_type: str | None = None,
+    timeout_ceiling: float = 1800.0,
 ) -> None:
-    """以有界内存流式上传已知长度对象。"""
+    """以有界内存流式上传已知长度对象。
+
+    ``timeout_ceiling`` 是超时与预签名 TTL 的共同上限，默认 30 分钟。GB 级制品包必须由
+    调用方显式放宽，否则单次 PUT 会在上限处整体失败且无法续传。
+    """
     clean_path = _clean_object_path(path)
     _reject_reserved_immutable_mutation(clean_path)
     operator = get_operator_for_storage(s3_storage)
     try:
-        upload_timeout = min(1800.0, max(30.0, size / (500 * 1024)))
-        presign_ttl = int(min(1800.0, max(300.0, upload_timeout)))
+        upload_timeout = min(timeout_ceiling, max(30.0, size / (500 * 1024)))
+        presign_ttl = int(min(timeout_ceiling, max(300.0, upload_timeout)))
         signed = await operator.presign_write(clean_path, presign_ttl)
         headers = dict(getattr(signed, 'headers', {}) or {})
         if not isinstance(contents, bytes):
@@ -595,6 +611,99 @@ async def write_immutable_speech_package(
         raise errors.ServerError(msg=f'七牛不可变语音包上传失败: HTTP {status_code} {detail}')
     if result.get('key') != provider_key or int(result.get('size', -1)) != size:
         raise errors.ServerError(msg='七牛不可变语音包上传结果与请求 key/大小不一致')
+
+
+async def _iterate_binary(file: BinaryIO, chunk_bytes: int) -> AsyncIterator[bytes]:
+    """把同步文件对象转成有界内存的异步字节流；读盘放线程池避免阻塞事件循环。"""
+    await asyncio.to_thread(file.seek, 0)
+    while chunk := await asyncio.to_thread(file.read, chunk_bytes):
+        yield chunk
+
+
+async def write_public_package_stream(
+    s3_storage: S3Storage,
+    path: str,
+    file: BinaryIO,
+    *,
+    size: int,
+    content_type: str,
+) -> None:
+    """分片上传 GB 级制品包（引擎包 / 模型包）。
+
+    不能走 :func:`write_stream`：那条路径是单次预签名 PUT，``upload_timeout`` 与
+    ``presign_ttl`` 都硬顶 1800 秒且不可续传——2 GiB 级的包只要实际吞吐低于约 1.2 MB/s，
+    就会在第 1800 秒预签名过期时整体作废，且没有断点续传，只能从零重传。
+
+    **刻意不加 ``insertOnly``**：制品包的 key 内嵌内容摘要，「跳过重复上传」由调用方在上传前
+    以服务端复算摘要判定（见 `_reuse_uploaded_model_package`）。若桶内同 key 的对象与本次内容
+    不符（上一次上传中断留下的残包），调用方的语义是覆盖重传；用 insert-only 会让这种残包
+    永远修不好——每次重试都拿到 ``614 file exists``，却仍指向那份坏字节。
+    """
+    clean_path = _clean_object_path(path)
+    _reject_reserved_immutable_mutation(clean_path)
+    hostname = (urlsplit(s3_storage.endpoint).hostname or '').lower()
+    if not hostname.endswith('.qiniucs.com'):
+        # 非七牛 provider 没有已验证的分片实现，退回预签名 PUT；但必须解除 1800 秒硬顶，
+        # 否则大包在这条分支上依然必然超时。
+        await write_stream(
+            s3_storage,
+            path,
+            _iterate_binary(file, PUBLIC_PACKAGE_PART_BYTES),
+            size=size,
+            content_type=content_type,
+            timeout_ceiling=_package_upload_timeout(size),
+        )
+        return
+
+    prefix = _public_prefix(s3_storage.prefix)
+    provider_key = '/'.join(part for part in (prefix, clean_path) if part)
+    # 只锁大小与 MIME，不锁 insert-only：同 key 异内容的残包必须能被覆盖修复。
+    policy = {
+        'fsizeMin': size,
+        'fsizeLimit': size,
+        'mimeLimit': content_type,
+        'returnBody': '{"key":$(key),"hash":$(etag),"size":$(fsize)}',
+    }
+    token = Auth(s3_storage.access_key, s3_storage.secret_key).upload_token(
+        s3_storage.bucket,
+        provider_key,
+        int(_package_upload_timeout(size)),
+        policy,
+    )
+
+    def upload() -> tuple[dict | None, object]:
+        file.seek(0)
+        if size <= PUBLIC_PACKAGE_PART_BYTES:
+            return put_data(
+                token,
+                provider_key,
+                file.read(),
+                mime_type=content_type,
+                fname=provider_key.rsplit('/', 1)[-1],
+            )
+        return put_stream_v2(
+            token,
+            provider_key,
+            file,
+            provider_key.rsplit('/', 1)[-1],
+            size,
+            mime_type=content_type,
+            version='v2',
+            bucket_name=s3_storage.bucket,
+            part_size=PUBLIC_PACKAGE_PART_BYTES,
+        )
+
+    try:
+        result, info = await asyncio.to_thread(upload)
+    except Exception as exc:
+        log.exception(f'制品包分片上传失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'制品包分片上传失败: {type(exc).__name__}: {exc!s}') from exc
+    status_code = int(getattr(info, 'status_code', 0) or 0)
+    if status_code != 200 or result is None:
+        detail = str(getattr(info, 'text_body', '') or getattr(info, 'error', '') or 'unknown error')[:300]
+        raise errors.ServerError(msg=f'制品包分片上传失败: HTTP {status_code} {detail}')
+    if result.get('key') != provider_key or int(result.get('size', -1)) != size:
+        raise errors.ServerError(msg='制品包上传结果与请求 key/大小不一致')
 
 
 async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content_type: str | None = None) -> None:

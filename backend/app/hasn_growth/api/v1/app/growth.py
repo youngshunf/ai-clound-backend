@@ -44,6 +44,11 @@ from backend.app.hasn_growth.schema.project_profile import (
     BindGrowthKnowledgeBody,
     ReviewGrowthProfileSuggestionBody,
 )
+from backend.app.hasn_growth.schema.project_review import (
+    ReviewGrowthReviewSuggestionBody,
+    UpdateGrowthProjectPolicyBody,
+    UpdateGrowthReviewScheduleBody,
+)
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
@@ -65,6 +70,7 @@ from backend.app.hasn_growth.service.project_customer_service import (
 )
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_growth.service.scope_context import resolve_growth_scope
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -296,6 +302,131 @@ async def get_growth_project_overview(
             'report': report,
         }
     )
+
+
+@router.get(
+    '/projects/{growth_project_id}/review/suggestions',
+    summary='[Owner] 读取下一周期 ICP、渠道与打法建议',
+    dependencies=[DependsJwtAuth],
+)
+async def list_growth_review_suggestions(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.list_suggestions(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/review/suggestions/{suggestion_id}',
+    summary='[Owner] 接受或拒绝下一周期建议',
+    dependencies=[DependsJwtAuth],
+)
+async def review_growth_review_suggestion(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    suggestion_id: int,
+    obj: ReviewGrowthReviewSuggestionBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.review_suggestion(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        owner_user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        suggestion_id=suggestion_id,
+        decision=obj.decision,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/review/schedule',
+    summary='[Owner] 读取周期经营复盘任务状态',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_review_schedule(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.get_review_schedule(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/review/schedule',
+    summary='[Owner] 显式启用或暂停周期经营复盘',
+    dependencies=[DependsJwtAuth],
+)
+async def update_growth_review_schedule(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    obj: UpdateGrowthReviewScheduleBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.set_review_schedule(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+        enabled=obj.enabled,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/policy',
+    summary='[Owner] 读取项目渠道、静默时段、频控与预算策略',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_policy(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_review_service.get_policy(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/projects/{growth_project_id}/policy',
+    summary='[Owner] 更新项目渠道、静默时段、频控与预算策略',
+    dependencies=[DependsJwtAuth],
+)
+async def update_growth_project_policy(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    obj: UpdateGrowthProjectPolicyBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    proposal = obj.model_dump(exclude={'expected_policy_version'})
+    data = await growth_review_service.update_policy(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+        expected_policy_version=obj.expected_policy_version,
+        proposal=proposal,
+    )
+    return response_base.success(data=data)
 
 
 @router.put(
@@ -1154,7 +1285,7 @@ async def list_project_opportunities(
     growth_project_id: UUID,
     customer_id: Annotated[int | None, Query()] = None,
     stage: Annotated[str | None, Query()] = None,
-    open_only: Annotated[bool, Query()] = False,  # ruff: ignore[boolean-default-value-positional-argument]
+    open_only: Annotated[bool, Query()] = False,  # noqa: FBT002
     view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
     assignee: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
@@ -1306,7 +1437,7 @@ async def list_opportunities(
     request: Request,
     db: CurrentSession,
     customer_id: Annotated[int | None, Query()] = None,
-    open_only: Annotated[bool, Query()] = False,  # ruff: ignore[boolean-default-value-positional-argument]
+    open_only: Annotated[bool, Query()] = False,  # noqa: FBT002
     view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
     assignee: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,

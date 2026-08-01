@@ -4,6 +4,7 @@ from backend.app.hasn_release.service.release_service import (
     _completed_platforms,
     _next_patch_version,
     _normalize_release_notes,
+    _should_generate_release_notes,
 )
 
 
@@ -12,11 +13,25 @@ def test_next_patch_version_uses_highest_allocated_version() -> None:
     assert _next_patch_version([]) == '0.0.1'
 
 
-def test_normalize_release_notes_removes_fence_and_caps_200_chars() -> None:
-    raw = f'```markdown\n{"改进桌面端体验。" * 40}\n```'
+def test_normalize_release_notes_preserves_markdown_and_caps_200_chars() -> None:
+    raw = f'```markdown\n- **新增**：支持批量处理\n- **优化**：{"改进桌面端体验。" * 40}\n```'
     notes = _normalize_release_notes(raw)
     assert '```' not in notes
-    assert len(notes) == 200
+    assert notes.startswith('- **新增**：支持批量处理\n- **优化**：')
+    assert len(notes) <= 200
+    assert notes.endswith('。')
+
+
+def test_normalize_release_notes_closes_truncated_clause() -> None:
+    raw = '- **安全**：上线出站消息三层拦截与敏感信息扫描，阻止高风险内容发送。'
+    notes = _normalize_release_notes(raw, max_chars=30)
+    assert notes == '- **安全**：上线出站消息三层拦截与敏感信息扫描。'
+
+
+def test_ready_release_notes_are_not_generated_again() -> None:
+    assert _should_generate_release_notes('ready') is False
+    assert _should_generate_release_notes('pending') is True
+    assert _should_generate_release_notes('failed') is True
 
 
 def test_completed_platforms_requires_installer_and_updater() -> None:

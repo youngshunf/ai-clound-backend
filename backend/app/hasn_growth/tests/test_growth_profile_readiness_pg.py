@@ -421,9 +421,11 @@ async def test_project_overview_distinguishes_unrecorded_cost_from_zero(
         growth_project_id=ctx.growth.id,
     )
     assert empty['cost'] == {
+        'status': 'unrecorded',
         'recorded': False,
         'amount': None,
         'currency': 'CNY',
+        'event_count': 0,
     }
     assert empty['conversion']['lead_to_customer']['rate'] is None
 
@@ -443,4 +445,5 @@ async def test_project_overview_distinguishes_unrecorded_cost_from_zero(
         growth_project_id=ctx.growth.id,
     )
     assert recorded['cost']['recorded'] is True
+    assert recorded['cost']['status'] == 'recorded'
     assert recorded['cost']['amount'] == pytest.approx(123.45)

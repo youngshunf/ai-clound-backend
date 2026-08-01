@@ -5,7 +5,7 @@ from re import Pattern
 from re import compile as compile_pattern
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH
@@ -18,6 +18,34 @@ def _set_production_observability_default(values: dict[str, Any]) -> None:
         values['GRAFANA_METRICS_ENABLE'] = True
 
 
+def _validate_production_celery_rabbitmq(values: dict[str, Any]) -> None:
+    """校验生产 Celery 只能使用固定最小权限角色和强凭据。"""
+    if values.get('ENVIRONMENT') != 'prod' or values.get('CELERY_BROKER', 'redis') != 'rabbitmq':
+        return
+    if values.get('CELERY_RABBITMQ_USERNAME') != 'huanxing_celery':
+        raise ValueError('生产 Celery RabbitMQ 必须使用最小权限角色 huanxing_celery')
+    if values.get('CELERY_RABBITMQ_VHOST', 'huanxing') != 'huanxing':
+        raise ValueError('生产 CELERY_RABBITMQ_VHOST 必须为 huanxing')
+    if len(str(values.get('CELERY_RABBITMQ_PASSWORD') or '')) < 24:
+        raise ValueError('生产 Celery RabbitMQ 密码长度必须至少为 24 位')
+
+
+def _validate_production_realtime_rabbitmq(
+    values: dict[str, Any],
+    *,
+    selected: bool,
+) -> None:
+    """校验生产 realtime 只能使用固定最小权限角色和强凭据。"""
+    if values.get('ENVIRONMENT') != 'prod' or not selected:
+        return
+    if values.get('REALTIME_RABBITMQ_USERNAME') != 'huanxing_realtime':
+        raise ValueError('生产 realtime RabbitMQ 必须使用最小权限角色 huanxing_realtime')
+    if values.get('REALTIME_RABBITMQ_VHOST', 'huanxing') != 'huanxing':
+        raise ValueError('生产 REALTIME_RABBITMQ_VHOST 必须为 huanxing')
+    if len(str(values.get('REALTIME_RABBITMQ_PASSWORD') or '')) < 24:
+        raise ValueError('生产 realtime RabbitMQ 密码长度必须至少为 24 位')
+
+
 class Settings(BaseSettings):
     """全局配置"""
 
@@ -26,6 +54,7 @@ class Settings(BaseSettings):
         env_file_encoding='utf-8',
         extra='allow',
         case_sensitive=True,
+        hide_input_in_errors=True,
     )
 
     @classmethod
@@ -135,6 +164,18 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_TIMEOUT: int = 5
+    # 显式固定 RESP，避免 redis-py 主版本升级时跟随客户端默认值漂移。
+    REDIS_PROTOCOL: Literal[2, 3] = 2
+    # Redis 6 使用 Lua；Redis 8 蓝绿验收后由生产环境显式切到原生 LMOVE。
+    REDIS_LIST_MOVE_MODE: Literal['lua', 'lmove'] = 'lua'
+
+    @field_validator('REDIS_PROTOCOL', mode='before')
+    @classmethod
+    def normalize_redis_protocol(cls, value: object) -> object:
+        """把 `.env` 文本协议版本归一化为 redis-py 需要的整数。"""
+        if isinstance(value, str) and value in {'2', '3'}:
+            return int(value)
+        return value
 
     # 缓存
     CACHE_LOCAL_ENABLED: bool = True
@@ -229,7 +270,9 @@ class Settings(BaseSettings):
 
     # 量化交易引擎服务（quant-engine-service，独立部署，模块 14 doc23）：唯一接触 NautilusTrader 的地方，
     # 主云端经 quant_engine_provider（httpx）中转提交/轮询回测（agent 工具面 + owner read-API 共用）。
-    QUANT_ENGINE_URL: str = ''  # 引擎服务地址，如 http://quant-svc.internal:8000（为空时 provider 抛 QuantEngineError / healthz 归一 service_unconfigured）
+    # 地址如 http://quant-svc.internal:8000；为空时 provider 抛 QuantEngineError，
+    # healthz 归一为 service_unconfigured。
+    QUANT_ENGINE_URL: str = ''
     QUANT_ENGINE_TOKEN: str = (
         ''  # 内部 svc-token（Bearer，对齐引擎服务 QUANT_SVC_TOKEN；空则引擎仅允许本机回环，开发态）
     )
@@ -343,15 +386,19 @@ class Settings(BaseSettings):
             rf'^{FASTAPI_API_V1_PATH}/llm/proxy(/.*)?$',  # LLM Proxy API（使用 x-api-key 认证，不走 JWT）
             rf'^{FASTAPI_API_V1_PATH}/huanxing/open/.*$',  # 唤星公开 API（分享文档等）
             rf'^{FASTAPI_API_V1_PATH}/hasn/agent/.*$',  # HASN Agent API（使用 AgentKey 认证）
-            rf'^{FASTAPI_API_V1_PATH}/mcp/.*$',  # MCP Streamable 接入面（Agent MCP Key / Agent JWT 由 handler 自鉴权，不走 Owner JWT 中间件）
+            # MCP Streamable 接入面由 Agent MCP Key / Agent JWT 自鉴权。
+            rf'^{FASTAPI_API_V1_PATH}/mcp/.*$',
             rf'^{FASTAPI_API_V1_PATH}/hasn/open/.*$',  # HASN 公开 API
-            rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',  # 桌面端发布：下载页/updater 公开面 + CI 回调（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
-            rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',  # 通用语音签名目录 CI 发布面（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
+            # 桌面端下载/updater 与 CI 回调自带 Bearer CI 密钥鉴权。
+            rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',
+            # 通用语音签名目录 CI 发布面自带 Bearer CI 密钥鉴权。
+            rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',
             rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$',  # HASN WebSocket
             rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
             rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
             rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$',  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
-            rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$',  # 获客 Agent API（Agent JWT，handler 自鉴权，不走 Owner JWT 中间件）
+            # 获客 Agent API 由 handler 校验 Agent JWT。
+            rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$',
             rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # 获客旧前缀 Agent API（薄转发过渡，M8 退役）
             rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
             r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
@@ -446,7 +493,8 @@ class Settings(BaseSettings):
         'http://localhost:8020',
         'http://192.168.1.92:8020',
         'http://api.ai.dcfuture.cn',
-        'https://astra.dcfuture.cn',  # 官网/分享查看器前端域名（website /s/{slug} fetch publish/open meta+换票；2026-07-03 起 huanxing→astra）
+        # 官网/分享查看器前端域名；website /s/{slug} 读取公开元数据并换票。
+        'https://astra.dcfuture.cn',
     ]
     CORS_EXPOSE_HEADERS: list[str] = [
         'X-Request-ID',
@@ -522,6 +570,10 @@ class Settings(BaseSettings):
         'new_password',
         'confirm_password',
     ]
+    # 超过该长度的请求体不读入操作日志，避免大文件上传把 worker 内存打满。
+    # `request.body()` 会把整个请求体缓冲进内存，非 JSON 分支还会再 decode 出一份等长字符串；
+    # 发布数百 MB 的引擎包 / 模型包时，这一步发生在路由之前，会让端点侧的分块读取彻底失效。
+    OPERA_LOG_MAX_BODY_BYTES: int = 1 * 1024 * 1024
     OPERA_LOG_QUEUE_MAXSIZE: int = 100000
     OPERA_LOG_QUEUE_BATCH_CONSUME_SIZE: int = 100
     OPERA_LOG_QUEUE_TIMEOUT: int = 60  # 1 分钟
@@ -604,17 +656,33 @@ class Settings(BaseSettings):
     CELERY_BROKER_REDIS_DATABASE: int
 
     # .env RabbitMQ
-    # docker run -d --hostname fba-mq --name fba-mq  -p 5672:5672 -p 15672:15672 rabbitmq:latest
-    CELERY_RABBITMQ_HOST: str
-    CELERY_RABBITMQ_PORT: int
-    CELERY_RABBITMQ_USERNAME: str
-    CELERY_RABBITMQ_PASSWORD: str
+    CELERY_RABBITMQ_HOST: str = '127.0.0.1'
+    CELERY_RABBITMQ_PORT: int = Field(default=5672, ge=1, le=65535)
+    CELERY_RABBITMQ_USERNAME: str = ''
+    CELERY_RABBITMQ_PASSWORD: str = ''
 
     # 基础配置
     CELERY_BROKER: Literal['rabbitmq', 'redis'] = 'redis'
-    CELERY_RABBITMQ_VHOST: str = ''
+    # 容器/进程环境专用的无命名冲突覆盖；`CELERY_BROKER` 会被 Celery CLI 当作 broker URL。
+    # inherit 保持 `.env` 中既有 CELERY_BROKER，Docker 等显式环境使用 redis/rabbitmq。
+    CELERY_BROKER_MODE: Literal['rabbitmq', 'redis', 'inherit'] = 'inherit'
+    CELERY_RABBITMQ_VHOST: str = 'huanxing'
     CELERY_REDIS_PREFIX: str = 'fba:celery'
     CELERY_TASK_MAX_RETRIES: int = 5
+    FLOWER_BASIC_AUTH: str = ''
+
+    ##################################################
+    # [ Messaging ] Socket.IO / HASN realtime / offline recovery
+    ##################################################
+    SOCKETIO_MANAGER: Literal['rabbitmq', 'redis'] = 'redis'
+    REALTIME_RABBITMQ_HOST: str = '127.0.0.1'
+    REALTIME_RABBITMQ_PORT: int = Field(default=5672, ge=1, le=65535)
+    REALTIME_RABBITMQ_VHOST: str = 'huanxing'
+    REALTIME_RABBITMQ_USERNAME: str = ''
+    REALTIME_RABBITMQ_PASSWORD: str = ''
+    HASN_REALTIME_BUS: Literal['rabbitmq', 'redis'] = 'redis'
+    HASN_REALTIME_SHADOW_RABBITMQ: bool = False
+    HASN_OFFLINE_RECOVERY: Literal['dual', 'redis', 'sync'] = 'redis'
 
     ##################################################
     # [ Plugin ] code_generator
@@ -691,6 +759,10 @@ class Settings(BaseSettings):
     @classmethod
     def check_env(cls, values: Any) -> Any:
         """检查环境变量"""
+        celery_broker_mode = values.get('CELERY_BROKER_MODE', 'inherit')
+        if celery_broker_mode != 'inherit':
+            values['CELERY_BROKER'] = celery_broker_mode
+
         cutover_value = values.get('HASN_IM_SCHEMA_CUTOVER', False)
         cutover = cutover_value is True or str(cutover_value).strip().lower() in {
             '1',
@@ -708,6 +780,44 @@ class Settings(BaseSettings):
             missing = [name for name in required if not str(values.get(name) or '').strip()]
             if missing:
                 raise ValueError('R3 生产硬切换配置不完整，缺少：' + ', '.join(missing))
+
+        shadow_value = values.get('HASN_REALTIME_SHADOW_RABBITMQ', False)
+        shadow_rabbitmq = shadow_value is True or str(shadow_value).strip().lower() in {
+            '1',
+            'true',
+            'yes',
+            'on',
+        }
+        missing_rabbitmq_settings: list[str] = []
+        if values.get('CELERY_BROKER', 'redis') == 'rabbitmq':
+            missing_rabbitmq_settings.extend(
+                name
+                for name in ('CELERY_RABBITMQ_USERNAME', 'CELERY_RABBITMQ_PASSWORD')
+                if not str(values.get(name) or '').strip()
+            )
+        realtime_rabbitmq_selected = (
+            values.get('SOCKETIO_MANAGER', 'redis') == 'rabbitmq'
+            or values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq'
+            or shadow_rabbitmq
+        )
+        if realtime_rabbitmq_selected:
+            missing_rabbitmq_settings.extend(
+                name
+                for name in ('REALTIME_RABBITMQ_USERNAME', 'REALTIME_RABBITMQ_PASSWORD')
+                if not str(values.get(name) or '').strip()
+            )
+        if missing_rabbitmq_settings:
+            raise ValueError('RabbitMQ 配置不完整，缺少：' + ', '.join(dict.fromkeys(missing_rabbitmq_settings)))
+        _validate_production_celery_rabbitmq(values)
+        _validate_production_realtime_rabbitmq(
+            values,
+            selected=realtime_rabbitmq_selected,
+        )
+        if values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq' and shadow_rabbitmq:
+            raise ValueError(
+                'HASN_REALTIME_BUS=rabbitmq 时必须关闭 HASN_REALTIME_SHADOW_RABBITMQ，避免同一通道重复消费'
+            )
+
         if values.get('ENVIRONMENT') == 'prod':
             # FastAPI
             values['FASTAPI_OPENAPI_URL'] = None

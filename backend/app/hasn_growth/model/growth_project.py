@@ -57,5 +57,25 @@ class GrowthProject(HasnGrowthAppBase):
     provision_error: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment=None)
     monthly_budget: Mapped[Decimal | None] = mapped_column(sa.NUMERIC(), default=None, comment=None)
     budget_currency: Mapped[str] = mapped_column(sa.String(3), default='CNY', comment=None)
+    quiet_hours_start: Mapped[int] = mapped_column(
+        sa.SMALLINT(),
+        default=21,
+        comment='静默时段开始小时，使用项目时区的 0–23 整点',
+    )
+    quiet_hours_end: Mapped[int] = mapped_column(
+        sa.SMALLINT(),
+        default=9,
+        comment='静默时段结束小时，使用项目时区的 0–23 整点',
+    )
+    daily_outreach_limit: Mapped[int] = mapped_column(
+        sa.INTEGER(),
+        default=20,
+        comment='项目每日发送成功或人工发送证明的触达上限',
+    )
+    policy_version: Mapped[int] = mapped_column(
+        sa.INTEGER(),
+        default=1,
+        comment='渠道、静默时段、频控和预算策略版本',
+    )
     readiness_snapshot: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
     stats_snapshot: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)

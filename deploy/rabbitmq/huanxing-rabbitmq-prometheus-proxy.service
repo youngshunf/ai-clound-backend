@@ -1,0 +1,18 @@
+[Unit]
+Description=唤星 RabbitMQ Prometheus 私网代理
+Requires=huanxing-rabbitmq-prometheus-proxy.socket
+After=huanxing-rabbitmq-prometheus-proxy.socket
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:15692
+DynamicUser=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true

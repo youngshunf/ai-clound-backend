@@ -305,7 +305,7 @@ async def test_unbound_sweep_trashes_business_attachment_but_keeps_user_upload()
                 await db.execute(
                     text(
                         """
-                        SELECT title, body, data
+                        SELECT title, body, data, source, priority, delivery
                         FROM hasn_notifications
                         WHERE target_id = :owner
                           AND type = 'storage_unbound_asset_trashed'
@@ -317,8 +317,19 @@ async def test_unbound_sweep_trashes_business_attachment_but_keeps_user_upload()
         states = {str(row['asset_id']): str(row['lifecycle_status']) for row in rows}
         assert states[attachment.asset_id] == 'trashed'
         assert states[managed.asset_id] == 'active'
-        assert notification['title'] == '未使用的云端附件已移入垃圾箱'
-        assert notification['data']['asset_id'] == attachment.asset_id
-        assert notification['data']['primary_action']['uri'] == 'hasn://storage/trash'
+        # 一轮清理只发一条聚合通知（`.one()` 已断言不重复），标题带件数、正文列出文件名。
+        assert notification['title'] == '已清理 1 个未使用的云端附件'
+        assert '未发送附件.txt' in str(notification['body'])
+        assert notification['data']['trashed_count'] == 1
+        assert notification['data']['trashed_names'] == ['未发送附件.txt']
+        assert notification['data']['link'] == 'hasn://storage/trash'
+        # 来源展示名为中文，且承载只留通知中心（不再建服务号会话、不弹 toast/系统推送）。
+        assert notification['source']['display_name'] == '云存储'
+        assert notification['priority'] == 'normal'
+        channels = notification['delivery']['channels']
+        assert channels['center'] is True
+        assert channels['card_message'] is False
+        assert channels['toast'] is False
+        assert channels['push'] is False
     finally:
         await _cleanup(owner)

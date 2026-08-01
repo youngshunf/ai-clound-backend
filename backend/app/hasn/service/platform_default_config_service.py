@@ -38,7 +38,14 @@ _CONFIG_KEY = 'global'
 DEFAULT_PLATFORM_CONFIG: dict = {
     'node': {
         'media': {
-            'image_models': ['gpt-image-2', 'dall-e-3'],
+            # 唤星网关由通义/阿里渠道承载，OpenAI 的 dall-e-3 在此无渠道；下列均为对
+            # llm.dcfuture.cn 实测 200 且真出图的模型。
+            'image_models': ['agnes-image-2.1-flash', 'qwen-image-2.0', 'wan2.7-image'],
+            # 图像编辑端点能力与文生图不同，必须独立选择，不能回落到只支持
+            # /images/generations 的模型——agnes-image-2.1-flash 打 /images/edits 上游直接 404，
+            # 因此不得出现在本列表。旧默认 gpt-image-2 虽能出图但耗时约 57 秒（qwen-image-2.0
+            # 的十倍以上）且曾因渠道欠费 403，已移除。wan2.7-image 要求输入不小于 240×240。
+            'image_edit_models': ['qwen-image-2.0', 'wan2.7-image', 'qwen-image-2.0-pro'],
             'tts_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
             'stt_models': ['qwen3-asr-flash'],
             # 视频默认空：视频渠道尚需运营在 new-api 开通后，经 Admin 平台默认配置下发，
@@ -72,8 +79,8 @@ _LEGACY_TTS_GATEWAY_MODELS = ['tts-1', 'tts-1-hd']
 _LEGACY_STT_GATEWAY_MODELS = ['whisper-1']
 
 
-def normalize_legacy_speech_gateway_defaults(config_json: dict) -> dict:
-    """兼容升级旧版语音网关出厂值，同时保留所有运营自定义模型链。
+def normalize_legacy_media_gateway_defaults(config_json: dict) -> dict:
+    """补齐旧版图像编辑模型并升级语音网关出厂值，保留运营自定义模型链。
 
     仅当列表与旧出厂值完全相等时才迁移。复制后再修改，避免污染 SQLAlchemy JSONB
     属性的变更跟踪状态；PDC 在下次 Admin 保存时会自然持久化新值。
@@ -83,6 +90,8 @@ def normalize_legacy_speech_gateway_defaults(config_json: dict) -> dict:
     media = node.get('media') if isinstance(node, dict) else None
     if not isinstance(media, dict):
         return normalized
+    if 'image_edit_models' not in media:
+        media['image_edit_models'] = list(DEFAULT_PLATFORM_CONFIG['node']['media']['image_edit_models'])
     if media.get('tts_models') == _LEGACY_TTS_GATEWAY_MODELS:
         media['tts_models'] = list(DEFAULT_PLATFORM_CONFIG['node']['media']['tts_models'])
     if media.get('stt_models') == _LEGACY_STT_GATEWAY_MODELS:
@@ -135,7 +144,7 @@ class PlatformDefaultConfigService:
 
         row = await self._get_row(db)
         raw = row.config_json if (row and row.config_json) else DEFAULT_PLATFORM_CONFIG
-        raw = normalize_legacy_speech_gateway_defaults(raw)
+        raw = normalize_legacy_media_gateway_defaults(raw)
         config = PlatformDefaultConfig.model_validate(raw)
         config = config.model_copy(update={'app_configs': await get_all_app_configs(db)})
         dumped = config.model_dump(mode='json')

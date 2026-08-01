@@ -23,6 +23,8 @@ from starlette.concurrency import run_in_threadpool
 from watchfiles import Change, PythonFilter
 
 from backend import __version__
+from backend.cli_tools.cli.category import Category as CategoryCmd
+from backend.cli_tools.cli.skill import Skill as SkillCmd
 from backend.common.enums import DataBaseType, PrimaryKeyType
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.model import MappedBase
@@ -43,6 +45,9 @@ from backend.database.db import (
     create_database_url,
 )
 from backend.database.redis import RedisCli, redis_client
+from backend.plugin.code_generator.cli.codegen import CodegenFrontend, CodegenFull, CodegenMenu
+from backend.plugin.code_generator.cli.generate import Generate as CodegenGenerate
+from backend.plugin.code_generator.cli.generate_all import GenerateAll
 from backend.plugin.core import get_plugin_destroy_sql, get_plugin_sql, get_plugins
 from backend.plugin.installer import install_git_plugin, install_zip_plugin, zip_plugin
 from backend.plugin.installer import remove_plugin as _remove_plugin
@@ -51,12 +56,6 @@ from backend.utils.console import console
 from backend.utils.dynamic_import import import_module_cached
 from backend.utils.sql_parser import parse_sql_script
 from backend.utils.timezone import timezone
-
-from backend.cli_tools.cli.category import Category as CategoryCmd
-from backend.cli_tools.cli.skill import Skill as SkillCmd
-from backend.plugin.code_generator.cli.codegen import CodegenFrontend, CodegenFull, CodegenMenu
-from backend.plugin.code_generator.cli.generate import Generate as CodegenGenerate
-from backend.plugin.code_generator.cli.generate_all import GenerateAll
 
 output_help = "\n更多信息，尝试 '[cyan]--help[/]'"
 
@@ -342,16 +341,14 @@ def run_celery_beat(log_level: Literal['info', 'debug']) -> None:
         pass
 
 
-def run_celery_flower(port: int, basic_auth: str) -> None:
+def run_celery_flower(port: int) -> None:
     """启动 Celery flower 监控服务"""
     try:
         subprocess.run([
-            'celery',
-            '-A',
-            'backend.app.task.celery',
-            'flower',
+            sys.executable,
+            '-m',
+            'backend.app.task.flower',
             f'--port={port}',
-            f'--basic-auth={basic_auth}',
         ])
     except KeyboardInterrupt:
         pass
@@ -744,13 +741,9 @@ class Flower:
         int,
         cappa.Arg(default=8555, help='提供服务的主机端口号'),
     ]
-    basic_auth: Annotated[
-        str,
-        cappa.Arg(default='admin:123456', help='页面登录的用户名和密码'),
-    ]
 
     def __call__(self) -> None:
-        run_celery_flower(port=self.port, basic_auth=self.basic_auth)
+        run_celery_flower(port=self.port)
 
 
 @cappa.command(help='运行 Celery 服务')
@@ -792,7 +785,9 @@ class CodeGenerator:
         bool,
         cappa.Arg(short='-p', default=False, help='仅预览将要生成的文件，不执行实际生成操作'),
     ]
-    subcmd: cappa.Subcommands[Import | CodegenFrontend | CodegenMenu | CodegenFull | CodegenGenerate | GenerateAll | None] = None
+    subcmd: cappa.Subcommands[
+        Import | CodegenFrontend | CodegenMenu | CodegenFull | CodegenGenerate | GenerateAll | None
+    ] = None
 
     def __post_init__(self) -> None:
         try:
@@ -918,7 +913,9 @@ class FbaCli:
         str,
         cappa.Arg(value_name='PATH', default='', show_default=False, help='在事务中执行 SQL 脚本'),
     ]
-    subcmd: cappa.Subcommands[Init | Run | Add | Remove | Format | Celery | Alembic | CodeGenerator | SkillCmd | CategoryCmd | None] = None
+    subcmd: cappa.Subcommands[
+        Init | Run | Add | Remove | Format | Celery | Alembic | CodeGenerator | SkillCmd | CategoryCmd | None
+    ] = None
 
     async def __call__(self) -> None:
         if self.sql:

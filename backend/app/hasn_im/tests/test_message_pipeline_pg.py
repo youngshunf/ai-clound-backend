@@ -189,6 +189,8 @@ async def test_message_commit_then_durable_sync_projection(
         assert len(projected) == 1
         assert projected[0]['owner_id'] == owner_id
         assert projected[0]['payload']['message_id'] == str(message_id)
+        assert projected[0]['payload']['conversation_seq'] == 1
+        assert projected[0]['payload']['sender_is_owned'] is True
 
         recalled = await gateway.recall_message(
             RecallMessageCommand(

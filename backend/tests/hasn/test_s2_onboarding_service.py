@@ -21,6 +21,7 @@ from backend.app.hasn.service.hasn_onboarding_service import (
     SMS_CODE_PREFIX,
     HasnOnboardingService,
     HasnPhoneAuthService,
+    _default_phone_nickname,
 )
 
 
@@ -95,6 +96,14 @@ class FakeLlmCredentialIssuer:
         return f'sk-user-{user.id}', 'https://llm.example/v1', 'test-model'
 
 
+class FakeRegistrationCreditGranter:
+    def __init__(self) -> None:
+        self.user_ids: list[int] = []
+
+    async def grant_new_user(self, db: Any, user_id: int) -> None:
+        self.user_ids.append(user_id)
+
+
 class FakeAgentTokenIssuer:
     async def issue(
         self,
@@ -110,6 +119,29 @@ class FakeAgentTokenIssuer:
             access_token_expire_time=SimpleNamespace(isoformat=lambda: '2026-05-18T00:00:00+00:00'),
             expires_at_unix=1779062400,
         )
+
+
+def test_default_phone_nickname_is_private_unique_and_compatible_with_newapi() -> None:
+    first_phone = '19920848900'
+    second_phone = '19977888900'
+
+    first = _default_phone_nickname(
+        first_phone,
+        '70657fa6-cdb4-4ae7-8f41-9932f7f3069a',
+    )
+    second = _default_phone_nickname(
+        second_phone,
+        '609c3420-c26a-4548-9e53-838565b93642',
+    )
+
+    assert first.startswith('用户·')
+    assert second.startswith('用户·')
+    assert first_phone not in first
+    assert second_phone not in second
+    assert first != second
+    # NewAPI `User.DisplayName` 的正式校验上限是 20；Cloud 默认昵称必须满足跨服务契约。
+    assert len(first) <= 20
+    assert len(second) <= 20
 
 
 @pytest.mark.asyncio
@@ -136,6 +168,7 @@ async def test_phone_verify_creates_platform_user_and_issues_bearer_token(monkey
     users = FakeUserGateway()
     db: Any = FakeDb()
     captured_token_kwargs: dict[str, Any] = {}
+    registration_credits = FakeRegistrationCreditGranter()
 
     async def fake_token_creator(user_id: int, *, multi_login: bool, **kwargs: Any) -> SimpleNamespace:
         captured_token_kwargs.update({'user_id': user_id, 'multi_login': multi_login, **kwargs})
@@ -153,6 +186,7 @@ async def test_phone_verify_creates_platform_user_and_issues_bearer_token(monkey
         token_expire_seconds=86400,
         token_creator=fake_token_creator,
         llm_credentials=FakeLlmCredentialIssuer(),
+        registration_credits=registration_credits,
     )
 
     response = await service.verify(
@@ -169,6 +203,13 @@ async def test_phone_verify_creates_platform_user_and_issues_bearer_token(monkey
     assert db.flush_count == 1
     assert captured_token_kwargs['pending_intent_id'] == 'pi_123'
     assert captured_token_kwargs['hasn_onboarding'] is True
+    assert registration_credits.user_ids == [1]
+
+    # 同一用户再次登录不得重复登记“新用户”履约；底层事件虽有幂等键，
+    # 登录适配层仍应严格遵守仅注册时触发的业务边界。
+    await redis.setex(f'{SMS_CODE_PREFIX}:13800138000', 1800, b'654321')
+    await service.verify(db, PhoneVerifyRequest(phone='13800138000', code='654321'))
+    assert registration_credits.user_ids == [1]
 
 
 @pytest.mark.asyncio
@@ -179,6 +220,7 @@ async def test_phone_verify_returns_agent_tokens_when_owner_has_active_agents(
     await redis.setex(f'{SMS_CODE_PREFIX}:13800138000', 1800, b'654321')
     users = FakeUserGateway()
     db: Any = FakeDb()
+    registration_credits = FakeRegistrationCreditGranter()
 
     async def fake_token_creator(user_id: int, *, multi_login: bool, **kwargs: Any) -> SimpleNamespace:
         return SimpleNamespace(access_token='jwt-token', session_uuid='session-phone-verify')
@@ -210,6 +252,7 @@ async def test_phone_verify_returns_agent_tokens_when_owner_has_active_agents(
         token_creator=fake_token_creator,
         llm_credentials=FakeLlmCredentialIssuer(),
         agent_tokens=FakeAgentTokenIssuer(),
+        registration_credits=registration_credits,
     )
 
     response = await service.verify(db, PhoneVerifyRequest(phone='13800138000', code='654321'))
@@ -222,6 +265,7 @@ async def test_phone_verify_returns_agent_tokens_when_owner_has_active_agents(
     assert response.agent_tokens[0].expires_at_unix == 1779062400
     assert response.agent_tokens[1].agent_name == 'agent_two'
     assert response.agent_tokens[1].access_token == 'agent-token:a_2'
+    assert registration_credits.user_ids == [1]
 
 
 @dataclass

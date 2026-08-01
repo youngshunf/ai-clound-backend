@@ -16,14 +16,11 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model import HasnAgents, HasnAssetGrants, HasnAssets, HasnConversations
-from backend.app.hasn.model.hasn_conversation_memberships import (
-    HasnConversationMemberships as HasnGroupMembers,
-)
+from backend.app.hasn.model import HasnAssetGrants, HasnAssets
 from backend.common.exception import errors
 from backend.plugin.s3.model import S3Storage
 from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
@@ -265,53 +262,34 @@ class HasnAssetService:
         await db.execute(stmt)
 
     @staticmethod
-    async def _granted_asset_ids(db: AsyncSession, *, asset_ids: list[str], conversation_id: str | UUID) -> set[str]:
+    async def _conversation_readable_asset_ids(
+        db: AsyncSession,
+        *,
+        asset_ids: list[str],
+        conversation_id: str | UUID,
+        requester_hasn_id: str,
+    ) -> set[str]:
+        """通过受限数据库接缝读取会话附件授权，不让 Owner 业务角色直读 IM 基表。"""
         if not asset_ids:
             return set()
         result = await db.execute(
-            select(HasnAssetGrants.asset_id).where(
-                HasnAssetGrants.asset_id.in_(asset_ids),
-                HasnAssetGrants.conversation_id == conversation_id,
-            )
+            text(
+                """
+                SELECT asset_id
+                FROM public.hasn_authorized_conversation_assets(
+                    CAST(:asset_ids AS varchar[]),
+                    CAST(:conversation_id AS uuid),
+                    CAST(:requester_hasn_id AS varchar)
+                )
+                """
+            ),
+            {
+                'asset_ids': asset_ids,
+                'conversation_id': str(conversation_id),
+                'requester_hasn_id': requester_hasn_id,
+            },
         )
         return set(result.scalars().all())
-
-    @staticmethod
-    async def is_participant(db: AsyncSession, *, conversation_id: str | UUID, hasn_id: str) -> bool:
-        """requester 是否该会话参与者（单聊 a/b、群成员，或**参与 agent 的主人**）。
-
-        主人扩展（owner 透明原则，2026-07-05）：A2A 会话的参与者是两个 agent，但接收方
-        daemon 一律以主人 owner JWT 解析附件（入站派发物化 / IM 下载）。主人天然旁观自己
-        分身的会话，故「requester 是某参与 agent 的 owner」同样判参与者。资产面不放宽：
-        resolve 仍要求资产已 grant 给该会话，本判定只解决"分身会话中主人代分身取附件"。
-        """
-        conv = await db.get(HasnConversations, conversation_id)
-        if conv is None:
-            return False
-        participants = [p for p in (conv.participant_a_id, conv.participant_b_id) if p]
-        if hasn_id in participants:
-            return True
-        if conv.type == 'group':
-            result = await db.execute(
-                select(HasnGroupMembers.member_id).where(
-                    HasnGroupMembers.conversation_id == conversation_id,
-                    HasnGroupMembers.left_seq.is_(None),
-                    HasnGroupMembers.state == 'active',
-                )
-            )
-            members = list(result.scalars().all())
-            if hasn_id in members:
-                return True
-            participants = members
-        agent_ids = [p for p in participants if p.startswith('a_')]
-        if not agent_ids:
-            return False
-        owned = await db.execute(
-            select(HasnAgents.id)
-            .where(HasnAgents.hasn_id.in_(agent_ids), HasnAgents.owner_id == hasn_id)
-            .limit(1)
-        )
-        return owned.first() is not None
 
     @classmethod
     async def resolve(
@@ -336,11 +314,14 @@ class HasnAssetService:
             return []
 
         # 一次性算：该会话被授予了哪些 asset + requester 是否参与该会话（避免逐个查）
-        granted: set[str] = set()
-        participant = False
+        conversation_readable: set[str] = set()
         if conversation_id is not None:
-            granted = await cls._granted_asset_ids(db, asset_ids=list(assets), conversation_id=conversation_id)
-            participant = await cls.is_participant(db, conversation_id=conversation_id, hasn_id=requester_hasn_id)
+            conversation_readable = await cls._conversation_readable_asset_ids(
+                db,
+                asset_ids=list(assets),
+                conversation_id=conversation_id,
+                requester_hasn_id=requester_hasn_id,
+            )
 
         extra_readable = extra_readable_asset_ids or set()
         readable: list[AssetRecord] = []
@@ -351,7 +332,7 @@ class HasnAssetService:
                 readable.append(asset)  # public 恒可读（07 D3：公开直读，无需授权）
             elif requester_hasn_id == asset.owner_hasn_id:
                 readable.append(asset)  # owner 恒可读
-            elif participant and asset.asset_id in granted:
+            elif asset.asset_id in conversation_readable:
                 readable.append(asset)  # 会话参与者 + 已授予
             elif asset.asset_id in extra_readable:
                 readable.append(asset)  # 上游资源 ACL 已判定可读（如 deck viewer 打开共享 deck）

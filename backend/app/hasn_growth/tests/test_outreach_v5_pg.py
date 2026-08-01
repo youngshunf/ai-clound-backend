@@ -42,6 +42,7 @@ pytestmark = pytest.mark.asyncio
 
 _REPO = Path(__file__).resolve().parents[4]
 _SCHEMA_SQL = _REPO / 'backend/sql/hasn_growth/007_create_growth_project_v4_tables.sql'
+_S11_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-review-v8.sql'
 
 
 @pytest_asyncio.fixture
@@ -59,6 +60,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     driver_connection = raw.driver_connection
     assert driver_connection is not None
     await driver_connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
+    await driver_connection.execute(_S11_SQL.read_text(encoding='utf-8'))
     key_fence = (
         await session.execute(
             sa.text(
@@ -344,6 +346,25 @@ async def test_draft_submit_approval_version_and_manual_attestation_are_orthogon
     ]
     assert events[0].meta_data['first_touch_candidate'] is True
     assert all(event.growth_project_id == ctx.growth_project.id for event in events)
+    attribution = (
+        (
+            await ctx.session.execute(
+                sa
+                .select(GrowthAttributionEvent)
+                .where(
+                    GrowthAttributionEvent.growth_project_id == ctx.growth_project.id,
+                    GrowthAttributionEvent.source_ref == f'outreach:{draft["id"]}',
+                )
+                .order_by(GrowthAttributionEvent.event_type)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [event.event_type for event in attribution] == ['cost', 'outreach_sent']
+    assert attribution[0].amount == Decimal(0)
+    assert attribution[0].meta_data['cost_state'] == 'known'
+    assert attribution[1].meta_data['manual_attested'] is True
 
 
 async def test_enterprise_manager_sees_team_state_but_cannot_act_for_assignee(
@@ -624,6 +645,33 @@ async def test_provider_receipts_are_idempotent_and_never_infer_delivery(
         'sent',
         'delivered',
     ]
+    attribution_counts = dict(
+        (
+            await ctx.session.execute(
+                sa
+                .select(
+                    GrowthAttributionEvent.event_type,
+                    sa.func.count(),
+                )
+                .where(
+                    GrowthAttributionEvent.growth_project_id == ctx.growth_project.id,
+                    GrowthAttributionEvent.source_ref == f'outreach:{message["id"]}',
+                )
+                .group_by(GrowthAttributionEvent.event_type)
+            )
+        ).all()
+    )
+    assert attribution_counts == {'cost': 1, 'outreach_sent': 1}
+    cost_event = await ctx.session.scalar(
+        sa.select(GrowthAttributionEvent).where(
+            GrowthAttributionEvent.growth_project_id == ctx.growth_project.id,
+            GrowthAttributionEvent.event_type == 'cost',
+            GrowthAttributionEvent.source_ref == f'outreach:{message["id"]}',
+        )
+    )
+    assert cost_event is not None
+    assert cost_event.amount is None
+    assert cost_event.meta_data['cost_state'] == 'unknown'
 
 
 async def test_reply_idempotency_keeps_one_fact_activity_and_notification(
@@ -677,3 +725,86 @@ async def test_reply_idempotency_keeps_one_fact_activity_and_notification(
         )
     )
     assert inbound_count == activity_count == event_count == 1
+    attribution_count = await ctx.session.scalar(
+        sa
+        .select(sa.func.count())
+        .select_from(GrowthAttributionEvent)
+        .where(
+            GrowthAttributionEvent.growth_project_id == ctx.growth_project.id,
+            GrowthAttributionEvent.event_type == 'replied',
+            GrowthAttributionEvent.source_ref == f'outreach:{first["id"]}',
+        )
+    )
+    assert attribution_count == 1
+
+
+async def test_project_policy_and_entitlement_usage_gates_are_server_side(
+    ctx: SimpleNamespace,
+) -> None:
+    """静默、每日频控、权益配额和未知成本预算门禁都从服务端事实计算。"""
+    approved = await _approved_email(ctx, 'project-policy-gates')
+    message = await ctx.session.get(OutreachMessage, approved['id'])
+    assert message is not None
+    ctx.growth_project.quiet_hours_start = 22
+    ctx.growth_project.quiet_hours_end = 8
+    ctx.growth_project.daily_outreach_limit = 1
+    await ctx.session.flush()
+
+    quiet = await growth_outreach_service.dispatch_preflight(
+        ctx.session,
+        message=message,
+        now_hour=23,
+    )
+    assert quiet['error_class'] == 'quiet_hours'
+
+    ctx.session.add(
+        GrowthAttributionEvent(
+            growth_project_id=ctx.growth_project.id,
+            event_type='outreach_sent',
+            customer_id=ctx.customer.id,
+            source_kind='email',
+            source_ref='outreach:prior-daily',
+            idempotency_key='s11:usage:daily:1',
+            meta_data={'usage_kind': 'outreach', 'channel': 'email'},
+        )
+    )
+    await ctx.session.flush()
+    daily = await growth_outreach_service.dispatch_preflight(
+        ctx.session,
+        message=message,
+        now_hour=10,
+    )
+    assert daily['error_class'] == 'daily_outreach_limit'
+
+    ctx.growth_project.daily_outreach_limit = 20
+    ctx.entitlement.quota_json = {'monthly_outreach': 1}
+    await ctx.session.flush()
+    entitlement = await growth_outreach_service.dispatch_preflight(
+        ctx.session,
+        message=message,
+        now_hour=10,
+    )
+    assert entitlement['error_class'] == 'entitlement_quota_exhausted'
+
+    ctx.entitlement.quota_json = {}
+    ctx.growth_project.monthly_budget = Decimal(100)
+    ctx.session.add(
+        GrowthAttributionEvent(
+            growth_project_id=ctx.growth_project.id,
+            event_type='cost',
+            customer_id=ctx.customer.id,
+            source_kind='email',
+            source_ref='outreach:prior-unknown-cost',
+            amount=None,
+            currency='CNY',
+            idempotency_key='s11:cost:unknown:1',
+            meta_data={'cost_state': 'unknown', 'usage_kind': 'outreach'},
+        )
+    )
+    await ctx.session.flush()
+    unknown_cost = await growth_outreach_service.dispatch_preflight(
+        ctx.session,
+        message=message,
+        now_hour=10,
+    )
+    assert unknown_cost['error_class'] == 'cost_unknown_budget_guard'

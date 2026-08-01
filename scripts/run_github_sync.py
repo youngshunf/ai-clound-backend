@@ -12,7 +12,7 @@ def main() -> int:
     """拒绝旧同步命令并输出新发布入口。"""
     print(
         'GitHub 技能服务器同步已退役，请在可信 huanxing-hub 工作区运行 '
-        'scripts/publish_skills.py。',
+        'astrahub publish skills。',
         file=sys.stderr,
     )
     return 1

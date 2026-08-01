@@ -62,3 +62,30 @@ async def test_resolve_passthrough_explicit_id(session) -> None:
     """显式给 storage_id → 原样返回（不覆盖调用方意图，如包文件仍可落私有桶）。"""
     resolved = await marketplace_storage_service._resolve_public_storage_id(session, 987654)
     assert resolved == 987654
+
+
+async def test_marketplace_release_url_distinguishes_public_and_private_storage(
+    session,
+) -> None:
+    """公开市场制品不能复用私有桶 URL。"""
+    tag = uuid.uuid4().hex[:8]
+    private_storage = S3Storage(
+        name=f'priv-url-{tag}',
+        access='private',
+        bucket=f'b-priv-url-{tag}',
+        cdn_domain='https://private.example.test',
+    )
+    public_storage = S3Storage(
+        name=f'pub-url-{tag}',
+        access='public',
+        bucket=f'b-pub-url-{tag}',
+        cdn_domain='https://public.example.test',
+    )
+    session.add_all([private_storage, public_storage])
+    await session.flush()
+    path = 'marketplace/skills/huanxing/example/1.0.0/package.zip'
+    public_url = marketplace_storage_service._build_url(public_storage, path)
+    private_url = marketplace_storage_service._build_url(private_storage, path)
+
+    assert await marketplace_storage_service.is_public_url(session, public_url)
+    assert not await marketplace_storage_service.is_public_url(session, private_url)

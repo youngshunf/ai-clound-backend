@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
+from backend.app.hasn_memory.service.transaction_lock import acquire_memory_transaction_lock
 from backend.common.log import log
 from backend.database.db import async_db_session
 from backend.database.result import affected_rows
@@ -81,7 +82,8 @@ class OwnerMemoryService:
         rows = list(
             (
                 await db.execute(
-                    sa.select(HasnOwnerMemoryContribution)
+                    sa
+                    .select(HasnOwnerMemoryContribution)
                     .where(HasnOwnerMemoryContribution.owner_id == owner_id)
                     .order_by(HasnOwnerMemoryContribution.id.desc())
                     .limit(max(1, min(int(limit), 200)))
@@ -92,7 +94,8 @@ class OwnerMemoryService:
         )
         pending_count = (
             await db.execute(
-                sa.select(sa.func.count())
+                sa
+                .select(sa.func.count())
                 .select_from(HasnOwnerMemoryContribution)
                 .where(
                     HasnOwnerMemoryContribution.owner_id == owner_id,
@@ -119,9 +122,7 @@ class OwnerMemoryService:
         同一 owner 的各 Agent 在建档时 user_md 都是同一份 USER.md 模板（含 称呼/Owner HASN ID
         身份行）；取最长一份即可拿到含身份与已积累事实的基线，喂给 LLM 防止初始化信息被抹掉。
         """
-        rows = (
-            await db.execute(sa.select(HasnAgents.user_md).where(HasnAgents.owner_id == owner_id))
-        ).scalars().all()
+        rows = (await db.execute(sa.select(HasnAgents.user_md).where(HasnAgents.owner_id == owner_id))).scalars().all()
         candidates = [(r or '').strip() for r in rows]
         candidates = [c for c in candidates if c]
         return max(candidates, key=len) if candidates else ''
@@ -134,6 +135,7 @@ class OwnerMemoryService:
         返回 {merged: bool, version, contributions_merged, agents_updated}。
         无 pending 时直接返回 merged=False。LLM 失败抛错（调用方决定是否吞）。
         """
+        await acquire_memory_transaction_lock(db, f'owner-memory:{owner_id}')
         pending = list(
             (
                 await db.execute(
@@ -268,7 +270,8 @@ class OwnerMemoryService:
         cutoff = timezone.now() - timedelta(seconds=max(0, min_age_seconds))
         async with async_db_session() as db:
             candidate_query = (
-                sa.select(HasnOwnerMemoryContribution.owner_id)
+                sa
+                .select(HasnOwnerMemoryContribution.owner_id)
                 .where(HasnOwnerMemoryContribution.status == 'pending')
                 .group_by(HasnOwnerMemoryContribution.owner_id)
                 .having(sa.func.min(HasnOwnerMemoryContribution.created_time) <= cutoff)
@@ -276,9 +279,7 @@ class OwnerMemoryService:
                 .limit(max(1, max_owners))
             )
             if owner_ids is not None:
-                candidate_query = candidate_query.where(
-                    HasnOwnerMemoryContribution.owner_id.in_(owner_ids)
-                )
+                candidate_query = candidate_query.where(HasnOwnerMemoryContribution.owner_id.in_(owner_ids))
             candidates = list((await db.execute(candidate_query)).scalars().all())
 
         summary = {'candidates': len(candidates), 'merged': 0, 'no_pending': 0, 'failed': 0}

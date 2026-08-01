@@ -26,7 +26,7 @@ class HasnArtifactContributions(Base):
     source_kind: Mapped[str] = mapped_column(sa.String(32), default='', comment='参与来源 (app_write:应用写入:platform_tool:平台工具:runtime_file:运行时文件:agent_note:分身自撰:external_import:外部导入)')
     source_tool: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='实际写工具或处理器名称')
     source_app_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='本次操作所在应用上下文')
-    dispatch_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='派发关联标识')
+    dispatch_id: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='派发关联标识')
     tool_call_id: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='工具调用标识')
     source_event_id: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='来源事件标识')
     idempotency_key: Mapped[str] = mapped_column(sa.String(768), default='', comment='来源幂等键')

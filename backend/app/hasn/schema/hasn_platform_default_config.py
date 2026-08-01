@@ -1,7 +1,7 @@
 """平台默认配置 schema（云端权威，单行下发）。
 
 强类型嵌套：
-  - node.media：节点级媒体模型默认（image/tts/stt failover 顺序，首个优先）
+  - node.media：节点级媒体模型默认（文生图/图像编辑/tts/stt failover 顺序，首个优先）
   - agent_runtime.models：平台默认 agent 运行时四槽模型（复用 ``AgentRuntimeModels``）
 
 服务出参经 service 合并/序列化，daemon 据 revision 比对拉取。
@@ -19,6 +19,10 @@ class PlatformMediaDefaults(SchemaBase):
     """节点级媒体模型默认（failover 列表，首个优先；空=daemon 退回本地 file/struct 默认）。"""
 
     image_models: list[str] = Field(default_factory=list, description='图像生成模型 failover 顺序')
+    image_edit_models: list[str] = Field(
+        default_factory=list,
+        description='图像编辑模型 failover 顺序（扩图、生成式填充、风格迁移；/images/edits）',
+    )
     tts_models: list[str] = Field(default_factory=list, description='语音合成模型 failover 顺序')
     stt_models: list[str] = Field(default_factory=list, description='语音识别模型 failover 顺序')
     video_models: list[str] = Field(

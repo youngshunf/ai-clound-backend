@@ -223,7 +223,13 @@ BEGIN
         'hasn_messages', 'hasn_conversations', 'hasn_conversation_memberships',
         'hasn_unread_projection', 'hasn_group_agent_invites', 'hasn_suppressed_messages',
         'hasn_asset_grants', 'hasn_contacts', 'hasn_contact_requests',
-        'agent_communication_settings'
+        'agent_communication_settings',
+        -- doc03 跨设备消息历史恢复的物化快照（2026-07-29 新增）。模型按 IM_SCHEMA 解析，
+        -- 切换后代码找 hasn_im.*；漏搬会让 /sync/im/bootstrap/start 直接 500，
+        -- daemon 换设备/离线后的历史补拉全部失败。
+        'hasn_im_history_snapshots',
+        'hasn_im_history_snapshot_conversations',
+        'hasn_im_history_snapshot_messages'
     ]
     LOOP
         IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
@@ -449,8 +455,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA hasn_im TO astra_im
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA hasn_im TO astra_im_service;
 ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_im GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astra_im_service;
 GRANT SELECT ON public.hasn_agents, public.hasn_humans, public.hasn_assets,
-                public.hasn_nodes, public.hasn_node_bindings
-    TO astra_im_service;  -- 明确授权的身份/路由/通知只读投影
+                public.hasn_storage_objects, public.hasn_nodes,
+                public.hasn_node_bindings
+    TO astra_im_service;  -- 明确授权的身份/附件/路由/通知只读投影
 GRANT SELECT, INSERT, UPDATE ON public.hasn_group_im_command_outbox
     TO astra_im_service;
 GRANT USAGE, SELECT ON SEQUENCE public.hasn_group_im_command_outbox_id_seq

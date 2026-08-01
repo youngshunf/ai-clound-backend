@@ -156,6 +156,51 @@ async def test_resource_replay_uses_contribution_idempotency_key() -> None:
             await db.rollback()
 
 
+async def test_imagelab_composite_dispatch_id_persists_without_truncation() -> None:
+    """图坊真实派发 ID 与输出 ID 组合后超过 64 字符，当前态和参与记录必须原样保存。"""
+    owner = _id('owner')
+    agent = _id('agent')
+    dispatch_id = (
+        f'work_disp_{uuid4().hex[:26]}:'
+        f'ilab_out_{uuid4().hex[:26]}'
+    )
+    assert 64 < len(dispatch_id) <= 128
+
+    async with async_db_session() as db:
+        try:
+            result = await artifact_registration_service.register(
+                db,
+                _resource_mutation(
+                    owner=owner,
+                    agent=agent,
+                    action='create',
+                    dispatch_id=dispatch_id,
+                    session_id=_id('session'),
+                    project_id=str(uuid4()),
+                    title='图坊真实扩图产物',
+                ),
+            )
+
+            artifact = (
+                await db.execute(
+                    select(HasnArtifacts).where(
+                        HasnArtifacts.artifact_id == result.artifact_id
+                    )
+                )
+            ).scalar_one()
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(
+                        HasnArtifactContributions.artifact_id == result.artifact_id
+                    )
+                )
+            ).scalar_one()
+            assert artifact.dispatch_id == dispatch_id
+            assert contribution.dispatch_id == dispatch_id
+        finally:
+            await db.rollback()
+
+
 async def test_resource_metadata_counters_accumulate_once_per_contribution() -> None:
     """批次摘要按新参与原子累加；同一 dispatch 重放不能重复计数。"""
     owner = _id('owner')

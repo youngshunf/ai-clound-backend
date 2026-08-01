@@ -65,6 +65,32 @@ class SkillPackage:
 class TemplatePackage:
     metadata: dict[str, Any]
     icon: PackageAsset | None
+    soul_md: str
+    user_md: str | None
+    memory_md: str | None
+    files: list[dict[str, Any]]
+    content_hash: str
+
+
+@dataclass
+class SkillPackPackage:
+    """通过边界校验的官方技能包制品。"""
+
+    metadata: dict[str, Any]
+    icon: PackageAsset | None
+    hermes_yaml: str
+    files: list[dict[str, Any]]
+    content_hash: str
+
+
+@dataclass
+class WorkflowPackage:
+    """通过边界校验的官方场景工作流制品。"""
+
+    metadata: dict[str, Any]
+    icon: PackageAsset | None
+    files: list[dict[str, Any]]
+    content_hash: str
 
 
 def _validate_zip_entry(info: zipfile.ZipInfo) -> None:
@@ -128,14 +154,34 @@ def _open_validated_zip(content: bytes) -> zipfile.ZipFile:
 def _read_required_text(zf: zipfile.ZipFile, name: str) -> str:
     if name not in zf.namelist():
         raise errors.RequestError(msg=f'上传包缺少 {name}')
-    return zf.read(name).decode('utf-8')
+    try:
+        return zf.read(name).decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise errors.RequestError(msg=f'{name} 必须使用 UTF-8 编码') from exc
+
+
+def _read_optional_text(zf: zipfile.ZipFile, name: str) -> str | None:
+    if name not in zf.namelist():
+        return None
+    try:
+        return zf.read(name).decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise errors.RequestError(msg=f'{name} 必须使用 UTF-8 编码') from exc
+
+
+def _load_yaml(text: str, *, name: str) -> Any:
+    """把制品内 YAML 解析错误稳定映射为 4xx 请求错误。"""
+    try:
+        return yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise errors.RequestError(msg=f'{name} YAML 格式错误') from exc
 
 
 def _extract_frontmatter(markdown: str) -> dict[str, Any]:
     match = re.match(r'\A---\s*\n(.*?)\n---\s*(?:\n|\Z)', markdown, re.DOTALL)
     if not match:
         raise errors.RequestError(msg='SKILL.md 缺少 YAML frontmatter')
-    data = yaml.safe_load(match.group(1)) or {}
+    data = _load_yaml(match.group(1), name='SKILL.md frontmatter')
     if not isinstance(data, dict):
         raise errors.RequestError(msg='SKILL.md frontmatter 格式错误')
     return data
@@ -173,7 +219,7 @@ def find_icon(zf: zipfile.ZipFile) -> PackageAsset | None:
     return None
 
 
-def _skill_file_manifest(zf: zipfile.ZipFile) -> tuple[list[dict[str, Any]], str]:
+def _package_file_manifest(zf: zipfile.ZipFile) -> tuple[list[dict[str, Any]], str]:
     """生成排序后的文件清单与内容指纹。
 
     指纹算法与 daemon 个人技能打包一致：对排序后的
@@ -215,7 +261,7 @@ def parse_skill_package(content: bytes) -> SkillPackage:
                 raise errors.RequestError(msg=f'SKILL.md frontmatter 缺少 {field}')
         metadata['version'] = str(metadata.get('version') or '1.0.0')
         metadata['tags'] = normalize_tags(metadata.get('tags'))
-        files, content_hash = _skill_file_manifest(zf)
+        files, content_hash = _package_file_manifest(zf)
         return SkillPackage(
             metadata=metadata,
             icon=find_icon(zf),
@@ -225,12 +271,27 @@ def parse_skill_package(content: bytes) -> SkillPackage:
         )
 
 
-def parse_template_package(content: bytes) -> TemplatePackage:
+def parse_template_package(
+    content: bytes,
+    *,
+    require_runtime_files: bool = False,
+) -> TemplatePackage:
     with _open_validated_zip(content) as zf:
-        template_yaml = yaml.safe_load(_read_required_text(zf, 'template.yaml')) or {}
+        template_yaml = _load_yaml(
+            _read_required_text(zf, 'template.yaml'),
+            name='template.yaml',
+        )
         if not isinstance(template_yaml, dict):
             raise errors.RequestError(msg='template.yaml 格式错误')
-        _read_required_text(zf, 'SOUL.md')
+        soul_md = _read_required_text(zf, 'SOUL.md')
+        user_md: str | None
+        memory_md: str | None
+        if require_runtime_files:
+            user_md = _read_required_text(zf, 'USER.md')
+            memory_md = _read_required_text(zf, 'MEMORY.md')
+        else:
+            user_md = _read_optional_text(zf, 'USER.md')
+            memory_md = _read_optional_text(zf, 'MEMORY.md')
         # AGENTS.md 已退役（2026-07-12）：它本是「工作目录/项目规范」文件被误当 persona 用，
         # runtime 从不消费它，模板也不再随包分发；故不再强制模板包携带 AGENTS.md（人格收进 SOUL.md）。
         if not template_yaml.get('name') and not template_yaml.get('display_name'):
@@ -239,4 +300,64 @@ def parse_template_package(content: bytes) -> TemplatePackage:
             raise errors.RequestError(msg='template.yaml 缺少 description')
         template_yaml['version'] = str(template_yaml.get('version') or '1.0.0')
         template_yaml['tags'] = normalize_tags(template_yaml.get('tags'))
-        return TemplatePackage(metadata=template_yaml, icon=find_icon(zf))
+        files, content_hash = _package_file_manifest(zf)
+        return TemplatePackage(
+            metadata=template_yaml,
+            icon=find_icon(zf),
+            soul_md=soul_md,
+            user_md=user_md,
+            memory_md=memory_md,
+            files=files,
+            content_hash=content_hash,
+        )
+
+
+def parse_skill_pack_package(content: bytes) -> SkillPackPackage:
+    """解析官方技能包制品，保留规范化前的完整 Hermes YAML。"""
+    with _open_validated_zip(content) as zf:
+        hermes_yaml = _read_required_text(zf, 'bundle.yaml')
+        metadata = _load_yaml(hermes_yaml, name='bundle.yaml')
+        if not isinstance(metadata, dict):
+            raise errors.RequestError(msg='bundle.yaml 格式错误')
+        for field in ('name', 'description'):
+            if not isinstance(metadata.get(field), str) or not metadata[field].strip():
+                raise errors.RequestError(msg=f'bundle.yaml 缺少 {field}')
+        skills = metadata.get('skills')
+        if not isinstance(skills, list) or not skills:
+            raise errors.RequestError(msg='bundle.yaml skills 必须为非空数组')
+        if not all(isinstance(item, str) and item.strip() for item in skills):
+            raise errors.RequestError(msg='bundle.yaml skills 成员必须为非空字符串')
+        metadata['version'] = str(metadata.get('version') or '1.0.0')
+        metadata['tags'] = normalize_tags(metadata.get('tags'))
+        files, content_hash = _package_file_manifest(zf)
+        return SkillPackPackage(
+            metadata=metadata,
+            icon=find_icon(zf),
+            hermes_yaml=hermes_yaml,
+            files=files,
+            content_hash=content_hash,
+        )
+
+
+def parse_workflow_package(content: bytes) -> WorkflowPackage:
+    """解析场景工作流制品，工作流图的领域校验交给权威 workflow service。"""
+    with _open_validated_zip(content) as zf:
+        workflow_yaml = _read_required_text(zf, 'workflow-template.yaml')
+        metadata = _load_yaml(workflow_yaml, name='workflow-template.yaml')
+        if not isinstance(metadata, dict):
+            raise errors.RequestError(msg='workflow-template.yaml 格式错误')
+        for field in ('template_key', 'name'):
+            if not isinstance(metadata.get(field), str) or not metadata[field].strip():
+                raise errors.RequestError(msg=f'workflow-template.yaml 缺少 {field}')
+        graph_spec = metadata.get('graph_spec')
+        if not isinstance(graph_spec, dict):
+            raise errors.RequestError(msg='workflow-template.yaml graph_spec 必须为对象')
+        if not isinstance(graph_spec.get('nodes'), list):
+            raise errors.RequestError(msg='workflow-template.yaml graph_spec.nodes 必须为数组')
+        files, content_hash = _package_file_manifest(zf)
+        return WorkflowPackage(
+            metadata=metadata,
+            icon=find_icon(zf),
+            files=files,
+            content_hash=content_hash,
+        )

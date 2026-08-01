@@ -45,6 +45,7 @@ from backend.plugin.s3.utils.file_ops import (
     upload_multipart_part,
     write_bytes,
     write_immutable_speech_package,
+    write_public_package_stream,
     write_stream,
 )
 from backend.utils.timezone import timezone
@@ -69,7 +70,8 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     # 网页发布制品（模块 18）：私有桶；语义独立于 dm_attachment，**不触发 extract 抽取流水线**
     # （extract 由 register_asset(extract_status='pending') 这层显式触发，本类别不进那条路径）。
     'published_artifact': ('private', 3600),
-    # downloadable_local 应用引擎分发包（模块 14 / FILMPUB）：**公共桶、不签名、无 TTL**。
+    # downloadable_local 应用制品分发包（模块 14 / FILMPUB / IMG4）：**公共桶、不签名、无 TTL**。
+    # 同时承载应用引擎包（runtime-engine/…）与图坊模型包（runtime-model/…）：两者的下载语义一致——
     # daemon 是无鉴权纯 GET 下载（install.rs::http_get_bytes）+ sha256 校验，URL 必须长效公开，
     # 不能是会过期的签名 URL——故归 public，与 user_avatar 等同策略。
     'film_engine': ('public', None),
@@ -400,6 +402,60 @@ class StorageService:
         """返回当前公共语音包存储；调用方必须在远程 I/O 前复制配置并释放事务。"""
         access, _ = _category_policy('speech_model')
         return _pick_storage(await cls._storages(db), access)
+
+    @classmethod
+    async def get_public_package_storage(cls, db: AsyncSession, *, category: str) -> S3Storage:
+        """返回该上传类别对应的存储**脱离会话副本**，供大包流式上传前释放事务。
+
+        引擎包、模型包这类制品动辄数百 MB，上传耗时以分钟计；必须先拿到脱离 ORM 会话的配置
+        快照再 `rollback`，否则长事务会占住连接池。
+        """
+        # S3Storage 在本模块只按 TYPE_CHECKING 导入；这里要真正构造实例，必须运行期本地导入。
+        from backend.plugin.s3.model import S3Storage as S3StorageModel
+
+        access, _ = _category_policy(category)
+        storage = _pick_storage(await cls._storages(db), access)
+        detached = S3StorageModel(
+            name=storage.name,
+            endpoint=storage.endpoint,
+            access_key=storage.access_key,
+            secret_key=storage.secret_key,
+            bucket=storage.bucket,
+            access=storage.access,
+            sign_strategy=storage.sign_strategy,
+            prefix=storage.prefix,
+            region=storage.region,
+            cdn_domain=storage.cdn_domain,
+            remark=storage.remark,
+        )
+        detached.id = storage.id
+        return detached
+
+    @staticmethod
+    async def upload_public_package_to_storage(
+        storage: S3Storage,
+        file: BinaryIO,
+        *,
+        size: int,
+        content_type: str,
+        key: str,
+    ) -> ObjectRef:
+        """按存储快照分片上传 GB 级制品包（引擎包 / 模型包），重复上传同内容为幂等成功。"""
+        await write_public_package_stream(
+            storage,
+            key,
+            file,
+            size=size,
+            content_type=content_type,
+        )
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=storage.access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type,
+            size=size,
+        )
 
     @staticmethod
     async def upload_immutable_speech_package_to_storage(

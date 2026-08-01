@@ -15,16 +15,26 @@ from fastapi import HTTPException
 from backend.app.marketplace.api.v1.admin.sync_management import (
     SyncRequest,
     trigger_github_sync,
+    trigger_github_template_sync,
 )
 
 
 @pytest.mark.asyncio
 async def test_github_skill_server_sync_endpoint_is_explicitly_retired() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        await trigger_github_sync(cast(Any, None), SyncRequest())
+        await trigger_github_sync(cast('Any', None), SyncRequest())
 
     assert exc_info.value.status_code == 410
-    assert 'publish_skills.py' in str(exc_info.value.detail)
+    assert 'astrahub publish skills' in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_github_template_server_sync_endpoint_is_explicitly_retired() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await trigger_github_template_sync(cast('Any', None), SyncRequest())
+
+    assert exc_info.value.status_code == 410
+    assert 'astrahub publish all' in str(exc_info.value.detail)
 
 
 def test_legacy_github_sync_script_is_explicitly_retired() -> None:
@@ -39,4 +49,4 @@ def test_legacy_github_sync_script_is_explicitly_retired() -> None:
     )
 
     assert result.returncode == 1
-    assert 'publish_skills.py' in result.stderr
+    assert 'astrahub publish skills' in result.stderr

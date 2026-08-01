@@ -11,13 +11,15 @@ NULL = 普通工作流模板。实例化时 graph_spec 物化为 workflow + work
 设计事实源：docs/hasn-node设计文档/12-任务系统实施方案/11-工作流应用产品化（场景即模板·直派工作会话·双闸·商业化）设计.md §4.2。
 """
 
+from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.hasn_task.model._base import HasnTaskAppBase
-from backend.common.model import UniversalText, id_key
+from backend.common.model import TimeZone, UniversalText, id_key
 
 # 模板状态字典（value:label:color），与迁移 SQL COMMENT 保持一致
 WORKFLOW_TEMPLATE_STATUS_COMMENT = (
@@ -81,4 +83,25 @@ class HasnWorkflowTemplate(HasnTaskAppBase):
     )
     version: Mapped[int] = mapped_column(
         sa.INTEGER(), default=1, comment='模板版本（升级不影响在跑实例——实例化即物化节点行，天然快照）'
+    )
+    package_url: Mapped[str | None] = mapped_column(
+        sa.String(500), default=None, comment='官方发布制品下载 URL'
+    )
+    file_hash: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='官方发布 ZIP SHA256'
+    )
+    content_hash: Mapped[str | None] = mapped_column(
+        sa.String(128), default=None, comment='官方发布源文件清单指纹'
+    )
+    file_size: Mapped[int | None] = mapped_column(
+        sa.INTEGER(), default=None, comment='官方发布 ZIP 字节数'
+    )
+    source_repo_path: Mapped[str | None] = mapped_column(
+        sa.String(500), default=None, comment='官方 Hub 仓库内相对路径'
+    )
+    git_commit_hash: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='官方 Hub 发布 commit'
+    )
+    synced_at: Mapped[datetime | None] = mapped_column(
+        TimeZone, default=None, comment='最近一次官方发布同步时间'
     )

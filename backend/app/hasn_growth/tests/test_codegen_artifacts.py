@@ -219,13 +219,17 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    # 31 = S5 的 27 工具 + S6 项目线索 ingest/list + S8 触达 draft/submit。
-    assert len(caps) == 31
+    # 35 = S5–S9 的 33 个工具 + S11 项目经营报表与下一周期建议提交。
+    assert len(caps) == 35
     assert {
         'hasn.growth.lead.ingest',
         'hasn.growth.lead.list',
         'hasn.growth.outreach.draft',
         'hasn.growth.outreach.submit',
+        'hasn.growth.opportunity.list',
+        'hasn.growth.deal.close',
+        'hasn.growth.report.performance',
+        'hasn.growth.review.suggest',
     }.issubset({cap['mcp_name'] for cap in caps})
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表

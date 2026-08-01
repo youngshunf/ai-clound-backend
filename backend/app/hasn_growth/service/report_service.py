@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -227,10 +228,16 @@ class GrowthReportService:
                 OutreachMessage.status == 'pending_approval',
             )
         )
-        cost_count, cost_amount = (
+        cost_count, unknown_cost_count, cost_amount = (
             await db.execute(
                 sa.select(
                     sa.func.count(),
+                    sa.func.count().filter(
+                        sa.or_(
+                            GrowthAttributionEvent.amount.is_(None),
+                            GrowthAttributionEvent.meta_data['cost_state'].astext == 'unknown',
+                        )
+                    ),
                     sa.func.coalesce(
                         sa.func.sum(GrowthAttributionEvent.amount),
                         0,
@@ -242,6 +249,165 @@ class GrowthReportService:
                 )
             )
         ).one()
+        attribution_event_count = await db.scalar(
+            sa
+            .select(sa.func.count())
+            .select_from(GrowthAttributionEvent)
+            .where(
+                GrowthAttributionEvent.growth_project_id == growth.id,
+                GrowthAttributionEvent.occurred_time >= month_start,
+            )
+        )
+        source_rows = (
+            await db.execute(
+                sa
+                .select(
+                    GrowthAttributionEvent.source_kind,
+                    sa.func.count().label('event_count'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'replied').label('replies'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'closed_won').label('won'),
+                    sa.func.coalesce(
+                        sa.func.sum(GrowthAttributionEvent.amount).filter(
+                            GrowthAttributionEvent.event_type == 'closed_won'
+                        ),
+                        0,
+                    ).label('revenue'),
+                )
+                .where(
+                    GrowthAttributionEvent.growth_project_id == growth.id,
+                    GrowthAttributionEvent.occurred_time >= month_start,
+                    GrowthAttributionEvent.source_kind.is_not(None),
+                )
+                .group_by(GrowthAttributionEvent.source_kind)
+                .order_by(sa.desc('revenue'), sa.desc('event_count'), GrowthAttributionEvent.source_kind)
+            )
+        ).all()
+        playbook_rows = (
+            await db.execute(
+                sa
+                .select(
+                    GrowthAttributionEvent.playbook_id,
+                    GrowthAttributionEvent.playbook_version,
+                    sa.func.count().label('event_count'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'outreach_sent').label('outreach_sent'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'replied').label('replies'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'closed_won').label('won'),
+                    sa.func.coalesce(
+                        sa.func.sum(GrowthAttributionEvent.amount).filter(
+                            GrowthAttributionEvent.event_type == 'closed_won'
+                        ),
+                        0,
+                    ).label('revenue'),
+                )
+                .where(
+                    GrowthAttributionEvent.growth_project_id == growth.id,
+                    GrowthAttributionEvent.occurred_time >= month_start,
+                    GrowthAttributionEvent.playbook_id.is_not(None),
+                )
+                .group_by(
+                    GrowthAttributionEvent.playbook_id,
+                    GrowthAttributionEvent.playbook_version,
+                )
+                .order_by(sa.desc('revenue'), sa.desc('event_count'), GrowthAttributionEvent.playbook_id)
+            )
+        ).all()
+        form_submission_ref = sa.func.coalesce(
+            GrowthAttributionEvent.meta_data['form_submission_id'].astext,
+            GrowthAttributionEvent.id.cast(sa.String),
+        )
+        publish_site_ref = sa.func.coalesce(
+            GrowthAttributionEvent.meta_data['publish_site_id'].astext,
+            GrowthAttributionEvent.source_ref,
+        )
+        touchpoint_row = (
+            await db.execute(
+                sa.select(
+                    sa.func
+                    .count(sa.distinct(form_submission_ref))
+                    .filter(
+                        GrowthAttributionEvent.event_type == 'inbound',
+                        GrowthAttributionEvent.source_kind == 'inbound_form',
+                    )
+                    .label('forms'),
+                    sa.func
+                    .count(sa.distinct(publish_site_ref))
+                    .filter(
+                        GrowthAttributionEvent.event_type == 'inbound',
+                        GrowthAttributionEvent.source_kind == 'inbound_form',
+                    )
+                    .label('sites'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'outreach_sent').label('outreach_sent'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'replied').label('replies'),
+                ).where(
+                    GrowthAttributionEvent.growth_project_id == growth.id,
+                    GrowthAttributionEvent.occurred_time >= month_start,
+                )
+            )
+        ).one()
+        won_event_count, lost_event_count = (
+            await db.execute(
+                sa.select(
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'closed_won'),
+                    sa.func.count().filter(GrowthAttributionEvent.event_type == 'closed_lost'),
+                ).where(
+                    GrowthAttributionEvent.growth_project_id == growth.id,
+                    GrowthAttributionEvent.occurred_time >= month_start,
+                )
+            )
+        ).one()
+        lost_reason_events = (
+            sa
+            .select(
+                GrowthAttributionEvent.meta_data['lost_reason'].astext.label('reason'),
+            )
+            .where(
+                GrowthAttributionEvent.growth_project_id == growth.id,
+                GrowthAttributionEvent.occurred_time >= month_start,
+                GrowthAttributionEvent.event_type == 'closed_lost',
+            )
+            .subquery()
+        )
+        lost_reason_rows = (
+            await db.execute(
+                sa
+                .select(
+                    lost_reason_events.c.reason,
+                    sa.func.count(),
+                )
+                .where(
+                    lost_reason_events.c.reason.is_not(None),
+                    sa.func.length(lost_reason_events.c.reason) > 0,
+                )
+                .group_by(lost_reason_events.c.reason)
+                .order_by(sa.func.count().desc(), lost_reason_events.c.reason)
+            )
+        ).all()
+        attributed_revenue = await db.scalar(
+            sa.select(sa.func.coalesce(sa.func.sum(GrowthAttributionEvent.amount), 0)).where(
+                GrowthAttributionEvent.growth_project_id == growth.id,
+                GrowthAttributionEvent.occurred_time >= month_start,
+                GrowthAttributionEvent.event_type == 'closed_won',
+            )
+        )
+        trace_event_ids = list(
+            (
+                await db.execute(
+                    sa
+                    .select(GrowthAttributionEvent.id)
+                    .where(
+                        GrowthAttributionEvent.growth_project_id == growth.id,
+                        GrowthAttributionEvent.occurred_time >= month_start,
+                    )
+                    .order_by(
+                        GrowthAttributionEvent.occurred_time.desc(),
+                        GrowthAttributionEvent.id.desc(),
+                    )
+                    .limit(50)
+                )
+            )
+            .scalars()
+            .all()
+        )
         recent_rows = (
             (
                 await db.execute(
@@ -297,13 +463,72 @@ class GrowthReportService:
                 ),
             },
             'revenue': {
-                'amount': float(won_amount or 0),
+                'amount': float(attributed_revenue or 0),
                 'currency': growth.budget_currency,
             },
             'cost': {
+                'status': (
+                    'unrecorded'
+                    if int(cost_count) == 0
+                    else 'unknown'
+                    if int(unknown_cost_count) > 0
+                    else 'zero'
+                    if (cost_amount or Decimal(0)) == Decimal(0)
+                    else 'recorded'
+                ),
                 'recorded': int(cost_count) > 0,
                 'amount': (float(cost_amount or 0) if int(cost_count) > 0 else None),
                 'currency': growth.budget_currency,
+                'event_count': int(cost_count),
+            },
+            'performance': {
+                'event_count': int(attribution_event_count or 0),
+                'touchpoints': {
+                    'forms': int(touchpoint_row.forms or 0),
+                    'sites': int(touchpoint_row.sites or 0),
+                    'outreach_sent': int(touchpoint_row.outreach_sent or 0),
+                    'replies': int(touchpoint_row.replies or 0),
+                },
+                'sources': [
+                    {
+                        'source_kind': source_kind,
+                        'event_count': int(event_count),
+                        'replies': int(replies),
+                        'won': int(won),
+                        'revenue': float(revenue or 0),
+                    }
+                    for source_kind, event_count, replies, won, revenue in source_rows
+                ],
+                'playbooks': [
+                    {
+                        'playbook_id': playbook_id,
+                        'playbook_version': playbook_version,
+                        'event_count': int(event_count),
+                        'outreach_sent': int(outreach_sent),
+                        'replies': int(replies),
+                        'won': int(won),
+                        'revenue': float(revenue or 0),
+                    }
+                    for (
+                        playbook_id,
+                        playbook_version,
+                        event_count,
+                        outreach_sent,
+                        replies,
+                        won,
+                        revenue,
+                    ) in playbook_rows
+                ],
+                'win_loss': {
+                    'won': int(won_event_count),
+                    'lost': int(lost_event_count),
+                    'lost_reasons': [{'reason': reason, 'count': int(count)} for reason, count in lost_reason_rows],
+                },
+            },
+            'trace': {
+                'source': 'growth_attribution_event',
+                'event_ids': trace_event_ids,
+                'truncated': int(attribution_event_count or 0) > len(trace_event_ids),
             },
             'recent_activity': [
                 {

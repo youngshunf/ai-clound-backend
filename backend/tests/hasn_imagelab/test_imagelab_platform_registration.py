@@ -1,6 +1,6 @@
-"""imagelab-P3 — imagelab（图坊，自研本地图像处理引擎，模块 14 doc30）AI-Native 平台接入 真实测试（零 mock）。
+"""imagelab（图坊，自研本地图像处理引擎）AI-Native 平台接入真实测试（零 mock）。
 
-覆盖云端注册第一刀（catalog/manifest 注册 + 铸七 scope，doc30 §5.5）：
+覆盖云端注册（catalog/manifest 注册 + 铸七 scope，图坊架构 §5.5）：
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
 - capabilities scope 与落地 hasn-mcp 工具一致（17 个；读类 4 → imagelab:read、处理类 8 → imagelab:process、
   导出类 1 → imagelab:export、批量类 1 → imagelab:batch、破坏性类 1 → imagelab:destructive、
@@ -17,7 +17,7 @@
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等；
   ``ensure_catalog_seeded`` 幂等播种 imagelab catalog 行（重复跑不重复插）+ config_json 经 app_configs 下发。
 
-事实源: docs/hasn-node设计文档/14-AI-Native应用平台/30-图像处理AI-Native应用(自研引擎·图坊)架构设计.md §5.4/§5.5/§5.9。
+事实源: docs/hasn-node设计文档/14-AI-Native应用平台/30-图坊/01-架构设计.md §5.4/§5.5/§5.9。
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ def test_imagelab_scope_factory_defaults_match_local_enforcement() -> None:
 
 
 def test_imagelab_notifications_emit_declared() -> None:
-    """imagelab 声明 notifications.emit（处理完成/派发卡摊给主人发卡，doc30 §4.2）。"""
+    """imagelab 声明 notifications.emit（处理完成/派发卡摊给主人发卡，图坊架构 §4.2）。"""
     emit = IMAGELAB_AI_NATIVE_MANIFEST['notifications']['emit']
     assert emit['categories'] == ['app']
     assert emit['card_message'] is True
@@ -208,7 +208,7 @@ def test_imagelab_workbench_app_shape() -> None:
 
 
 def test_imagelab_project_requirement_survives_catalog_projection() -> None:
-    """图坊项目必选契约须经 manifest、注册表与 catalog 投影完整保留。"""
+    """平台项目必选契约须经 manifest、注册表与 catalog 投影完整保留。"""
     app = build_imagelab_app()
     assert IMAGELAB_AI_NATIVE_MANIFEST['project_aware'] is True
     assert IMAGELAB_AI_NATIVE_MANIFEST['project_required'] is True
@@ -224,7 +224,7 @@ def test_imagelab_project_requirement_survives_catalog_projection() -> None:
 
 
 def test_imagelab_project_requirement_is_validated_against_registry() -> None:
-    """图坊项目必选不能脱离项目感知，也不能与工作台注册契约漂移。"""
+    """平台项目必选不能脱离项目感知，也不能与工作台注册契约漂移。"""
     project_unaware = {
         **IMAGELAB_AI_NATIVE_MANIFEST,
         'project_aware': False,

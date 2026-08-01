@@ -69,6 +69,7 @@ pytestmark = pytest.mark.asyncio
 _REPO = Path(__file__).resolve().parents[4]
 _S6_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
 _S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
+_S11_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-review-v8.sql'
 
 _APP = FastAPI()
 _APP.include_router(agent_growth_router, prefix='/api/v1/growth/agent')
@@ -79,7 +80,7 @@ _APP.include_router(publish_internal_router)
 
 
 @_APP.exception_handler(BaseExceptionError)
-async def _err_handler(_request: Request, exc: BaseExceptionError) -> JSONResponse:  # ruff: ignore[unused-async]
+async def _err_handler(_request: Request, exc: BaseExceptionError) -> JSONResponse:  # noqa: RUF029
     return JSONResponse(status_code=exc.code, content={'code': exc.code, 'msg': str(exc.msg), 'data': None})
 
 
@@ -99,6 +100,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     assert connection is not None
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_S11_MIGRATION_SQL.read_text(encoding='utf-8'))
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind(('127.0.0.1', 0))
     server_socket.listen()
@@ -280,12 +282,12 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
 
-    async def _yield_session() -> AsyncIterator:  # ruff: ignore[unused-async]
+    async def _yield_session() -> AsyncIterator:  # noqa: RUF029
         yield session
 
     state = SimpleNamespace(owner_uid=owner_uid, scopes=['agent', 'growth:read', 'growth:manage', 'growth:outreach'])
 
-    async def _agent_auth(request: Request) -> AgentTokenPayload:  # ruff: ignore[unused-async]
+    async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
             agent_hasn_id=agent_hasn,
             agent_name=f'agent_{tag}',
@@ -297,7 +299,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         request.state.agent = payload
         return payload
 
-    async def _owner_auth(request: Request) -> None:  # ruff: ignore[unused-async]
+    async def _owner_auth(request: Request) -> None:  # noqa: RUF029
         request.scope['user'] = SimpleNamespace(id=owner_uid, hasn_id=owner)
 
     _APP.dependency_overrides[get_db] = _yield_session
@@ -347,7 +349,7 @@ def _ok(resp: httpx.Response) -> dict:
     return body['data']
 
 
-async def test_owner_growth_project_context_http_contract(e2e) -> None:
+async def test_owner_growth_project_context_http_contract(e2e: SimpleNamespace) -> None:
     owner_api = '/api/v1/growth/app'
 
     current = _ok(await e2e.client.get(f'{owner_api}/projects/by-platform/{e2e.platform_project_id}'))
@@ -375,6 +377,117 @@ async def test_owner_growth_project_context_http_contract(e2e) -> None:
 
     enterprise = await e2e.client.get(f'{owner_api}/projects/by-platform/{e2e.enterprise_platform_project_id}')
     assert enterprise.status_code == 422
+
+
+async def test_growth_review_suggestion_and_policy_http_contract(e2e: SimpleNamespace) -> None:
+    """分身只提交建议，Owner 审阅或显式改策略后才产生新版本。"""
+    agent_api = '/api/v1/growth/agent'
+    owner_api = '/api/v1/growth/app'
+    project_id = str(e2e.growth_project_id)
+    payload = {
+        'suggestion_kind': 'channel',
+        'proposal': {
+            'quiet_hours_start': 20,
+            'quiet_hours_end': 10,
+            'daily_outreach_limit': 12,
+            'monthly_budget': '88.00',
+            'budget_currency': 'CNY',
+        },
+        'evidence': {
+            'scope': '当前项目最近 30 天触达与回复事件',
+            'event_count': 0,
+            'insufficient_data': True,
+            'limitations': ['当前项目尚无足够的触达回复样本'],
+            'guaranteed_outcome': False,
+        },
+        'idempotency_key': f'http-s11-channel-{uuid.uuid4().hex}',
+    }
+    created = _ok(
+        await e2e.client.post(
+            f'{agent_api}/projects/{project_id}/review/suggestions',
+            json=payload,
+        )
+    )
+    replayed = _ok(
+        await e2e.client.post(
+            f'{agent_api}/projects/{project_id}/review/suggestions',
+            json=payload,
+        )
+    )
+    assert replayed['id'] == created['id']
+    assert created['status'] == 'pending'
+
+    before = _ok(await e2e.client.get(f'{owner_api}/projects/{project_id}/policy'))
+    listed = _ok(await e2e.client.get(f'{owner_api}/projects/{project_id}/review/suggestions'))
+    assert [item['id'] for item in listed] == [created['id']]
+    rejected = _ok(
+        await e2e.client.post(
+            f'{owner_api}/projects/{project_id}/review/suggestions/{created["id"]}',
+            json={'decision': 'reject'},
+        )
+    )
+    assert rejected['status'] == 'rejected'
+    assert _ok(await e2e.client.get(f'{owner_api}/projects/{project_id}/policy')) == before
+
+    updated = _ok(
+        await e2e.client.put(
+            f'{owner_api}/projects/{project_id}/policy',
+            json={
+                'quiet_hours_start': 22,
+                'quiet_hours_end': 8,
+                'daily_outreach_limit': 15,
+                'monthly_budget': '120.00',
+                'budget_currency': 'CNY',
+                'expected_policy_version': before['policy_version'],
+            },
+        )
+    )
+    assert updated['policy_version'] == before['policy_version'] + 1
+    assert updated['quiet_hours_start'] == 22
+    stale = await e2e.client.put(
+        f'{owner_api}/projects/{project_id}/policy',
+        json={
+            'quiet_hours_start': 21,
+            'quiet_hours_end': 9,
+            'daily_outreach_limit': 20,
+            'monthly_budget': None,
+            'budget_currency': 'CNY',
+            'expected_policy_version': before['policy_version'],
+        },
+    )
+    assert stale.status_code == 409
+
+    schedule_before = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{project_id}/review/schedule',
+        )
+    )
+    assert schedule_before['enabled'] is False
+    schedule_enabled = _ok(
+        await e2e.client.put(
+            f'{owner_api}/projects/{project_id}/review/schedule',
+            json={'enabled': True},
+        )
+    )
+    assert schedule_enabled['enabled'] is True
+    assert schedule_enabled['schedule_display'] == '每周一 09:00'
+    assert (
+        _ok(
+            await e2e.client.put(
+                f'{owner_api}/projects/{project_id}/review/schedule',
+                json={'enabled': True},
+            )
+        )['task_uuid']
+        == schedule_enabled['task_uuid']
+    )
+    schedule_disabled = _ok(
+        await e2e.client.put(
+            f'{owner_api}/projects/{project_id}/review/schedule',
+            json={'enabled': False},
+        )
+    )
+    assert schedule_disabled['enabled'] is False
+    assert schedule_disabled['state'] == 'paused'
 
 
 async def test_owner_project_lead_batch_pagination_and_status_http_contract(
@@ -462,30 +575,35 @@ async def test_owner_project_lead_batch_pagination_and_status_http_contract(
     assert personal_assign.status_code == 403
 
 
-async def test_four_scope_funnel_flow(e2e) -> None:
+async def test_four_scope_funnel_flow(e2e: SimpleNamespace) -> None:
     c = e2e.client
-    A = '/api/v1/growth/agent'
-    O = '/api/v1/growth/app'
+    agent_api = '/api/v1/growth/agent'
+    owner_api = '/api/v1/growth/app'
 
     # --- Agent: 检索线索（默认脱敏） ---
-    leads = _ok(await c.get(f'{A}/leads', params={'q': 'Acme'}))
+    leads = _ok(await c.get(f'{agent_api}/leads', params={'q': 'Acme'}))
     assert leads and leads[0]['email'] == 'w***@acme.com'
 
     # --- Agent: 旧 growth:pii claim 已退役，仍保持脱敏 ---
     e2e.state.scopes = ['agent', 'growth:read', 'growth:pii']
-    leads_pii = _ok(await c.get(f'{A}/leads', params={'q': 'Acme'}))
+    leads_pii = _ok(await c.get(f'{agent_api}/leads', params={'q': 'Acme'}))
     assert leads_pii[0]['email'] == 'w***@acme.com'
     e2e.state.scopes = ['agent', 'growth:read', 'growth:manage', 'growth:outreach']
 
     # --- Agent: qualify → 建客户 ---
-    cust = _ok(await c.post(f'{A}/leads/{e2e.lead_id}/qualify', json={'profile': {'pain': '获客'}, 'intent_score': 80}))
+    cust = _ok(
+        await c.post(
+            f'{agent_api}/leads/{e2e.lead_id}/qualify',
+            json={'profile': {'pain': '获客'}, 'intent_score': 80},
+        )
+    )
     cid = cust['id']
     assert cust['source_kind'] == 'outbound_crawl' and cust['email'] == 'w***@acme.com'
 
     # --- Agent: 发起触达 → 首触达 pending_approval ---
     sent = _ok(
         await c.post(
-            f'{A}/outreach',
+            f'{agent_api}/outreach',
             json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好，想聊聊获客', 'intent_note': '破冰'},
         )
     )
@@ -519,18 +637,23 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     assert cards[0]['payload']['message']['content']['metadata']['report'] is True
 
     # --- Owner: 待审队列含这条，approve（改话术） ---
-    pending = _ok(await c.get(f'{O}/outreach/pending'))
+    pending = _ok(await c.get(f'{owner_api}/outreach/pending'))
     assert any(p['id'] == mid for p in pending)
-    approved = _ok(await c.post(f'{O}/outreach/{mid}/approve', json={'edited_content': '您好，约时间聊获客'}))
+    approved = _ok(
+        await c.post(
+            f'{owner_api}/outreach/{mid}/approve',
+            json={'edited_content': '您好，约时间聊获客'},
+        )
+    )
     assert approved['status'] == 'approved' and approved['content'] == '您好，约时间聊获客'
 
     # --- Owner: 看客户详情仍默认脱敏 ---
-    owner_cust = _ok(await c.get(f'{O}/customers/{cid}'))
+    owner_cust = _ok(await c.get(f'{owner_api}/customers/{cid}'))
     assert owner_cust['phone'] == '1380****8000'
     assert owner_cust['email'] == 'w***@acme.com'
 
     # --- Owner: 漏斗总览 ---
-    funnel = _ok(await c.get(f'{O}/report/funnel'))
+    funnel = _ok(await c.get(f'{owner_api}/report/funnel'))
     assert funnel['following'] >= 1
 
     # --- Open: 默认门禁关闭时拒绝；开启后 PII 只落私有表 ---
@@ -746,26 +869,33 @@ async def test_four_scope_funnel_flow(e2e) -> None:
         assert submission.project_lead_id is not None
         assert submission.task_id == f'growth:inbound:{submission.id}'
         project_lead = (
-            await e2e.session.execute(
-                text(
-                    'SELECT growth_project_id, source_kind, status '
-                    'FROM hasn_growth.growth_project_lead WHERE id = :id'
-                ),
-                {'id': submission.project_lead_id},
+            (
+                await e2e.session.execute(
+                    text(
+                        'SELECT growth_project_id, source_kind, status '
+                        'FROM hasn_growth.growth_project_lead WHERE id = :id'
+                    ),
+                    {'id': submission.project_lead_id},
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert str(project_lead['growth_project_id']) == str(e2e.growth_project_id)
         assert project_lead['source_kind'] == 'inbound_form'
         assert project_lead['status'] == 'new'
         task = (
-            await e2e.session.execute(
-                text(
-                    'SELECT owner_id, agent_id, project_id, app_id '
-                    'FROM hasn_task.task WHERE task_uuid = :task_uuid'
-                ),
-                {'task_uuid': submission.task_id},
+            (
+                await e2e.session.execute(
+                    text(
+                        'SELECT owner_id, agent_id, project_id, app_id FROM hasn_task.task WHERE task_uuid = :task_uuid'
+                    ),
+                    {'task_uuid': submission.task_id},
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         assert task['owner_id'] == e2e.owner
         assert task['agent_id'] == e2e.agent_hasn
         assert str(task['project_id']) == str(e2e.platform_project_id)
@@ -802,11 +932,7 @@ async def test_four_scope_funnel_flow(e2e) -> None:
             },
         )
         assert notification_count == 1
-        landing_status = _ok(
-            await c.get(
-                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'
-            )
-        )
+        landing_status = _ok(await c.get(f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'))
         assert landing_status['attribution_summary']['first_touch_count'] == 1
         assert landing_status['attribution_summary']['last_touch_count'] == 1
         assert landing_status['attribution_summary']['latest_touch_at']
@@ -941,11 +1067,11 @@ async def test_four_scope_funnel_flow(e2e) -> None:
 
     # --- 跨户隔离：他 owner 的 agent 看不到本户客户 ---
     e2e.state.owner_uid = e2e.other_uid
-    miss = await c.get(f'{A}/customers/{cid}')
+    miss = await c.get(f'{agent_api}/customers/{cid}')
     assert miss.status_code == 404, miss.text
 
 
-async def test_open_form_security_cleaning_and_rate_limit(e2e) -> None:
+async def test_open_form_security_cleaning_and_rate_limit(e2e: SimpleNamespace) -> None:
     """公开表单拒绝伪造项目/无令牌/超长输入，清洗 HTML，并返回带 Retry-After 的 429。"""
     previous = (
         settings.GROWTH_PUBLISH_LANDING_ENABLED,
@@ -1019,9 +1145,7 @@ async def test_open_form_security_cleaning_and_rate_limit(e2e) -> None:
         )
         assert cleaned['status'] == 'received'
         cleaned_submission = (
-            await e2e.session.execute(
-                select(FormSubmission).where(FormSubmission.idempotency_key == clean_key)
-            )
+            await e2e.session.execute(select(FormSubmission).where(FormSubmission.idempotency_key == clean_key))
         ).scalar_one()
         assert cleaned_submission.company == 'Gamma'
         assert '<script>' not in str(cleaned_submission)
@@ -1060,7 +1184,9 @@ async def test_open_form_security_cleaning_and_rate_limit(e2e) -> None:
         ) = previous
 
 
-async def test_growth_landing_status_and_reconcile_use_publish_provider(e2e) -> None:
+async def test_growth_landing_status_and_reconcile_use_publish_provider(
+    e2e: SimpleNamespace,
+) -> None:
     """Owner 状态面通过真实 Publish 内部 HTTP 找站并显式对账，不直接信任客户端站点 ID。"""
     previous_enabled = settings.GROWTH_PUBLISH_LANDING_ENABLED
     settings.GROWTH_PUBLISH_LANDING_ENABLED = True
@@ -1070,11 +1196,7 @@ async def test_growth_landing_status_and_reconcile_use_publish_provider(e2e) -> 
         growth.landing_site_ref = None
         await e2e.session.flush()
 
-        before = _ok(
-            await e2e.client.get(
-                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'
-            )
-        )
+        before = _ok(await e2e.client.get(f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'))
         assert before['dependency']['status'] == 'ready'
         assert before['site_state'] == 'published'
         assert before['site']['platform_project_id'] == str(e2e.platform_project_id)
@@ -1098,62 +1220,63 @@ async def test_growth_landing_status_and_reconcile_use_publish_provider(e2e) -> 
         assert growth.landing_site_ref == reconciled['binding']['resource_uri']
 
         settings.GROWTH_PUBLISH_LANDING_ENABLED = False
-        disabled = _ok(
-            await e2e.client.get(
-                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'
-            )
-        )
+        disabled = _ok(await e2e.client.get(f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'))
         assert disabled['dependency']['status'] == 'disabled'
         assert disabled['dependency']['error_code'] == 'GROWTH_PUBLISH_LANDING_DISABLED'
     finally:
         settings.GROWTH_PUBLISH_LANDING_ENABLED = previous_enabled
 
 
-async def test_agent_collect_and_outreach_status(e2e) -> None:
+async def test_agent_collect_and_outreach_status(e2e: SimpleNamespace) -> None:
     """M4 接缝：collect.start/status（采集子域包装）+ outreach.status（按客户查触达）。"""
     c = e2e.client
-    A = '/api/v1/growth/agent'
+    agent_api = '/api/v1/growth/agent'
 
     # --- collect.start：发起采集 → 恒落主人私有池 ---
-    job = _ok(await c.post(f'{A}/collect', json={'keyword': 'SaaS 获客', 'max_pages': 3}))
+    job = _ok(await c.post(f'{agent_api}/collect', json={'keyword': 'SaaS 获客', 'max_pages': 3}))
     assert job['status'] == 'pending' and job['user_id'] == e2e.owner_uid
     job_id = job['id']
 
     # --- collect.status：查同一任务 ---
-    status = _ok(await c.get(f'{A}/collect/{job_id}'))
+    status = _ok(await c.get(f'{agent_api}/collect/{job_id}'))
     assert status['id'] == job_id and status['keyword'] == 'SaaS 获客'
 
     # --- outreach.status：qualify→send 后按客户查到该触达 ---
-    cust = _ok(await c.post(f'{A}/leads/{e2e.lead_id}/qualify', json={'qualify_reason': '高意向'}))
+    cust = _ok(
+        await c.post(
+            f'{agent_api}/leads/{e2e.lead_id}/qualify',
+            json={'qualify_reason': '高意向'},
+        )
+    )
     cid = cust['id']
     sent = _ok(
         await c.post(
-            f'{A}/outreach',
+            f'{agent_api}/outreach',
             json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好', 'intent_note': '破冰'},
         )
     )
-    msgs = _ok(await c.get(f'{A}/outreach', params={'customer_id': cid}))
+    msgs = _ok(await c.get(f'{agent_api}/outreach', params={'customer_id': cid}))
     assert any(m['id'] == sent['id'] and m['status'] == 'pending_approval' for m in msgs)
 
     # --- 跨户：他 owner 查本户采集任务 → 403 Forbidden ---
     e2e.state.owner_uid = e2e.other_uid
-    miss = await c.get(f'{A}/collect/{job_id}')
+    miss = await c.get(f'{agent_api}/collect/{job_id}')
     assert miss.status_code == 403, miss.text
 
 
-async def test_owner_create_lead_via_http(e2e) -> None:
+async def test_owner_create_lead_via_http(e2e: SimpleNamespace) -> None:
     """M-UI：主人在 UI 手动建线索（AI-native 宗旨：UI 给人操作）。
 
     owner 私有池、source_type=manual、status=new（用户级状态来自 lead_ref），响应默认脱敏；
     建后出现在线索池检索；公司名与联系人名都空 → 400（线索无意义）。
     """
     c = e2e.client
-    O = '/api/v1/growth/app'
+    owner_api = '/api/v1/growth/app'
 
     # --- 建线索：公司名 + 联系方式 ---
     created = _ok(
         await c.post(
-            f'{O}/leads',
+            f'{owner_api}/leads',
             json={
                 'company_name': '星尘科技',
                 'contact_name': '李雷',
@@ -1198,22 +1321,22 @@ async def test_owner_create_lead_via_http(e2e) -> None:
     assert all(channel.value_ciphertext not in {'lilei@xingchen.com', '13900139000'} for channel in private_channels)
 
     # --- 建的线索出现在 owner 线索池检索 ---
-    leads = _ok(await c.get(f'{O}/leads', params={'q': '星尘'}))
+    leads = _ok(await c.get(f'{owner_api}/leads', params={'q': '星尘'}))
     assert any(item['lead_contact_id'] == created['lead_contact_id'] for item in leads)
 
     # --- 校验：公司名与联系人名都空 → 400 ---
-    bad = await c.post(f'{O}/leads', json={'email': 'noname@x.com'})
+    bad = await c.post(f'{owner_api}/leads', json={'email': 'noname@x.com'})
     assert bad.status_code == 400, bad.text
 
 
-async def test_owner_request_leads_via_http(e2e) -> None:
+async def test_owner_request_leads_via_http(e2e: SimpleNamespace) -> None:
     """主人「请求线索」轻入口只查公共池并交付脱敏摘要，不再暗启旧爬虫补缺。
 
     找新线索改由获客分身通过读穿工具完成；本端点保留池内快速领取语义，
     因此池中不足 N 时只交付 M 条，backfill_job_id 恒为空。
     """
     c = e2e.client
-    O = '/api/v1/growth/app'
+    owner_api = '/api/v1/growth/app'
 
     # 公共池播种一条唯一关键词线索（query_pool 不限 lead_scope = 公共池语义）。
     tag = uuid.uuid4().hex[:8]
@@ -1236,14 +1359,14 @@ async def test_owner_request_leads_via_http(e2e) -> None:
     await e2e.session.flush()
 
     # --- 请求 1 条 → 命中即交付脱敏摘要，无缺口不补爬 ---
-    one = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 1}))
+    one = _ok(await c.post(f'{owner_api}/leads/request', json={'keyword': uniq, 'limit': 1}))
     assert one['delivered'] == 1 and one['from_pool'] == 1
     assert one['backfill_job_id'] is None
     assert one['leads'][0]['email'] == 'p***@uniq.com'
     assert one['leads'][0]['phone'] == '1370****7000'
 
     # --- 请求 5 条但池中仅 1 条命中 → 只交付 1 条，不暗启旧爬虫 ---
-    gap = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 5}))
+    gap = _ok(await c.post(f'{owner_api}/leads/request', json={'keyword': uniq, 'limit': 5}))
     assert gap['delivered'] == 1 and gap['requested'] == 5
     assert gap['backfill_job_id'] is None
 

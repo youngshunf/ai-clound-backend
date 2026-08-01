@@ -7,7 +7,6 @@ from sqlalchemy import select
 
 from backend.app.marketplace.model import MarketplaceSyncLog
 from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
-from backend.app.marketplace.service.github_app_sync_service import github_app_sync_service
 from backend.app.marketplace.service.package_service import package_service
 from backend.app.marketplace.service.skill_translation_backfill_service import backfill_skill_translations
 from backend.common.security.rbac import DependsRBAC
@@ -47,22 +46,24 @@ async def trigger_github_sync(
         status_code=410,
         detail=(
             'GitHub 技能服务器同步已退役，请在可信 huanxing-hub 工作区运行 '
-            'scripts/publish_skills.py'
+            'astrahub publish skills'
         ),
     )
 
 
-@router.post('/github/templates', summary='Trigger GitHub template sync')
+@router.post('/github/templates', summary='已退役：服务器 GitHub 模板同步')
 async def trigger_github_template_sync(
-    db: CurrentSession,
-    request: SyncRequest
+    _db: CurrentSession,
+    _request: SyncRequest,
 ) -> dict[str, Any]:
-    """Trigger template sync from GitHub repository"""
-    result = await github_app_sync_service.sync_from_github(
-        db=db,
-        force=request.force
+    """明确拒绝服务器克隆、扫描和打包官方 Hub 资源。"""
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            'GitHub 模板服务器同步已退役，请在可信 huanxing-hub 工作区运行 '
+            'astrahub publish all'
+        ),
     )
-    return result
 
 
 @router.post('/clawhub', summary='Trigger ClawHub sync')
@@ -112,7 +113,7 @@ async def get_sync_status(db: CurrentSession) -> dict[str, Any]:
         'github': {
             'status': 'retired',
             'distribution': 'source_release',
-            'publisher': 'scripts/publish_skills.py',
+            'publisher': 'astrahub',
         },
         'clawhub': {
             'status': clawhub_log.status if clawhub_log else 'never_synced',

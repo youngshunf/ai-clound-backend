@@ -182,6 +182,7 @@ def _committed_event(conv_id: str, sender: str, *, origin_session_id: str | None
     payload = {
         'conversation_id': conv_id,
         'message_id': message_id,
+        'conversation_seq': 1,
         'sender_hasn_id': sender,
         'content_type': 1,
         'content_body': {'text': '你好'},
@@ -275,6 +276,9 @@ async def test_sync_projector_fans_out_message_new_per_owner(sessionmaker_pg) ->
     # 瘦事件字段齐全（content_type 转 MIME）
     assert by_owner[owner_b].payload['content_type'] == 'text'
     assert by_owner[owner_b].payload['conversation_id'] == conv_id
+    assert by_owner[owner_a].payload['conversation_seq'] == 1
+    assert by_owner[owner_a].payload['sender_is_owned'] is True
+    assert by_owner[owner_b].payload['sender_is_owned'] is False
 
     await _cleanup(sessionmaker_pg, conv_id)
 
@@ -389,6 +393,9 @@ async def test_realtime_notifier_pushes_frame_per_owner(sessionmaker_pg) -> None
     by_owner = dict(mine)
     assert by_owner[owner_a].params.get('origin_session_id') == 'sess_a1'
     assert 'origin_session_id' not in by_owner[owner_b].params
+    assert by_owner[owner_a].params['conversation_seq'] == 1
+    assert by_owner[owner_a].params['sender_is_owned'] is True
+    assert by_owner[owner_b].params['sender_is_owned'] is False
 
     await _cleanup(sessionmaker_pg, conv_id)
 

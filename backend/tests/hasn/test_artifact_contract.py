@@ -48,6 +48,19 @@ def test_artifact_mutation_requires_exactly_one_locator() -> None:
         ArtifactMutation.model_validate(payload)
 
 
+def test_artifact_dispatch_id_accepts_real_composite_and_rejects_overflow() -> None:
+    """真实图坊组合派发键可通过，超过数据库上限的输入必须在契约边界拒绝。"""
+    payload = _resource_mutation()
+    dispatch_id = f'work_disp_{"a" * 26}:ilab_out_{"b" * 26}'
+    assert 64 < len(dispatch_id) <= 128
+    payload['dispatch_id'] = dispatch_id
+    assert ArtifactMutation.model_validate(payload).dispatch_id == dispatch_id
+
+    payload['dispatch_id'] = 'd' * 129
+    with pytest.raises(ValueError):
+        ArtifactMutation.model_validate(payload)
+
+
 def test_local_mutation_uses_opaque_locator_key_instead_of_absolute_path() -> None:
     """云端登记命令只接收不可逆 locator key，绝对路径必须在边界被拒绝。"""
     payload = {

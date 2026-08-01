@@ -232,6 +232,60 @@ async def test_owner_jwt_can_use_general_memory_and_task_sync(
     assert task_push.status_code == 200, task_push.text
 
 
+async def test_sync_push_rejection_carries_client_event_id(
+    auth_matrix: SimpleNamespace,
+) -> None:
+    """拒绝结果必须带 `detail.client_event_id`（hasn-node 实施/98）。
+
+    daemon 据此逐事件处置：永久拒绝丢弃、冲突退避；缺这个锚点就只能整批扣留重推——
+    正是本地画像事件被 8040 拒绝后每 5 秒重推刷屏的放大器。
+    """
+    owner = auth_matrix.owner_id
+    headers = _bearer(auth_matrix.owner_token.access_token)
+    general = await auth_matrix.client.post(
+        '/api/v1/hasn/sync/push',
+        headers=headers,
+        json={
+            'owner_id': owner,
+            'node_id': 'node-http-auth-pg',
+            'events': [
+                {
+                    'client_event_id': 'ce_unsupported_portrait_1',
+                    'event_type': 'memory.agent_self_portrait.upserted',
+                    'payload': {},
+                }
+            ],
+        },
+    )
+    task = await auth_matrix.client.post(
+        '/api/v1/hasn-task/app/sync/push',
+        headers=headers,
+        json={
+            'owner_id': owner,
+            'node_id': 'node-http-auth-pg',
+            'events': [
+                {
+                    'client_event_id': 'ce_unsupported_task_1',
+                    'event_type': 'task.not_a_real_event',
+                    'payload': {},
+                }
+            ],
+        },
+    )
+
+    assert general.status_code == 200, general.text
+    general_body = general.json()
+    assert general_body['accepted'] == 0
+    assert [item['name'] for item in general_body['rejected']] == ['ERR_SYNC_EVENT_UNSUPPORTED']
+    assert general_body['rejected'][0]['detail'] == {'client_event_id': 'ce_unsupported_portrait_1'}
+
+    assert task.status_code == 200, task.text
+    task_body = task.json()
+    assert task_body['accepted'] == 0
+    assert [item['name'] for item in task_body['rejected']] == ['ERR_TASK_SYNC_EVENT_UNSUPPORTED']
+    assert task_body['rejected'][0]['detail'] == {'client_event_id': 'ce_unsupported_task_1'}
+
+
 async def test_owner_jwt_can_page_message_history_snapshot(
     auth_matrix: SimpleNamespace,
 ) -> None:

@@ -62,8 +62,24 @@ class ClawHubIdentityError(ClawHubUpstreamError):
     """ClawHub 技能身份无法唯一解析。"""
 
 
+class ClawHubAmbiguousSkillError(ClawHubIdentityError):
+    """ClawHub 裸 slug 对应多个作者。"""
+
+    def __init__(self, slug: str, owner_handles: Iterable[str]) -> None:
+        self.slug = slug
+        self.owner_handles = tuple(dict.fromkeys(owner_handles))
+        super().__init__(f'ambiguous slug {slug!r}，必须提供 ownerHandle')
+
+
 MAX_CLAWHUB_FILE_COUNT = 1000
 MAX_CLAWHUB_TOTAL_SIZE = 100 * 1024 * 1024
+
+
+def _bounded_catalog_text(value: Any, max_length: int) -> str | None:
+    """按数据库 VARCHAR 契约截断外部目录文本。"""
+    if value is None:
+        return None
+    return str(value)[:max_length]
 
 
 def build_clawhub_download_url(
@@ -191,7 +207,7 @@ class ClawHubSyncService:
             skills_data = (
                 await self._fetch_specific_skills(skill_ids)
                 if skill_ids
-                else await self._fetch_all_skills()
+                else await self._fetch_all_skills(limit=effective_limit)
             )
             filtered_skills = self._filter_skills(
                 skills_data,
@@ -231,7 +247,7 @@ class ClawHubSyncService:
             skills_data = (
                 await self._fetch_specific_skills(skill_ids)
                 if skill_ids
-                else await self._fetch_all_skills()
+                else await self._fetch_all_skills(limit=effective_limit)
             )
             filtered_skills = self._filter_skills(
                 skills_data,
@@ -457,7 +473,14 @@ class ClawHubSyncService:
         if not owner_handle and existing and existing.author_name not in {None, '', 'community'}:
             owner_handle = existing.author_name
         if not owner_handle:
-            detail = await self._fetch_skill_detail(client, slug=slug)
+            try:
+                detail = await self._fetch_skill_detail(client, slug=slug)
+            except ClawHubAmbiguousSkillError as exc:
+                detail = await self._resolve_ranked_ambiguous_detail(
+                    client,
+                    listed_skill=enriched,
+                    ambiguity=exc,
+                )
             owner_handle = self._extract_owner_handle(detail)
             if not owner_handle:
                 raise ClawHubIdentityError(f'ClawHub 技能详情缺少作者: {slug}')
@@ -579,7 +602,16 @@ class ClawHubSyncService:
             'name': skill_data.get('displayName') or skill_data.get('slug') or '',
             'description': skill_data.get('summary') or '',
         }
-        return metadata_unchanged(scanned, existing)
+        source_language = existing.source_language or 'en'
+        source_description = (
+            existing.description_zh
+            if source_language == 'zh'
+            else existing.description_en
+        )
+        return (
+            (existing.name or '') == scanned['name']
+            and (source_description or '') == scanned['description']
+        )
 
     @staticmethod
     def _has_verified_file_manifest(value: Any) -> bool:
@@ -678,8 +710,12 @@ class ClawHubSyncService:
         )
         return prepared
 
-    async def _fetch_all_skills(self) -> list[dict[str, Any]]:
-        """用 ``limit + cursor`` 完整枚举，并展开同 slug 的不同作者。"""
+    async def _fetch_all_skills(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """按下载量降序分页，达到调用方 top-N 后立即停止枚举。"""
         skills: list[dict[str, Any]] = []
         cursor: str | None = None
         page_size = 100
@@ -692,6 +728,7 @@ class ClawHubSyncService:
                 params: dict[str, Any] = {
                     'limit': page_size,
                     'nonSuspiciousOnly': 'true',
+                    'sort': 'downloads',
                 }
                 if cursor:
                     params['cursor'] = cursor
@@ -727,6 +764,9 @@ class ClawHubSyncService:
                 if not items:
                     break
                 skills.extend(item for item in items if isinstance(item, dict))
+                if limit is not None and limit > 0 and len(skills) >= limit:
+                    skills = skills[:limit]
+                    break
                 cursor = data.get('nextCursor')
                 if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
                     break
@@ -735,7 +775,11 @@ class ClawHubSyncService:
                 raise ClawHubUpstreamError(f'ClawHub 技能列表超过安全页数上限 {max_pages}')
 
             expanded = await self._expand_duplicate_slugs(client, skills)
-        log.info(f'ClawHub 枚举完成：{len(skills)} 条列表记录，{len(expanded)} 个稳定身份')
+        log.info(
+            f'ClawHub 枚举完成：{len(skills)} 条列表记录'
+            f'（limit={limit if limit is not None else "all"}），'
+            f'{len(expanded)} 个稳定身份'
+        )
         return expanded
 
     async def _expand_duplicate_slugs(
@@ -814,11 +858,25 @@ class ClawHubSyncService:
         owner_handle: str | None = None,
     ) -> dict[str, Any]:
         params = {'ownerHandle': owner_handle} if owner_handle else None
-        response = await client.get(
+        response = await self._get_clawhub_response(
+            client,
             f'{self.clawhub_api_url}/skills/{slug}',
             params=params,
+            operation=f'读取技能详情 {owner_handle or "unknown"}/{slug}',
         )
         if response.status_code == 409:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            matches = payload.get('matches') if isinstance(payload, dict) else None
+            owners = [
+                str(match.get('ownerHandle')).strip()
+                for match in matches or []
+                if isinstance(match, dict) and match.get('ownerHandle')
+            ]
+            if owners:
+                raise ClawHubAmbiguousSkillError(slug, owners)
             raise ClawHubIdentityError(f'ambiguous slug {slug!r}，必须提供 ownerHandle')
         response.raise_for_status()
         payload = response.json()
@@ -831,6 +889,81 @@ class ClawHubSyncService:
         ):
             raise ClawHubUpstreamError(f'ClawHub 技能被标记为恶意: {slug}')
         return payload
+
+    @staticmethod
+    async def _get_clawhub_response(
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        params: dict[str, Any] | None,
+        operation: str,
+    ) -> httpx.Response:
+        """对上游 429/5xx 和网络瞬时错误做有限重试。"""
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await client.get(url, params=params)
+            except httpx.RequestError as exc:
+                last_error = exc
+            else:
+                if response.status_code != 429 and response.status_code < 500:
+                    return response
+                last_error = httpx.HTTPStatusError(
+                    f'{operation} 收到瞬时 HTTP {response.status_code}',
+                    request=response.request,
+                    response=response,
+                )
+            log.warning(
+                f'ClawHub {operation} 失败，第 {attempt + 1}/3 次尝试: '
+                f'{type(last_error).__name__}: {last_error}'
+            )
+            if attempt < 2:
+                await asyncio.sleep(float(attempt + 1))
+        assert last_error is not None
+        raise last_error
+
+    async def _resolve_ranked_ambiguous_detail(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        listed_skill: dict[str, Any],
+        ambiguity: ClawHubAmbiguousSkillError,
+    ) -> dict[str, Any]:
+        """用榜单元数据精确匹配 409 返回的具体作者，不做任意回落。"""
+        candidates = [
+            await self._fetch_skill_detail(
+                client,
+                slug=ambiguity.slug,
+                owner_handle=owner_handle,
+            )
+            for owner_handle in ambiguity.owner_handles
+        ]
+        listed_version = str(
+            (listed_skill.get('latestVersion') or {}).get('version') or ''
+        )
+        listed_stats = listed_skill.get('stats') or {}
+        listed_downloads = int(listed_stats.get('downloads') or 0)
+        listed_stars = int(listed_stats.get('stars') or 0)
+        matched: list[dict[str, Any]] = []
+        for candidate in candidates:
+            skill = candidate.get('skill') or {}
+            latest_version = candidate.get('latestVersion') or {}
+            stats = skill.get('stats') or {}
+            if (
+                str(latest_version.get('version') or '') == listed_version
+                and int(stats.get('downloads') or 0) == listed_downloads
+                and int(stats.get('stars') or 0) == listed_stars
+                and str(skill.get('displayName') or '')
+                == str(listed_skill.get('displayName') or '')
+                and str(skill.get('summary') or '')
+                == str(listed_skill.get('summary') or '')
+            ):
+                matched.append(candidate)
+        if len(matched) != 1:
+            raise ClawHubIdentityError(
+                f'ambiguous slug {ambiguity.slug!r} 的榜单记录无法唯一匹配作者'
+            )
+        return matched[0]
 
     async def _fetch_specific_skills(
         self,
@@ -894,9 +1027,11 @@ class ClawHubSyncService:
         if client is None:
             client = httpx.AsyncClient(timeout=30.0)
         try:
-            response = await client.get(
+            response = await self._get_clawhub_response(
+                client,
                 f'{self.clawhub_api_url}/skills/{slug}/versions/{version}',
                 params={'ownerHandle': owner_handle},
+                operation=f'读取技能版本 {owner_handle}/{slug}@{version}',
             )
             response.raise_for_status()
             payload = response.json()
@@ -981,7 +1116,10 @@ class ClawHubSyncService:
                     .values(skill_id=skill_id)
                 )
 
-        name = str(clawhub_skill.get('displayName') or slug)
+        name = _bounded_catalog_text(
+            clawhub_skill.get('displayName') or slug,
+            200,
+        ) or slug
         description = str(clawhub_skill.get('summary') or '')
         translated = prepared or await translation_service.translate_skill_metadata(
             name=name,
@@ -993,6 +1131,8 @@ class ClawHubSyncService:
             name=name,
             description=description,
         )
+        name_en = _bounded_catalog_text(name_en, 200)
+        name_zh = _bounded_catalog_text(name_zh, 200)
         tags_en = translation_service.normalize_tag_list(translated.get('tags_en'))
         tags_zh = translation_service.normalize_tag_list(translated.get('tags_zh'))
         tags = tags_en or tags_zh or self._extract_tag_hints(clawhub_skill) or [slug]

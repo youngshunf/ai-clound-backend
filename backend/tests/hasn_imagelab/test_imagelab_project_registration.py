@@ -1,13 +1,13 @@
-"""图坊项目云端权威 ID 登记（IMG-P3-cloud，模块 14 doc30 §5.9 B1）owner 隔离数据层真实 PG 测试（零 mock）。
+"""历史图坊本地引用兼容登记的 owner 隔离数据层真实 PG 测试（零 mock）。
 
 直接调 hasn_imagelab_project_service 落 hasn_imagelab_project 行 → flush（不 commit）→ 断言 → rollback。
 覆盖 daemon ensure_cloud_project_registered 契约：
-- 首次登记返回云端权威 ID（server_id，UUID 字符串）；
+- 首次登记返回历史兼容 server_id（UUID 字符串）；
 - 同一 owner 同一 local_ref 幂等复用返回同一个 id（daemon 重试/断线安全）；
 - 跨 owner 隔离：同 local_ref 不同 owner 得不同 id，且一 owner 的登记对另一 owner 不可见（绝不跨 owner）。
 
-事实源: docs/hasn-node设计文档/14-AI-Native应用平台/30-图像处理AI-Native应用(自研引擎·图坊)架构设计.md §5.9 B1；
-      hasn-node apps/daemon/src/domains/imagelab/dispatch.rs::ensure_cloud_project_registered。
+事实源: docs/hasn-node设计文档/14-AI-Native应用平台/30-图坊/01-架构设计.md §5.9；
+      当前流程直接使用平台项目 UUID，本测试只守住历史兼容接口的幂等与 owner 隔离。
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _is_uuid(value: str) -> bool:
 
 
 async def test_first_registration_returns_server_id(session: AsyncSession) -> None:
-    """首次登记 → 返回云端权威 ID（server_id，UUID 字符串），且落库可查回。"""
+    """首次登记 → 返回历史兼容 server_id（UUID 字符串），且落库可查回。"""
     owner = _owner()
     local_ref = _local_ref()
 
@@ -80,7 +80,7 @@ async def test_first_registration_returns_server_id(session: AsyncSession) -> No
     )
 
     assert isinstance(server_id, str)
-    assert _is_uuid(server_id), f'server_id 必须是 UUID 字符串（云端权威 ID），实得: {server_id!r}'
+    assert _is_uuid(server_id), f'历史兼容 server_id 必须是 UUID 字符串，实得: {server_id!r}'
 
     # 落库可查回（owner 隔离键命中）
     row = await hasn_imagelab_project_dao.get_by_owner_and_local_ref(session, owner_id=owner, local_ref=local_ref)
@@ -134,7 +134,7 @@ async def test_cross_owner_isolation(session: AsyncSession) -> None:
         db=session, owner_id=owner_b, local_ref=shared_local_ref, name='B的项目'
     )
 
-    assert id_a != id_b, '不同 owner 即使 local_ref 相同也必须是不同的云端权威 ID'
+    assert id_a != id_b, '不同 owner 即使 local_ref 相同也必须是不同的历史兼容 server_id'
 
     # owner_a 的登记键只命中 owner_a 自己的行（绝不跨 owner）
     row_a = await hasn_imagelab_project_dao.get_by_owner_and_local_ref(

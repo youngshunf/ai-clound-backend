@@ -52,7 +52,7 @@ class ArtifactMutation(ArtifactContractModel):
     message_id: int | None = None
     source_tool: str | None = None
     source_app_id: str | None = None
-    dispatch_id: str | None = None
+    dispatch_id: str | None = Field(None, max_length=128)
     tool_call_id: str | None = None
     source_event_id: str | None = None
     title: str | None = None

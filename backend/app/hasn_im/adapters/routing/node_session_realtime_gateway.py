@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.app.hasn_im.adapters.routing.offline_frame_policy import (
+    require_registered_offline_method,
+)
 from backend.app.hasn_im.application.node_session_service import node_session_service
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 
@@ -15,6 +18,7 @@ class NodeSessionRealtimeGateway:
     _HASN_ENVELOPE = 'hasn/0.2'
 
     async def push_to_owner(self, owner_id: str, frame: RealtimeFrame) -> None:
+        require_registered_offline_method(frame.method)
         await node_session_service.push_to_owner(owner_id, self._envelope(frame))
 
     async def push_to_node(self, node_id: str, frame: RealtimeFrame) -> None:

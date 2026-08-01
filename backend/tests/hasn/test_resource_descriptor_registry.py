@@ -191,3 +191,100 @@ def test_native_window_only_deck_and_design() -> None:
             )
         else:
             assert route.window is None, f'{route.app_id} 的非 native_window 资源不应带 window={route.window}'
+
+
+def test_native_window_accepts_any_registered_view_id() -> None:
+    """`window` 由封闭枚举放开为业务视图注册表 id（doc09 §9）。
+
+    云端只存字符串、不认识具体窗——新增一类业务视图不需要动云端 schema。合法性由**前端
+    注册表**判定：未注册的 id 一律按「无 window」处理并 warn，绝不开一扇空窗（零 fake）。
+    """
+    for view_id in ('deck', 'design', 'media-preview', 'artifact-editor'):
+        descriptor = ResourceDescriptor.model_validate(
+            {
+                'resource_kind': 'x.y',
+                'uri_domain': 'x',
+                'open': {'mode': 'native_window', 'window': view_id},
+                'card': {'verb': '东西', 'action_label': '打开东西'},
+            }
+        )
+        assert descriptor.open.window == view_id
+
+
+def test_native_window_still_requires_non_empty_window() -> None:
+    """放开不等于放任：`window` 缺失/空白仍在注册期就炸，而不是静默落个空窗。"""
+    for bad in (None, '', '   '):
+        with pytest.raises(ValueError):
+            ResourceDescriptor.model_validate(
+                {
+                    'resource_kind': 'x.y',
+                    'uri_domain': 'x',
+                    'open': {'mode': 'native_window', 'window': bad},
+                    'card': {'verb': '东西', 'action_label': '打开东西'},
+                }
+            )
+
+
+def test_root_route_and_surfaces_are_optional_and_projected() -> None:
+    """回溯边界与表面白名单是**可选**的，声明了就要投影进读模型（doc09 §3 / §9）。
+
+    不声明 `root_route` 时 webui 回落到应用 entry_route——「独立窗开社区帖子最多退回社区
+    首页」因此零配置成立，绝大多数应用不需要填。
+    """
+    from backend.app.hasn.schema.resource_descriptor import ResourceRoute
+
+    plain = ResourceDescriptor.model_validate(
+        {
+            'resource_kind': 'x.y',
+            'uri_domain': 'x',
+            'open': {'mode': 'internal_route', 'route_template': '/apps/x/:id'},
+            'card': {'verb': '东西', 'action_label': '打开东西'},
+        }
+    )
+    assert plain.open.root_route is None
+    assert plain.open.surfaces is None
+    assert ResourceRoute.from_descriptor('x', plain).root_route is None
+
+    declared = ResourceDescriptor.model_validate(
+        {
+            'resource_kind': 'x.y',
+            'uri_domain': 'x',
+            'open': {
+                'mode': 'internal_route',
+                'route_template': '/apps/x/:id',
+                'root_route': '/apps/x',
+                'surfaces': ['main', 'window'],
+            },
+            'card': {'verb': '东西', 'action_label': '打开东西'},
+        }
+    )
+    route = ResourceRoute.from_descriptor('x', declared)
+    assert route.root_route == '/apps/x'
+    assert route.surfaces == ['main', 'window']
+
+
+def test_root_route_must_be_internal_and_surfaces_not_empty() -> None:
+    """非法值在注册期就炸，别等到运行时把窗口引到站外或算出空白表面集。"""
+    base = {
+        'resource_kind': 'x.y',
+        'uri_domain': 'x',
+        'card': {'verb': '东西', 'action_label': '打开东西'},
+    }
+    with pytest.raises(ValueError):
+        ResourceDescriptor.model_validate(
+            {
+                **base,
+                'open': {
+                    'mode': 'internal_route',
+                    'route_template': '/apps/x/:id',
+                    'root_route': 'https://evil.example.com',
+                },
+            }
+        )
+    with pytest.raises(ValueError):
+        ResourceDescriptor.model_validate(
+            {
+                **base,
+                'open': {'mode': 'internal_route', 'route_template': '/apps/x/:id', 'surfaces': []},
+            }
+        )
