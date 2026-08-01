@@ -37,8 +37,33 @@ def test_derive_name_from_kind_and_mime() -> None:
     assert _derive_name('image', 'image/png') == 'image.png'
     assert _derive_name('voice', 'audio/mpeg') == 'voice.mp3'
     assert _derive_name('file', 'application/pdf') == 'file.pdf'
+    # 办公文档补齐后，兜底名至少带对后缀（此前 docx 落到 octet-stream，连后缀都没有）
+    docx_mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    assert _derive_name('file', docx_mime) == 'file.docx'
     # 未知 mime → 无扩展名，不伪造
     assert _derive_name('file', 'application/x-weird') == 'file'
+
+
+def test_display_name_prefers_original_name() -> None:
+    """附件展示名以资产注册表的原始文件名为准，合成名只做兜底。
+
+    回归 2026-08-01：此前无条件用 kind+mime 合成，分身发的每份文件都显示成 `file`，
+    收件人分不清哪份是哪份。
+    """
+    from types import SimpleNamespace
+
+    from backend.app.mcp.tools.message import _display_name
+
+    docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    assert _display_name(SimpleNamespace(kind='file', mime=docx, original_name='起诉状.docx')) == '起诉状.docx'
+    # 原名缺失/空白 → 回落合成名，不返回空串
+    assert _display_name(SimpleNamespace(kind='file', mime=docx, original_name=None)) == 'file.docx'
+    assert _display_name(SimpleNamespace(kind='file', mime=docx, original_name='   ')) == 'file.docx'
+    # 展示归一化：路径分隔符只留末段，控制字符剔除（落盘侧清洗仍由 daemon 负责）
+    assert _display_name(SimpleNamespace(kind='file', mime=docx, original_name='../../etc/合同.docx')) == '合同.docx'
+    assert _display_name(SimpleNamespace(kind='file', mime=docx, original_name='a\nb.docx')) == 'ab.docx'
+    # 清洗后为空（纯点号）→ 仍回落合成名
+    assert _display_name(SimpleNamespace(kind='file', mime=docx, original_name='..')) == 'file.docx'
 
 
 def test_build_agent_card_body_is_informational_card() -> None:
@@ -112,7 +137,7 @@ def test_resolve_to_target_owner_missing_rejected() -> None:
 # pytest-asyncio 跨用例连接清理竞态（pass/skip 交替的 flaky）。无 DB 时整体跳过（不伪造）。
 
 
-def _new_asset(owner_hasn_id: str, kind: str, mime: str):
+def _new_asset(owner_hasn_id: str, kind: str, mime: str, original_name: str | None = None):
     from backend.app.hasn.model.hasn_assets import HasnAssets
 
     asset_id = 'ast_' + uuid.uuid4().hex
@@ -128,6 +153,7 @@ def _new_asset(owner_hasn_id: str, kind: str, mime: str):
         width=1280 if kind == 'image' else None,
         height=720 if kind == 'image' else None,
         duration_ms=3400 if kind == 'voice' else None,
+        original_name=original_name,
     )
 
 
@@ -154,9 +180,15 @@ async def test_resolve_attachments_against_real_db() -> None:
     img_id, img = _new_asset(owner, 'image', 'image/png')
     voice_id, voice = _new_asset(owner, 'voice', 'audio/mpeg')
     foreign_id, foreign = _new_asset('h_owner_A', 'image', 'image/png')
+    doc_id, doc = _new_asset(
+        owner,
+        'file',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        original_name='李俊龙民间借贷纠纷起诉状.docx',
+    )
 
     async with async_db_session() as db:
-        db.add_all([img, voice, foreign])
+        db.add_all([img, voice, foreign, doc])
         await db.flush()
         try:
             # 1) 图片 → content_type=2 + 真实 kind/mime/size/宽高
@@ -181,6 +213,11 @@ async def test_resolve_attachments_against_real_db() -> None:
             # 4) 资产不存在 → 拒绝不伪造
             with pytest.raises(RuntimeError, match='不存在'):
                 await _resolve_attachments(db, owner, ['hasn://asset/ast_nonexistent_xyz'])
+
+            # 5) 文件 → content_type=3 且展示名取注册表原名（不再退化成 `file`）
+            d_atts, d_ct = await _resolve_attachments(db, owner, [f'hasn://asset/{doc_id}'])
+            assert d_ct == 3
+            assert d_atts[0]['name'] == '李俊龙民间借贷纠纷起诉状.docx'
         finally:
-            await db.execute(delete(HasnAssets).where(HasnAssets.asset_id.in_([img_id, voice_id, foreign_id])))
+            await db.execute(delete(HasnAssets).where(HasnAssets.asset_id.in_([img_id, voice_id, foreign_id, doc_id])))
             await db.commit()
