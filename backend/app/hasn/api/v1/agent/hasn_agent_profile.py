@@ -34,6 +34,7 @@ from backend.app.marketplace.service.common_skills_service import (
 )
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
