@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.hasn_asset_service import HasnAssetService
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.marketplace.model import (
     MarketplaceAgentPublishRequest,
     MarketplaceTemplate,
@@ -45,6 +47,16 @@ log = logging.getLogger(__name__)
 ResourceKind = Literal['skill', 'template', 'skill_pack']
 ParsedPackage = SkillPackage | TemplatePackage | SkillPackPackage
 _ASSET_URI = re.compile(r'\Ahasn://asset/(?P<asset_id>ast_[0-9a-f]{32})\Z')
+_ARTIFACT_KINDS = {
+    'skill': 'marketplace.skill',
+    'template': 'marketplace.template',
+    'skill_pack': 'marketplace.skill_pack',
+}
+_SOURCE_TOOLS = {
+    'skill': 'hasn.marketplace.publish_skill',
+    'template': 'hasn.marketplace.publish_template',
+    'skill_pack': 'hasn.marketplace.publish_skill_pack',
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +108,8 @@ class AgentPublishService:
                     resource_kind=resource_kind,
                     request_id=existing.id,
                     result=result,
+                    work_session_id=existing.work_session_id,
+                    idempotency_key=existing.idempotency_key,
                 )
             return result
 
@@ -135,6 +149,16 @@ class AgentPublishService:
             state='committed',
             result=result,
         )
+        await self._register_artifact(
+            db,
+            identity=identity,
+            resource_kind=resource_kind,
+            result=result,
+            title=_package_title(source.package),
+            work_session_id=work_session_id,
+            idempotency_key=idempotency_key,
+            action='create',
+        )
         await db.commit()
         if payload.submit_review:
             return await self._complete_review(
@@ -143,6 +167,8 @@ class AgentPublishService:
                 resource_kind=resource_kind,
                 request_id=request.id,
                 result=result,
+                work_session_id=work_session_id,
+                idempotency_key=idempotency_key,
             )
         return result
 
@@ -205,7 +231,7 @@ class AgentPublishService:
         version = validate_version(str(package.metadata['version']))
         return {
             'resource_id': skill.skill_id,
-            'resource_uri': f'hasn://marketplace/skills/{skill.skill_id}',
+            'resource_uri': _resource_uri('skill', skill.skill_id),
             'version': version,
             'status': skill.status,
             'visibility': skill.visibility,
@@ -235,7 +261,7 @@ class AgentPublishService:
         version = validate_version(str(package.metadata['version']))
         return {
             'resource_id': template.template_id,
-            'resource_uri': f'hasn://marketplace/templates/{template.template_id}',
+            'resource_uri': _resource_uri('template', template.template_id),
             'version': version,
             'status': template.status,
             'visibility': template.visibility,
@@ -310,7 +336,7 @@ class AgentPublishService:
         await db.flush()
         return {
             'resource_id': template.template_id,
-            'resource_uri': f'hasn://marketplace/skill-packs/{template.template_id}',
+            'resource_uri': _resource_uri('skill_pack', template.template_id),
             'version': version,
             'status': template.status,
             'visibility': template.visibility,
@@ -326,6 +352,8 @@ class AgentPublishService:
         resource_kind: ResourceKind,
         request_id: int,
         result: dict,
+        work_session_id: str | None,
+        idempotency_key: str,
     ) -> dict:
         try:
             if resource_kind == 'skill':
@@ -342,6 +370,7 @@ class AgentPublishService:
                     )
                 resource_status = skill.status
                 resource_visibility = skill.visibility
+                title = skill.name
             else:
                 template = await marketplace_template_service.get_by_resource_id_for_user(
                     db=db,
@@ -356,12 +385,23 @@ class AgentPublishService:
                     )
                 resource_status = template.status
                 resource_visibility = template.visibility
+                title = template.name
             completed = {
                 **result,
                 'status': resource_status,
                 'visibility': resource_visibility,
                 'review_submission': {'status': 'submitted'},
             }
+            await self._register_artifact(
+                db,
+                identity=identity,
+                resource_kind=resource_kind,
+                result=completed,
+                title=title,
+                work_session_id=work_session_id,
+                idempotency_key=idempotency_key,
+                action='update',
+            )
             await self._update_request_result(db, request_id=request_id, state='committed', result=completed)
             return completed
         except Exception as exc:
@@ -373,6 +413,36 @@ class AgentPublishService:
             log.warning('市场草稿已创建，但提审失败: %s', exc)
             await self._update_request_result(db, request_id=request_id, state='partial', result=partial)
             return partial
+
+    @staticmethod
+    async def _register_artifact(
+        db: AsyncSession,
+        *,
+        identity: AgentTokenPayload,
+        resource_kind: ResourceKind,
+        result: dict,
+        title: str,
+        work_session_id: str | None,
+        idempotency_key: str,
+        action: Literal['create', 'update'],
+    ) -> None:
+        await register_app_resource_artifact(
+            db,
+            app_id='marketplace',
+            resource_kind=_ARTIFACT_KINDS[resource_kind],
+            server_id=str(result['resource_id']),
+            agent_hasn_id=identity.agent_hasn_id,
+            owner_hasn_id=identity.owner_hasn_id,
+            title=title,
+            source_tool=_SOURCE_TOOLS[resource_kind],
+            session_id=work_session_id,
+            action=action,
+            dispatch_id=idempotency_key,
+            metadata={
+                'version': str(result['version']),
+                'status': str(result['status']),
+            },
+        )
 
     @staticmethod
     async def _update_request_result(
@@ -388,6 +458,20 @@ class AgentPublishService:
         request.state = state
         request.result = result
         await db.commit()
+
+
+def _resource_uri(resource_kind: ResourceKind, resource_id: str) -> str:
+    descriptor = ai_native_app_registry.resource_descriptor('marketplace', _ARTIFACT_KINDS[resource_kind])
+    if descriptor is None:
+        raise errors.ServerError(msg=f'能力市场缺少 {_ARTIFACT_KINDS[resource_kind]} 资源描述符')
+    return descriptor.build_uri(resource_id)
+
+
+def _package_title(package: ParsedPackage) -> str:
+    title = package.metadata.get('display_name') or package.metadata.get('name') or package.metadata.get('slug')
+    if not title:
+        raise errors.ServerError(msg='能力市场发布包缺少资源标题')
+    return str(title)
 
 
 agent_publish_service = AgentPublishService()

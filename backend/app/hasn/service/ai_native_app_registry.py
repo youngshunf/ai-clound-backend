@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
@@ -47,6 +48,7 @@ from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
 from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST
 from backend.app.hasn_studio.service import resource_adapter as _studio_resource_adapter  # noqa: F401
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
+from backend.app.marketplace.manifest import MARKETPLACE_RESOURCE_MANIFEST
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -126,6 +128,11 @@ class AINativeAppRegistry:
             # 真实桌面，云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
             'computer_use': COMPUTER_USE_AI_NATIVE_MANIFEST,
             'copilot': COPILOT_AI_NATIVE_MANIFEST,
+        }
+        # 平台核心模块也会产出可打开资源，但它们不是可购买/发布的 AI-Native 应用。
+        # 单独登记，避免为了产物寻址把能力市场伪装成应用并污染工作台目录。
+        self._platform_resource_manifests: dict[str, dict[str, Any]] = {
+            'marketplace': MARKETPLACE_RESOURCE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
@@ -319,11 +326,10 @@ class AINativeAppRegistry:
     def resource_descriptor(self, app_id: str, resource_kind: str | None = None) -> ResourceDescriptor | None:
         """查某应用某类资源的 descriptor（doc31 §2，RC-P0）。
 
-        当前全部 AI-Native 应用均为 builtin，descriptor 权威在代码 manifest 的 `resources[]`，
-        故同步读 `_builtin_manifests`（无 db）。`resource_kind` 缺省取该 app 首个资源
-        （多数应用一类主资源；deck 唯一 deck.presentation）。声明缺失/非法 → None。
+        descriptor 权威在代码 manifest 的 `resources[]`；AI-Native 应用与非应用的平台核心模块
+        共用此同步读接缝（无 db）。`resource_kind` 缺省取该模块首个资源；声明缺失/非法 → None。
         """
-        manifest = self._builtin_manifests.get(app_id)
+        manifest = self._resource_manifest(app_id)
         if not manifest:
             return None
         resources = manifest.get('resources')
@@ -352,7 +358,7 @@ class AINativeAppRegistry:
 
         返回 `(descriptor, uri_id)`；无法解析 → `(None, None)`。
         """
-        manifest = self._builtin_manifests.get(app_id)
+        manifest = self._resource_manifest(app_id)
         if not manifest:
             return None, None
         resources = manifest.get('resources')
@@ -385,7 +391,7 @@ class AINativeAppRegistry:
         manifest 的 `resources[]` 声明，这里如实投影，不另立一张会漂移的手写白名单。
         """
         kinds: set[str] = set()
-        for manifest in self._builtin_manifests.values():
+        for _app_id, manifest in self._iter_resource_manifests():
             resources = manifest.get('resources')
             if not isinstance(resources, list):
                 continue
@@ -401,7 +407,7 @@ class AINativeAppRegistry:
         主人不认识内部键。展示名的权威也在 manifest（完成卡标题同源），此处如实投影。
         """
         labels: dict[str, str] = {}
-        for manifest in self._builtin_manifests.values():
+        for _app_id, manifest in self._iter_resource_manifests():
             resources = manifest.get('resources')
             if not isinstance(resources, list):
                 continue
@@ -422,7 +428,7 @@ class AINativeAppRegistry:
         唯一权威——绝不为分身另手写一份会漂移的域清单。非法声明跳过（与 routes 一致）。
         """
         domains: list[ResourceDomainInfo] = []
-        for app_id, manifest in self._builtin_manifests.items():
+        for app_id, manifest in self._iter_resource_manifests():
             resources = manifest.get('resources')
             if not isinstance(resources, list):
                 continue
@@ -441,7 +447,7 @@ class AINativeAppRegistry:
         `hasn://{uri_domain}/{id}` 解析到内部路由/独立窗口/单入口。非法声明跳过（不阻塞下发）。
         """
         routes: list[ResourceRoute] = []
-        for app_id, manifest in self._builtin_manifests.items():
+        for app_id, manifest in self._iter_resource_manifests():
             resources = manifest.get('resources')
             if not isinstance(resources, list):
                 continue
@@ -452,6 +458,17 @@ class AINativeAppRegistry:
                     continue
                 routes.append(ResourceRoute.from_descriptor(app_id, descriptor))
         return routes
+
+    def list_resource_manifests(self) -> list[dict[str, Any]]:
+        """列出所有资源描述符事实源，包括非应用的平台核心模块。"""
+        return [manifest for _app_id, manifest in self._iter_resource_manifests()]
+
+    def _resource_manifest(self, app_id: str) -> dict[str, Any] | None:
+        return self._builtin_manifests.get(app_id) or self._platform_resource_manifests.get(app_id)
+
+    def _iter_resource_manifests(self) -> Iterator[tuple[str, dict[str, Any]]]:
+        yield from self._builtin_manifests.items()
+        yield from self._platform_resource_manifests.items()
 
 
 def _manifest_payload(row: HasnAiNativeAppManifest | dict[str, Any]) -> dict[str, Any]:

@@ -116,9 +116,9 @@ def test_descriptor_schema_validation_rules() -> None:
 
 
 def _all_declared_descriptors() -> list[tuple[str, dict]]:
-    """收集全部 builtin 应用声明的原始 resource 条目（app_id, resource_dict）。"""
+    """收集全部应用与平台模块声明的原始 resource 条目（app_id, resource_dict）。"""
     out: list[tuple[str, dict]] = []
-    for manifest in ai_native_app_registry.list_builtin_apps():
+    for manifest in ai_native_app_registry.list_resource_manifests():
         app_id = manifest['app_id']
         resources = manifest.get('resources')
         if not isinstance(resources, list):

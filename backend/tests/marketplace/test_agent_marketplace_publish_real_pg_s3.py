@@ -227,6 +227,22 @@ async def _cleanup(identity: SimpleNamespace) -> None:
                 pass
 
     async with async_db_session.begin() as db:
+        await db.execute(
+            text('DELETE FROM hasn_artifact_registration_outbox WHERE owner_hasn_id = :owner'),
+            {'owner': identity.owner},
+        )
+        await db.execute(
+            text(
+                """
+                DELETE FROM hasn_artifact_contributions
+                WHERE artifact_id IN (
+                    SELECT artifact_id FROM hasn_artifacts WHERE owner_hasn_id = :owner
+                )
+                """
+            ),
+            {'owner': identity.owner},
+        )
+        await db.execute(text('DELETE FROM hasn_artifacts WHERE owner_hasn_id = :owner'), {'owner': identity.owner})
         cleanup_statements = (
             """DELETE FROM hasn_marketplace.marketplace_agent_publish_request
                WHERE owner_hasn_id = :owner""",
@@ -363,6 +379,27 @@ async def test_skill_publish_replays_same_key_and_rejects_changed_content_withou
     assert result['file_hash'] == hashlib.sha256(_skill_zip(slug)).hexdigest()
     assert result['content_hash']
 
+    async with async_db_session() as db:
+        artifact = (
+            await db.execute(
+                text(
+                    """
+                    SELECT resource_kind, resource_uri, session_id, dispatch_id, origin_ref
+                    FROM hasn_artifacts
+                    WHERE owner_hasn_id = :owner AND agent_hasn_id = :agent
+                    """
+                ),
+                {'owner': e2e.owner, 'agent': e2e.agent},
+            )
+        ).mappings().one()
+    assert dict(artifact) == {
+        'resource_kind': 'marketplace.skill',
+        'resource_uri': result['resource_uri'],
+        'session_id': headers['X-Hasn-Work-Session-Id'],
+        'dispatch_id': headers['Idempotency-Key'],
+        'origin_ref': f'resource:marketplace:skill:{result["resource_id"]}',
+    }
+
     replay = await e2e.http.post(
         '/api/v1/marketplace/agent/publish/skills',
         headers=headers,
@@ -440,15 +477,23 @@ async def test_template_and_skill_pack_publish_use_owner_namespace_and_submit_re
         _pack_zip(pack_slug, e2e.member_id),
         name=f'{pack_slug}.zip',
     )
+    template_headers = {
+        'Idempotency-Key': f'template-{uuid.uuid4().hex}',
+        'X-Hasn-Work-Session-Id': f'ws_{uuid.uuid4().hex[:20]}',
+    }
+    pack_headers = {
+        'Idempotency-Key': f'pack-{uuid.uuid4().hex}',
+        'X-Hasn-Work-Session-Id': f'ws_{uuid.uuid4().hex[:20]}',
+    }
 
     template = await e2e.http.post(
         '/api/v1/marketplace/agent/publish/templates',
-        headers={'Idempotency-Key': f'template-{uuid.uuid4().hex}'},
+        headers=template_headers,
         json={'asset_uri': template_asset, 'visibility': 'public', 'submit_review': True},
     )
     pack = await e2e.http.post(
         '/api/v1/marketplace/agent/publish/skill-packs',
-        headers={'Idempotency-Key': f'pack-{uuid.uuid4().hex}'},
+        headers=pack_headers,
         json={'asset_uri': pack_asset, 'visibility': 'public', 'submit_review': True},
     )
 
@@ -465,3 +510,36 @@ async def test_template_and_skill_pack_publish_use_owner_namespace_and_submit_re
     assert pack_result['visibility'] == 'private'
     assert pack_result['review_submission']['status'] == 'submitted'
     assert pack_result['member_skill_ids'] == [e2e.member_id]
+
+    async with async_db_session() as db:
+        artifacts = (
+            await db.execute(
+                text(
+                    """
+                    SELECT resource_kind, resource_uri, session_id, dispatch_id, origin_ref, action
+                    FROM hasn_artifacts
+                    WHERE owner_hasn_id = :owner AND agent_hasn_id = :agent
+                    ORDER BY resource_kind
+                    """
+                ),
+                {'owner': e2e.owner, 'agent': e2e.agent},
+            )
+        ).mappings().all()
+    assert [dict(artifact) for artifact in artifacts] == [
+        {
+            'resource_kind': 'marketplace.skill_pack',
+            'resource_uri': pack_result['resource_uri'],
+            'session_id': pack_headers['X-Hasn-Work-Session-Id'],
+            'dispatch_id': pack_headers['Idempotency-Key'],
+            'origin_ref': f'resource:marketplace:skill_pack:{pack_result["resource_id"]}',
+            'action': 'update',
+        },
+        {
+            'resource_kind': 'marketplace.template',
+            'resource_uri': template_result['resource_uri'],
+            'session_id': template_headers['X-Hasn-Work-Session-Id'],
+            'dispatch_id': template_headers['Idempotency-Key'],
+            'origin_ref': f'resource:marketplace:template:{template_result["resource_id"]}',
+            'action': 'update',
+        },
+    ]
