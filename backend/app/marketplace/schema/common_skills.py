@@ -14,6 +14,14 @@ class CommonSkillManifestItem(SchemaBase):
         description='内容指纹 COALESCE(content_hash,file_hash,version)；市场无版本行时为空串'
         '（诚实不臆造，消费方回落为总是重下）',
     )
+    file_hash: str = Field(
+        default='',
+        description='ZIP 原始字节 SHA256；缺失时为空串并由节点显式告警',
+    )
+    version: str = Field(
+        default='',
+        description='与指纹和字节哈希来自同一确定性版本行，供节点钉版本下载',
+    )
 
 
 class CommonSkillsManifest(SchemaBase):

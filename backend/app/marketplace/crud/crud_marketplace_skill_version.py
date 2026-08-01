@@ -100,13 +100,25 @@ class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
         self, db: AsyncSession, skill_id: str
     ) -> MarketplaceSkillVersion | None:
         """
-        获取技能的最新版本
+        确定性获取技能的最新版本。
+
+        历史数据可能存在多条 ``is_latest=true``，必须与公共清单同样按 ``id DESC``
+        取最后写入行，避免清单哈希与实际下载包来自不同版本。
 
         :param db: 数据库会话
         :param skill_id: 技能ID
         :return:
         """
-        return await self.select_model_by_column(db, skill_id=skill_id, is_latest=True)
+        stmt = (
+            select(MarketplaceSkillVersion)
+            .where(
+                MarketplaceSkillVersion.skill_id == skill_id,
+                MarketplaceSkillVersion.is_latest.is_(True),
+            )
+            .order_by(MarketplaceSkillVersion.id.desc())
+            .limit(1)
+        )
+        return (await db.execute(stmt)).scalar_one_or_none()
 
     async def get_versions_by_skill(
         self, db: AsyncSession, skill_id: str

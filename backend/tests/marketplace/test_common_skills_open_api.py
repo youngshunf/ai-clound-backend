@@ -2,8 +2,8 @@
 
 覆盖：
   1. GET /api/v1/marketplace/open/skills/common：统一信封（response_base.success），
-     data = {revision, skills:[{skill_id, fingerprint}]}；seed 的 is_common 技能在列，
-     指纹与版本行一致，revision 与 get_common_skill_snapshot 同源一致。
+     data = {revision, skills:[{skill_id, fingerprint, file_hash, version}]}；seed 的 is_common
+     技能在列，三项版本元数据来自同一确定性版本行，revision 与快照同源一致。
   2. 该路由不被 ``/{resource_id:path}`` 详情 catch-all 吞掉（注册顺序守卫）。
   3. AgentProfileResponse.common_skill_ids：新字段默认空列表（向后兼容，旧 runtime 忽略）。
 
@@ -29,6 +29,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.schema.hasn_agents import AgentProfileResponse
 from backend.app.marketplace.api.v1.open.marketplace_skills import router as open_skills_router
 from backend.app.marketplace.model import MarketplaceSkill, MarketplaceSkillVersion
+from backend.app.marketplace.schema.common_skills import CommonSkillManifestItem
 from backend.app.marketplace.service.common_skills_service import get_common_skill_snapshot
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db
 
@@ -79,8 +80,23 @@ async def test_open_common_skills_manifest(client) -> None:
             is_common=True,
         )
     )
-    client.session.add(
-        MarketplaceSkillVersion(skill_id=skill_id, version='1.0.0', content_hash='fp-open-1', is_latest=True)
+    client.session.add_all(
+        [
+            MarketplaceSkillVersion(
+                skill_id=skill_id,
+                version='0.9.0',
+                content_hash='fp-open-old',
+                file_hash='zip-file-hash-open-old',
+                is_latest=False,
+            ),
+            MarketplaceSkillVersion(
+                skill_id=skill_id,
+                version='1.0.0',
+                content_hash='fp-open-1',
+                file_hash='zip-file-hash-open-1',
+                is_latest=True,
+            ),
+        ]
     )
     await client.session.flush()
 
@@ -94,6 +110,10 @@ async def test_open_common_skills_manifest(client) -> None:
 
     by_id = {item['skill_id']: item['fingerprint'] for item in data['skills']}
     assert by_id[skill_id] == 'fp-open-1'
+    file_hashes = {item['skill_id']: item['file_hash'] for item in data['skills']}
+    assert file_hashes[skill_id] == 'zip-file-hash-open-1'
+    versions = {item['skill_id']: item['version'] for item in data['skills']}
+    assert versions[skill_id] == '1.0.0'
 
     # revision 与 snapshot 同源一致（daemon 据 revision 比对是否需要 reconcile）。
     snapshot_ids, snapshot_rev = await get_common_skill_snapshot(client.session)
@@ -105,3 +125,15 @@ async def test_agent_profile_response_common_skill_ids_defaults_empty() -> None:
     """新字段默认空列表：旧调用方不传不炸，旧 runtime 收到多余字段可忽略（向后兼容）。"""
     profile = AgentProfileResponse(hasn_id='a_test', display_name='测试分身')
     assert profile.common_skill_ids == []
+
+
+async def test_common_skill_manifest_item_keeps_zip_file_hash() -> None:
+    """公共技能清单必须独立携带 ZIP 字节哈希，不能复用混合语义 fingerprint。"""
+    item = CommonSkillManifestItem(
+        skill_id='huanxing/test/file-hash',
+        fingerprint='content-fingerprint',
+        file_hash='zip-file-hash',
+        version='1.2.3',
+    )
+    assert item.model_dump()['file_hash'] == 'zip-file-hash'
+    assert item.model_dump()['version'] == '1.2.3'
