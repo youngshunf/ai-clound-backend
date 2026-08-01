@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.marketplace.model.marketplace_category import MarketplaceCategory
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.model.marketplace_template import MarketplaceTemplate
+from backend.app.marketplace.service.common_skills_service import get_skills_immutable_snapshots
 from backend.app.marketplace.service.resource_id import PUBLIC_VISIBILITY, PUBLISHED_STATUS
 
 
@@ -89,6 +90,12 @@ class SearchService:
 
         # Format results
         items = [self._format_skill(skill, lang) for skill in skills]
+        snapshots = await get_skills_immutable_snapshots(db, [skill.skill_id for skill in skills])
+        for item in items:
+            snapshot = snapshots.get(str(item.get('skill_id') or ''))
+            if snapshot is not None:
+                item['latest_version'] = snapshot['version']
+                item['content_hash'] = snapshot['content_hash']
 
         return {
             'items': items,
