@@ -672,7 +672,11 @@ class Settings(BaseSettings):
     #   0 = 不设阈值（全收）；生产设为 100 即"下载量超过 100 才同步"。
     MARKETPLACE_CLAWHUB_MIN_DOWNLOADS: int = 0
     # ClawHub 详情和版本元数据并发数；只请求 JSON，不下载技能 ZIP。
-    MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY: int = 8
+    MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY: int = 4
+    # 单轮同步整体超时；超时按 partial 保存最后一个已提交分页断点。
+    MARKETPLACE_CLAWHUB_SYNC_TIMEOUT_SECONDS: float = 3600
+    # 429/5xx/网络瞬时错误指数退避上限。
+    MARKETPLACE_CLAWHUB_TRANSIENT_MAX_DELAY_SECONDS: float = 60
 
     # 市场缓存配置
     MARKETPLACE_CACHE_DIR: str = '/tmp/marketplace-cache'

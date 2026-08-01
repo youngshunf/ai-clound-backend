@@ -54,6 +54,10 @@ async def main() -> int:
         help='跳过库中已存在的稳定身份（重跑只补未同步记录）'
     )
     parser.add_argument(
+        '--restart', action='store_true',
+        help='丢弃同步日志中的分页断点，从 ClawHub 目录起点重新枚举'
+    )
+    parser.add_argument(
         '--batch-commit-size', type=int, default=50,
         help='每处理 N 个技能提交一次（崩溃只丢最近一批、进度可见；默认 50）'
     )
@@ -74,6 +78,7 @@ async def main() -> int:
             dry_run=args.dry_run,
             batch_commit_size=args.batch_commit_size,
             resume=args.resume,
+            restart=args.restart,
             require_engagement=args.require_engagement,
         )
 

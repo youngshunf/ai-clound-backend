@@ -22,5 +22,6 @@ class MarketplaceSyncLog(MarketplaceBase):
     error_message: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='错误信息')
     git_commit_before: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='同步前的 commit hash')
     git_commit_after: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='同步后的 commit hash')
+    resume_cursor: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='最后一个已提交目录批次后的续跑 cursor')
     started_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment='开始时间')
     completed_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='完成时间')

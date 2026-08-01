@@ -14,6 +14,7 @@ class MarketplaceSyncLogSchemaBase(SchemaBase):
     error_message: str | None = Field(None, description='错误信息')
     git_commit_before: str | None = Field(None, description='同步前的 commit hash')
     git_commit_after: str | None = Field(None, description='同步后的 commit hash')
+    resume_cursor: str | None = Field(None, description='最后一个已提交目录批次后的续跑 cursor')
     started_at: datetime = Field(description='开始时间')
     completed_at: datetime | None = Field(None, description='完成时间')
 
@@ -31,6 +32,7 @@ class UpdateMarketplaceSyncLogParam(SchemaBase):
     error_message: str | None = Field(None, description='错误信息')
     git_commit_before: str | None = Field(None, description='同步前的 commit hash')
     git_commit_after: str | None = Field(None, description='同步后的 commit hash')
+    resume_cursor: str | None = Field(None, description='最后一个已提交目录批次后的续跑 cursor')
     started_at: datetime | None = Field(None, description='开始时间')
     completed_at: datetime | None = Field(None, description='完成时间')
 
