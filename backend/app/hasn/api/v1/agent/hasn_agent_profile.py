@@ -24,7 +24,10 @@ from backend.app.hasn.schema.hasn_agents import (
 )
 from backend.app.hasn.service.owner_memory_service import MEMORY_CONTRIBUTE_PENDING_NOTE, owner_memory_service
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
-from backend.app.marketplace.service import skill_pack_service
+from backend.app.marketplace.service.agent_profile_sources import (
+    build_agent_profile_skill_sources,
+    normalize_skill_ids,
+)
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
     get_installed_skills_revision,
@@ -41,104 +44,8 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
-
-def _normalize_skill_ids(skills: Any) -> list[str]:
-    """把 hasn_agents.skills（JSONB）归一化为 skill_id 字符串清单。
-
-    兼容四种历史形态：
-      - list[str]：``['huanxing/x', ...]``
-      - list[{skill_id|id}]：``[{'skill_id': 'huanxing/x'}, ...]``
-      - {skill_id: version}：``{'huanxing/x': '1.0'}``（key 即 skill_id，value 是版本号）
-      - {'enabled': [<skill_id>...]}：旧 onboarding 误写的包裹形态——真实成员藏在
-        ``enabled`` 的**值**里（list），不是 key。若不识别，会把 ``['enabled']`` 当成
-        唯一技能下发，导致该 Agent 真实技能全不 provision（生产 2 个旧「全能助理」分身命中）。
-    """
-    if skills is None:
-        return []
-    if isinstance(skills, list):
-        out: list[str] = []
-        for item in skills:
-            if isinstance(item, str) and item.strip():
-                out.append(item.strip())
-            elif isinstance(item, dict):
-                sid = item.get('skill_id') or item.get('id')
-                if sid:
-                    out.append(str(sid))
-        return out
-    if isinstance(skills, dict):
-        # 包裹形态：成员在 enabled 的值里（list）。{skill_id: version} 形态 value 是版本号
-        # 字符串，故按「值是不是 list」区分两者。
-        enabled = skills.get('enabled')
-        if isinstance(enabled, list):
-            return _normalize_skill_ids(enabled)
-        return [str(key) for key in skills if key]
-    return []
-
-
-async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
-    """把 hasn_agents.skill_bundles（[{template_id, version}]）解析为 Runtime 物化所需形态。
-
-    对每个已安装包按 (template_id, version) 取版本（缺 version 取 is_latest），join
-    marketplace_template_version 输出 {bundle_slug, command_key, hermes_yaml}。已下架/缺版本的
-    引用静默跳过（零 fake，不产生空壳包），Runtime 据现存清单物化 skill-bundles/*.yaml。
-    """
-    if not isinstance(bundles_ref, list) or not bundles_ref:
-        return []
-    out: list[dict] = []
-    for ref in bundles_ref:
-        if not isinstance(ref, dict):
-            continue
-        template_id = ref.get('template_id')
-        if not template_id:
-            continue
-        version = ref.get('version')
-        ver_filter = 'AND v.version = :version' if version else 'AND v.is_latest = true'
-        bundle_row = (
-            (
-                await db.execute(
-                    sa.text(
-                        f"""
-                    SELECT v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
-                           v.skill_dependencies_versioned,
-                           COALESCE(v.content_hash, v.file_hash) AS content_hash
-                    FROM hasn_marketplace.marketplace_template_version v
-                    JOIN hasn_marketplace.marketplace_template t ON t.template_id = v.template_id
-                    WHERE v.template_id = :template_id
-                      AND t.template_type = 'skill_pack'
-                      {ver_filter}
-                    LIMIT 1
-                    """
-                    ),
-                    {'template_id': template_id, 'version': version},
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if bundle_row is None or not bundle_row.get('hermes_yaml'):
-            continue
-        hermes_yaml = str(bundle_row['hermes_yaml'])
-        member_ids = skill_pack_service.member_skill_ids(hermes_yaml)
-        try:
-            member_skills = await skill_pack_service.resolve_member_skill_snapshots(
-                db,
-                member_ids,
-                bundle_row.get('skill_dependencies_versioned'),
-            )
-        except Exception as exc:
-            log.warning(f'已安装技能包 {template_id} 成员不可冻结，本次不下发 Runtime: {exc}')
-            continue
-        out.append({
-            'package_id': template_id,
-            'version': bundle_row['version'],
-            'content_hash': skill_pack_service.content_hash(hermes_yaml),
-            'bundle_slug': bundle_row['bundle_slug'],
-            'command_key': bundle_row['command_key'],
-            'hermes_yaml': hermes_yaml,
-            'member_skill_ids': member_ids,
-            'member_skills': member_skills,
-        })
-    return out
+# 保留旧测试与同仓调用点使用的私有别名；新代码统一使用公开函数名。
+_normalize_skill_ids = normalize_skill_ids
 
 
 @router.get(
@@ -159,14 +66,20 @@ async def get_agent_profile(
     # 公共技能不持久化进 hasn_agents.skills，只在出参叠加——成员/版本变化对全量 Agent
     # 自动生效，零回填。common_skills_revision 让 Runtime 据以重拉最新公共技能。
     common_ids, common_rev = await get_common_skill_snapshot(db)
-    agent_ids = _normalize_skill_ids(getattr(row, 'skills', None))
+    sources = await build_agent_profile_skill_sources(
+        db,
+        stored_skill_refs=getattr(row, 'skills', None),
+        stored_bundle_refs=getattr(row, 'skill_bundles', None),
+        common_skill_ids=common_ids,
+        owner_user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+    )
     # 自装技能内容修订号（doc14 §B4）：自装技能内容升级即变，Runtime 据此重拉已装技能。
-    installed_rev = await get_installed_skills_revision(db, agent_ids)
-    # 已安装技能包（实施/91 B2.5）：解析为 {bundle_slug, command_key, hermes_yaml}，
-    # Runtime 据此物化 skill-bundles/*.yaml（成员技能已并入 skills，此处仅给 hermes 包定义）。
-    skill_bundles = await _resolve_skill_bundles(db, getattr(row, 'skill_bundles', None))
-
-    merged_skill_ids = merge_skill_ids(common_ids, agent_ids)
+    installed_rev = await get_installed_skills_revision(
+        db,
+        [skill_id for skill_id in sources.effective_skill_ids if skill_id not in common_ids],
+    )
+    merged_skill_ids = sources.effective_skill_ids
     # per-skill 指纹映射（doc14 §C4）：让 hermes 只重下指纹变化的技能，省全量重拉。
     skill_fingerprints = await get_skills_content_fingerprints(db, merged_skill_ids)
     skill_versions = await get_skills_immutable_snapshots(db, merged_skill_ids)
@@ -187,12 +100,15 @@ async def get_agent_profile(
             user_md=row.user_md,
             memory_md=getattr(row, 'memory_md', None),
             skills=merged_skill_ids,
+            direct_skill_ids=sources.direct_skill_ids,
             # 公共技能子集单列下发（doc11 §5.2）：hermes 据此分流「公共→共享目录 external_dirs /
             # 私有→per-profile 物化」；旧 runtime 不认识该字段则忽略，向后兼容。
             common_skill_ids=common_ids,
+            personal_skill_ids=sources.personal_skill_ids,
+            origins=sources.origins,
             skill_content_hashes=skill_fingerprints,
             skill_versions=skill_versions,
-            skill_bundles=skill_bundles,
+            skill_bundles=sources.skill_bundles,
             template_id=row.template_id,
             template_version=getattr(row, 'template_version', None),
             profile_revision=int(getattr(row, 'profile_revision', 1) or 1),
@@ -217,18 +133,33 @@ async def get_agent_profile_revision(
     row = (
         await db.execute(
             sa
-            .select(HasnAgents.profile_revision, HasnAgents.skills)
+            .select(
+                HasnAgents.profile_revision,
+                HasnAgents.skills,
+                HasnAgents.skill_bundles,
+            )
             .where(HasnAgents.hasn_id == agent.agent_hasn_id)
             .limit(1)
         )
     ).one_or_none()
     if row is None:
         raise errors.NotFoundError(msg='ERR_HASN_AGENT_NOT_FOUND')
-    rev, skills = row
+    rev, stored_skill_refs, stored_bundle_refs = row
     # 同步叠加公共技能修订号 + 自装技能内容修订号——否则只比 profile_revision 检测不到
     # 公共技能 / 已装技能的内容变化（doc14 §B4）。
-    _, common_rev = await get_common_skill_snapshot(db)
-    installed_rev = await get_installed_skills_revision(db, _normalize_skill_ids(skills))
+    common_ids, common_rev = await get_common_skill_snapshot(db)
+    sources = await build_agent_profile_skill_sources(
+        db,
+        stored_skill_refs=stored_skill_refs,
+        stored_bundle_refs=stored_bundle_refs,
+        common_skill_ids=common_ids,
+        owner_user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+    )
+    installed_rev = await get_installed_skills_revision(
+        db,
+        [skill_id for skill_id in sources.effective_skill_ids if skill_id not in common_ids],
+    )
     return response_base.success(
         data=AgentProfileRevisionResponse(
             profile_revision=int(rev or 1),

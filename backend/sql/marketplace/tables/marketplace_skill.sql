@@ -8,6 +8,7 @@ CREATE TABLE "public"."marketplace_skill" (
   "hasn_id" varchar(40) COLLATE "pg_catalog"."default",
   "status" varchar(20) COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'published',
   "visibility" varchar(20) COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'public',
+  "requested_visibility" varchar(20) COLLATE "pg_catalog"."default" NOT NULL DEFAULT 'private',
   "reviewed_by" int8,
   "reviewed_at" timestamptz(6),
   "review_note" text COLLATE "pg_catalog"."default",
@@ -65,6 +66,7 @@ COMMENT ON COLUMN "public"."marketplace_skill"."user_id" IS '资源所有者用�
 COMMENT ON COLUMN "public"."marketplace_skill"."hasn_id" IS '资源所有者 HASN ID';
 COMMENT ON COLUMN "public"."marketplace_skill"."status" IS '发布状态';
 COMMENT ON COLUMN "public"."marketplace_skill"."visibility" IS '可见性';
+COMMENT ON COLUMN "public"."marketplace_skill"."requested_visibility" IS '草稿期记录的期望可见性；审核完成前实际 visibility 恒为 private';
 COMMENT ON COLUMN "public"."marketplace_skill"."reviewed_by" IS '审核人用户ID';
 COMMENT ON COLUMN "public"."marketplace_skill"."reviewed_at" IS '审核时间';
 COMMENT ON COLUMN "public"."marketplace_skill"."review_note" IS '审核备注';

@@ -347,9 +347,21 @@ class AgentProfileResponse(SchemaBase):
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）')
     skills: list[str] = Field(default_factory=list, description='技能 skill_id 清单（已叠加公共技能）')
+    direct_skill_ids: list[str] = Field(
+        default_factory=list,
+        description='Agent 直接安装的市场技能引用（不含公共、个人和纯技能包成员）',
+    )
     common_skill_ids: list[str] = Field(
         default_factory=list,
         description='公共技能 skill_id 清单（skills 的子集，hermes 据此分流公共→共享目录；doc11 §5.2）',
+    )
+    personal_skill_ids: list[str] = Field(
+        default_factory=list,
+        description='Owner 私有技能库中已挂载到当前 Agent 的个人技能 ID',
+    )
+    origins: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description='逐技能来源 common/direct/personal/skill_pack:{package_id}@{version}',
     )
     skill_content_hashes: dict[str, str] = Field(
         default_factory=dict,

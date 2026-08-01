@@ -26,6 +26,11 @@ class MarketplaceSkill(MarketplaceBase):
     hasn_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='资源所有者 HASN ID')
     status: Mapped[str] = mapped_column(sa.String(20), default='published', comment='发布状态')
     visibility: Mapped[str] = mapped_column(sa.String(20), default='public', comment='可见性')
+    requested_visibility: Mapped[str] = mapped_column(
+        sa.String(20),
+        default='private',
+        comment='草稿期记录的期望可见性；审核完成前实际 visibility 恒为 private',
+    )
     reviewed_by: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='审核人用户ID')
     reviewed_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='审核时间')
     review_note: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='审核备注')

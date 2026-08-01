@@ -1084,12 +1084,10 @@ class HasnAgentProfileService:
         version: str | None = None,
         user_id: int | None = None,
     ) -> dict[str, Any]:
-        """为 Agent 安装技能包 skill_pack（云端权威，实施/91 B2.5）。
+        """为 Agent 安装冻结技能包引用（云端权威）。
 
-        展开成员 skills[] **在云端做**（云端是 skills[] 权威）：解析 skill_pack 版本 → 成员技能
-        批量并入 hasn_agents.skills（保序去重）→ 记录已安装包引用进 hasn_agents.skill_bundles
-        （按 template_id 去重）→ bump profile_revision → append 同步事件。返回 bundle 快照供 daemon
-        回填本地 cache + provision 物化。幂等：成员与包都已在清单中则不改动不 bump。
+        `hasn_agents.skills` 只保存直接/个人技能引用；纯技能包成员由 Profile 读取时展开并计算
+        origins。包引用按 `(package_id, version)` 幂等，并冻结 content_hash/bundle_slug。
         """
         import sqlalchemy as sa
 
@@ -1126,24 +1124,29 @@ class HasnAgentProfileService:
 
         members = skill_pack_service.member_skill_ids(row['hermes_yaml'])
         resolved_version = row['version']
-
-        current_skills = _normalize_skill_ids(agent.skills)
-        merged_skills = [*current_skills]
-        for member in members:
-            if member not in merged_skills:
-                merged_skills.append(member)
-
         current_bundles = list(agent.skill_bundles or [])
-        bundle_ids = {b.get('template_id') for b in current_bundles if isinstance(b, dict)}
-        bundle_changed = package_id not in bundle_ids
+        frozen_ref = {
+            'package_id': package_id,
+            'version': resolved_version,
+            'content_hash': row['content_hash'],
+            'bundle_slug': row['bundle_slug'],
+        }
+        existing_position = next(
+            (
+                index
+                for index, ref in enumerate(current_bundles)
+                if isinstance(ref, dict)
+                and (ref.get('package_id') or ref.get('template_id')) == package_id
+                and ref.get('version') == resolved_version
+            ),
+            None,
+        )
+        bundle_changed = existing_position is None or current_bundles[existing_position] != frozen_ref
         if bundle_changed:
-            current_bundles = [
-                b for b in current_bundles if not (isinstance(b, dict) and b.get('template_id') == package_id)
-            ]
-            current_bundles.append({'template_id': package_id, 'version': resolved_version})
-
-        if merged_skills != current_skills or bundle_changed:
-            agent.skills = merged_skills
+            if existing_position is None:
+                current_bundles.append(frozen_ref)
+            else:
+                current_bundles[existing_position] = frozen_ref
             agent.skill_bundles = current_bundles
             agent.profile_revision = (agent.profile_revision or 1) + 1
             await db.flush()
@@ -1157,6 +1160,8 @@ class HasnAgentProfileService:
         return {
             'agent': _agent_snapshot(agent).model_dump(),
             'bundle': {
+                'package_id': row['template_id'],
+                # 兼容一个正式版本的旧 Owner 客户端；持久化只写 package_id。
                 'template_id': row['template_id'],
                 'version': resolved_version,
                 'bundle_slug': row['bundle_slug'],
