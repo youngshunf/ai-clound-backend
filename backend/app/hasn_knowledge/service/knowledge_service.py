@@ -509,9 +509,16 @@ class KnowledgeService:
     async def revoke_share(
         self, db: AsyncSession, *, subject: Subject, kb_id: int, grantee_type: str, grantee_id: str
     ) -> bool:
-        await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
+        kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
         return await resource_share_service.revoke_share(
-            db, resource_type=_RESOURCE_TYPE, resource_id=str(kb_id), grantee_type=grantee_type, grantee_id=grantee_id
+            db,
+            resource_type=_RESOURCE_TYPE,
+            resource_id=str(kb_id),
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            # 自我撤销门：被授 manager 的协作者不得撤掉自己那条（撤了库当场从他名下消失且无法自助恢复）。
+            subject_owner_hasn_id=subject.owner_hasn_id,
+            resource_owner_hasn_id=kb.owner_id,
         )
 
     # ---------- 单个文档级共享（manager 权；文档协作者仅 human/agent，无可见性档）----------
@@ -557,9 +564,16 @@ class KnowledgeService:
     async def revoke_doc_share(
         self, db: AsyncSession, *, subject: Subject, doc_id: int, grantee_type: str, grantee_id: str
     ) -> bool:
-        await self.authorize_doc(db, subject=subject, doc_id=doc_id, need='manager')
+        kb = await self.authorize_doc(db, subject=subject, doc_id=doc_id, need='manager')
         return await resource_share_service.revoke_share(
-            db, resource_type=_RESOURCE_TYPE_DOC, resource_id=str(doc_id), grantee_type=grantee_type, grantee_id=grantee_id
+            db,
+            resource_type=_RESOURCE_TYPE_DOC,
+            resource_id=str(doc_id),
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            # 同库级：文档协作者不得撤掉自己那条（撤了这篇文档当场对他消失）。
+            subject_owner_hasn_id=subject.owner_hasn_id,
+            resource_owner_hasn_id=kb.owner_id,
         )
 
     async def get_kb_detail(self, db: AsyncSession, *, subject: Subject, kb_id: int) -> dict[str, Any]:
