@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
 
 if TYPE_CHECKING:
@@ -59,6 +61,39 @@ class OwnerMemoryService:
         db.add(contribution)
         await db.flush()
         return {'accepted': True, 'contribution_id': contribution.id}
+
+    async def mark_owner_edited(self, db: AsyncSession, *, owner_id: str) -> None:
+        """标记「主人手工改过档案正文」（doc19 §4.6 正文直编逃生口 · D-20）。
+
+        **只有主人手工写入才调这里**。判据不是「谁改了 `hasn_agents.user_md`」，而是
+        「这次写入是不是主人自己敲的正文」——三条系统写入路径都**不得**置位：
+
+        - **MEMPUSH 下发**：合并 apply 成功后 `merge_gate_service._apply_owner_memory`
+          用一条 bulk UPDATE 覆盖该 owner 全部分身的 `user_md`，不经本方法；
+        - **合并 apply 写回**：同上，且它在落新正文时**复位**本标位（手工版本已被本轮
+          重算消费）；
+        - **系统兜底改写**：`hasn_agents_service.refresh_seeded_agent_display_names` 的
+          昵称刷新、建档播种（`register_hasn_agent` / 模板物化 / `create_agent_cloud_first`）
+          都直接改 ORM 字段或走建档路径，同样不经本方法。
+
+        置反了的代价是**单向不可逆**：每轮合并后都被误标成「主人改过」，下一轮重算 prompt
+        就永久携带「保留主人手工表述」的强调段，且再也复位不掉——档案从此被一版旧正文钉死。
+
+        **绝不动 `version`**：它是提交云端合并闸的 CAS 基线，而基线取自主脑那台设备的本地
+        `owner_portraits.version`（`hasn-mcp/src/memory.rs::compute_plan`）。这里一动，主脑
+        下一轮提交必然 409 `version_conflict`，症状只表现成「主脑很久没整理了」。建行分支给
+        `version=0`（= 尚未合并过），与本地 `mark_owner_portrait_edited` 的建行值同口径。
+
+        也**不写 `content`**：云端这一列是合并态（MEMPUSH 下发源），主人手改的正文权威副本在
+        `hasn_agents.user_md`；把手改正文塞进合并态会让「正文变了但 version 没动」的行出现，
+        破坏合并态与轮次水位的对应关系。
+        """
+        await db.execute(
+            pg_insert(HasnOwnerMemory)
+            .values(owner_id=owner_id, content=None, version=0, owner_edited=True)
+            .on_conflict_do_update(index_elements=['owner_id'], set_={'owner_edited': True})
+        )
+        await db.flush()
 
     async def get_owner_memory(self, db: AsyncSession, *, owner_id: str) -> dict[str, Any]:
         """读取该 owner 当前合并记忆（下发给 Agent）。"""

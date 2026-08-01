@@ -231,10 +231,27 @@ class MergeGateService:
 
     async def _owner_memory_version(self, db: AsyncSession, owner_id: str) -> int:
         """库中当前 ``owner_memory.version``；无行时基线为 0（首轮合并的合法基线）。"""
-        version = (
-            await db.execute(sa.select(HasnOwnerMemory.version).where(HasnOwnerMemory.owner_id == owner_id).limit(1))
-        ).scalar_one_or_none()
-        return int(version or 0)
+        version, _ = await self._owner_memory_state(db, owner_id)
+        return version
+
+    async def _owner_memory_state(self, db: AsyncSession, owner_id: str) -> tuple[int, bool]:
+        """``(version, owner_edited)``：无行时 ``(0, False)``（尚未合并过、也没手工改过）。
+
+        主人手工直编只置 ``owner_edited``、**不动 ``version``**（§4.6，置位点在
+        ``owner_memory_service.mark_owner_edited``），故两者可以独立取值：version=0 且
+        owner_edited=True 就是「还没整理过，但主人已经先写了一版」的合法状态。
+        """
+        row = (
+            await db.execute(
+                sa
+                .select(HasnOwnerMemory.version, HasnOwnerMemory.owner_edited)
+                .where(HasnOwnerMemory.owner_id == owner_id)
+                .limit(1)
+            )
+        ).first()
+        if row is None:
+            return 0, False
+        return int(row[0] or 0), bool(row[1])
 
     async def _replay_response(
         self, db: AsyncSession, *, owner_id: str, body: MergeApplyRequest
@@ -477,6 +494,10 @@ class MergeGateService:
             values['content'] = content
             values['token_count'] = _estimate_tokens(content)
             # 主人手工版本已被本轮重算消费（§4.6 要求 prompt 携带并保留其意图），标位复位。
+            # 复位**只挂在这个 `if content` 分支里**：缺键 / `owner_memory=None` / 空正文的轮次
+            # 压根没重算画像，跟着复位等于宣称「主人的手改已被吸收」——纯粹的谎报，下一轮重算
+            # 的 prompt 就不再携带主人版本，手工编辑被静默冲掉（§4.6 明令禁止）。
+            # 回归钉子：`test_missing_owner_memory_key_does_not_reset_owner_edited`。
             values['owner_edited'] = False
 
         # 本轮无正文时只推进版本与 last_merge_*，**不覆盖已有正文**（插入分支才落 content=None）。
@@ -604,7 +625,12 @@ class MergeGateService:
     # --------------------------------------------------------- 主脑单点可见性
 
     async def merge_status(self, db: AsyncSession, *, owner_id: str) -> MergeStatusResponse:
-        """§5.5：上次整理于 X、主脑在哪台设备、当前是否离线、是否有待办、是否超阈值。"""
+        """§5.5：上次整理于 X、主脑在哪台设备、当前是否离线、是否有待办、是否超阈值。
+
+        §4.6 附带一条跨端可见性：``owner_memory_edited`` 让主人在**任意一台**设备上都看得到
+        「你手工改过档案正文，下次整理会尽量保留你的表述」——手改发生在哪台设备只有那台的本地
+        ``owner_portraits`` 知道，云端这一位是唯一的跨端事实源。
+        """
         last_applied = await merge_run_service.latest_applied(db, owner_id)
         pending = await merge_request_service.get_pending(db, owner_id)
         now = timezone.now()
@@ -632,8 +658,10 @@ class MergeGateService:
         last_rejected = await merge_run_service.latest_rejected(db, owner_id)
         node_names = await self._node_names(db, [last_applied.submitted_node_id if last_applied else None,
                                                  master_node_id])
+        owner_memory_version, owner_memory_edited = await self._owner_memory_state(db, owner_id)
         return MergeStatusResponse(
-            owner_memory_version=await self._owner_memory_version(db, owner_id),
+            owner_memory_version=owner_memory_version,
+            owner_memory_edited=owner_memory_edited,
             last_merge_run_id=last_applied.run_id if last_applied else None,
             last_merge_time=(last_applied.finished_time or last_applied.started_time) if last_applied else None,
             last_merge_node_id=last_applied.submitted_node_id if last_applied else None,

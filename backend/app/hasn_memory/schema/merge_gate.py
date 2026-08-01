@@ -138,6 +138,13 @@ class MergeStatusResponse(SchemaBase):
     """§5.5 主脑单点可见性：主人记忆页「上次整理于 X，主脑在 <设备> 上，当前离线」的数据源。"""
 
     owner_memory_version: int = Field(description='当前 owner_memory 版本（0 表示尚未合并过）')
+    owner_memory_edited: bool = Field(
+        False,
+        description=(
+            '主人是否手工改过档案正文且尚未被重算消费（doc19 §4.6）。'
+            'true 时记忆页应显示「你手工改过档案正文，下次整理会尽量保留你的表述」'
+        ),
+    )
     last_merge_run_id: str | None = Field(None, description='上次成功合并的 run_id')
     last_merge_time: datetime | None = Field(None, description='上次成功合并的时间')
     last_merge_node_id: str | None = Field(None, description='上次成功合并的执行节点 node_id')
