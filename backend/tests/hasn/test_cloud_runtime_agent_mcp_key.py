@@ -208,7 +208,9 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
                 headers={'Authorization': f'Bearer {key}'},
             )
             assert authority.status_code == 200, authority.text
-            assert authority.json()['data'] == {
+            authority_data = authority.json()['data']
+            member_skills = authority_data.pop('member_skills')
+            assert authority_data == {
                 'package_id': package_id,
                 'version': '1.2.3',
                 'bundle_slug': f'private-runtime-{tag}',
@@ -221,3 +223,9 @@ async def test_agent_mcp_key_self_identifies_on_agent_http_without_user_headers(
                 'content_hash': 'sha256:runtime-private-bundle',
                 'member_skill_ids': ['huanxing/official/task-management'],
             }
+            # 成员快照来自权威技能版本；只冻结结构与身份，不把本机数据库当前 latest 写死。
+            assert len(member_skills) == 1
+            member_snapshot = member_skills[0]
+            assert member_snapshot['skill_id'] == 'huanxing/official/task-management'
+            assert member_snapshot['version']
+            assert len(member_snapshot['content_hash']) == 64
