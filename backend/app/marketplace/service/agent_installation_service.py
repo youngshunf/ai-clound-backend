@@ -251,9 +251,13 @@ class AgentMarketplaceInstallationService:
         if row is None:
             raise errors.NotFoundError(msg='ERR_MARKETPLACE_SKILL_PACK_NOT_FOUND')
 
-        frozen_hash = str(row.content_hash or row.file_hash or '').strip()
+        # Runtime 校验的是权威 Hermes definition 本身。历史版本行的 content_hash 可能仍是
+        # 发布制品 manifest 指纹，不能把它冻结进 Agent Profile，否则同一份 hermes_yaml
+        # 会在 Runtime 侧被判为哈希不一致。
+        hermes_yaml = str(row.hermes_yaml or '')
+        frozen_hash = skill_pack_service.content_hash(hermes_yaml) if hermes_yaml else ''
         bundle_slug = str(row.bundle_slug or '').strip()
-        if not frozen_hash or not bundle_slug or not row.hermes_yaml:
+        if not frozen_hash or not bundle_slug or not hermes_yaml:
             raise errors.RequestError(
                 code=422,
                 msg='skill_pack_snapshot_incomplete: 技能包版本缺少冻结指纹、slug 或定义',

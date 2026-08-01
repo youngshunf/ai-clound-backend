@@ -147,6 +147,7 @@ async def _seed_pack(
     version: str,
     member_skill_ids: list[str],
     is_latest: bool,
+    stored_content_hash: str | None = None,
 ) -> tuple[str, str]:
     namespace, slug = package_id.rsplit('/', 1)
     hermes_yaml = '\n'.join([
@@ -183,7 +184,7 @@ async def _seed_pack(
             bundle_slug=slug,
             command_key=f'/{slug}',
             hermes_yaml=hermes_yaml,
-            content_hash=digest,
+            content_hash=stored_content_hash or digest,
             file_hash=digest.removeprefix('sha256:'),
             is_latest=is_latest,
         )
@@ -447,6 +448,39 @@ async def test_skill_and_pack_mutations_are_idempotent_and_preserve_cross_source
     )
     assert repeated_remove.status_code == 200, repeated_remove.text
     assert repeated_remove.json()['data']['changed'] is False
+
+
+async def test_skill_pack_install_freezes_definition_hash_instead_of_archive_manifest_hash(client) -> None:
+    tag = _tag()
+    member_id = await _seed_skill(client.session, skill_id=f'huanxing/{tag}-member')
+    package_id = f'huanxing/{tag}-pack'
+    archive_manifest_hash = f'sha256:{hashlib.sha256(b"archive-manifest").hexdigest()}'
+    definition_hash, _ = await _seed_pack(
+        client.session,
+        package_id=package_id,
+        version='1.0.0',
+        member_skill_ids=[member_id],
+        is_latest=True,
+        stored_content_hash=archive_manifest_hash,
+    )
+    row = await _seed_agent(client.session, direct_skill_ids=[])
+
+    response = await client.http.put(
+        f'/api/v1/marketplace/agent/installed/skill-packs/{package_id}',
+        params={'version': '1.0.0'},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['data']['bundle']['content_hash'] == definition_hash
+    await client.session.refresh(row)
+    assert row.skill_bundles == [
+        {
+            'package_id': package_id,
+            'version': '1.0.0',
+            'content_hash': definition_hash,
+            'bundle_slug': f'{tag}-pack',
+        }
+    ]
 
 
 async def test_agent_cannot_uninstall_common_or_personal_skill(client) -> None:
