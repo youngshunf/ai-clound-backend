@@ -17,6 +17,15 @@ class HasnBuiltinTaskCatalogSchemaBase(SchemaBase):
     skill_bundle: str | None = Field(None, description='执行技能包（如 huanxing/workbench-briefing）')
     system_prompt: str | None = Field(None, description='系统提示词（约束输出统一格式）')
     enabled: bool = Field(description='全局上/下线开关')
+    # 以下三列此前漏在 schema 之外（列早已存在，属既存漂移），随 doc19 §9 补齐：
+    # default_enabled 决定播种时 task.enabled 初值；target_agent_type 决定绑哪个内置分身；
+    # target_scope 决定广播语义（本地扇出的唯一依据）。
+    default_enabled: bool = Field(True, description='播种时默认启用态（false=需用户手动开启）')
+    target_agent_type: str | None = Field(None, description='承接该任务的内置 agent 类型键；NULL 表示绑定主脑')
+    target_scope: str = Field(
+        'master_brain',
+        description='广播语义 master_brain=绑单个分身（NULL 回退主脑）/ all_agents=本节点每个在线分身各一次',
+    )
     min_node_version: str | None = Field(None, description='要求的最低客户端版本（可空）')
     revision: int = Field(description='目录版本号（变化时 daemon 重拉）')
 
@@ -57,6 +66,11 @@ class BuiltinTaskItem(SchemaBase):
     schedule_config: dict = Field(description='调度配置 JSONB')
     skill_bundle: str | None = Field(None, description='执行技能包')
     system_prompt: str | None = Field(None, description='系统提示词')
+    # 播种语义三列（此前漏出，属既存漂移；随 doc19 §9 补齐）：daemon/播种方据此决定初始启停、
+    # 绑哪个内置分身、以及是否需要向本节点每个在线分身扇出。
+    default_enabled: bool = Field(True, description='播种时默认启用态')
+    target_agent_type: str | None = Field(None, description='承接该任务的内置 agent 类型键；NULL 表示绑定主脑')
+    target_scope: str = Field('master_brain', description='广播语义 master_brain / all_agents')
     min_node_version: str | None = Field(None, description='最低客户端版本')
     revision: int = Field(description='该条目的版本号')
 

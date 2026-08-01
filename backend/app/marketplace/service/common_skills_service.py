@@ -204,6 +204,51 @@ async def get_skills_content_fingerprints(
     return fingerprints
 
 
+async def get_skills_immutable_snapshots(
+    db: AsyncSession, skill_ids: list[str]
+) -> dict[str, dict[str, str]]:
+    """返回每个技能当前可冻结的 ``version + content_hash``。
+
+    只接受真实内容摘要 ``content_hash/file_hash``，不把版本字符串冒充摘要。启动事务把该
+    快照持久化后，续接和周期续跑可按精确版本下载，不再跟随 latest。
+    """
+    ids = sorted({sid for sid in (skill_ids or []) if sid})
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            sa.select(
+                MarketplaceSkillVersion.skill_id,
+                MarketplaceSkillVersion.version,
+                sa.func.coalesce(
+                    MarketplaceSkillVersion.content_hash,
+                    MarketplaceSkillVersion.file_hash,
+                ).label('content_hash'),
+            )
+            .where(
+                MarketplaceSkillVersion.skill_id.in_(ids),
+                MarketplaceSkillVersion.is_latest.is_(True),
+            )
+            .distinct(MarketplaceSkillVersion.skill_id)
+            .order_by(
+                MarketplaceSkillVersion.skill_id,
+                MarketplaceSkillVersion.id.desc(),
+            )
+        )
+    ).all()
+    snapshots: dict[str, dict[str, str]] = {}
+    for skill_id, version, content_hash in rows:
+        key = str(skill_id or '')
+        version_text = str(version or '').strip()
+        hash_text = str(content_hash or '').strip()
+        if key and version_text and hash_text and key not in snapshots:
+            snapshots[key] = {
+                'version': version_text,
+                'content_hash': hash_text,
+            }
+    return snapshots
+
+
 def merge_skill_ids(common_ids: list[str], agent_ids: list[str]) -> list[str]:
     """公共技能在前、Agent 自装在后，保序去重。"""
     merged: list[str] = []

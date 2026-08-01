@@ -93,19 +93,20 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     # 只输出模式与端点描述，绝不输出用户名、密码或完整 DSN。
     from backend.common.messaging.rabbitmq import describe_rabbitmq_endpoint
 
+    # 本模块的 log 是 loguru，不吃 stdlib logging 的 %s 惰性插值——写成 %s 会把
+    # 占位符原样打进日志（2026-08-01 生产实测踩中）。这里统一用 f-string。
+    _rabbitmq_endpoint = describe_rabbitmq_endpoint(
+        host=settings.REALTIME_RABBITMQ_HOST,
+        port=settings.REALTIME_RABBITMQ_PORT,
+        vhost=settings.REALTIME_RABBITMQ_VHOST,
+    )
     log.info(
-        '消息通道：celery_broker=%s socketio_manager=%s realtime_bus=%s '
-        'realtime_shadow=%s offline_recovery=%s rabbitmq[%s]',
-        settings.CELERY_BROKER,
-        settings.SOCKETIO_MANAGER,
-        settings.HASN_REALTIME_BUS,
-        settings.HASN_REALTIME_SHADOW_RABBITMQ,
-        settings.HASN_OFFLINE_RECOVERY,
-        describe_rabbitmq_endpoint(
-            host=settings.REALTIME_RABBITMQ_HOST,
-            port=settings.REALTIME_RABBITMQ_PORT,
-            vhost=settings.REALTIME_RABBITMQ_VHOST,
-        ),
+        f'消息通道：celery_broker={settings.CELERY_BROKER} '
+        f'socketio_manager={settings.SOCKETIO_MANAGER} '
+        f'realtime_bus={settings.HASN_REALTIME_BUS} '
+        f'realtime_shadow={settings.HASN_REALTIME_SHADOW_RABBITMQ} '
+        f'offline_recovery={settings.HASN_OFFLINE_RECOVERY} '
+        f'rabbitmq[{_rabbitmq_endpoint}]'
     )
 
     # 启动 WS 跨 worker 投递总线（每个 worker 进程一份）：多 worker 部署下，消息/同步

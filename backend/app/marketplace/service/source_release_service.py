@@ -285,12 +285,15 @@ async def _is_reusable_public_release(
     db: AsyncSession,
     release: Any,
     *,
-    content_hash: str,
+    content_hash: str | None = None,
+    file_hash: str | None = None,
 ) -> bool:
     """只有内容一致且已在公开桶的制品才允许跳过上传。"""
     return bool(
         release
-        and release.content_hash == content_hash
+        and (content_hash is not None or file_hash is not None)
+        and (content_hash is None or release.content_hash == content_hash)
+        and (file_hash is None or release.file_hash == file_hash)
         and release.package_url
         and release.file_hash
         and release.file_size is not None
@@ -528,7 +531,7 @@ class SourceReleaseService:
         if str(package.metadata.get('name') or '').strip() != slug:
             raise errors.RequestError(msg='bundle.yaml name 必须与发布 slug 一致')
         version = validate_version(str(package.metadata.get('version') or '1.0.0'))
-        _verify_release_hashes(
+        release_file_hash = _verify_release_hashes(
             content=content,
             content_hash=package.content_hash,
             expected_content_hash=expected_content_hash,
@@ -545,7 +548,7 @@ class SourceReleaseService:
             if await _is_reusable_public_release(
                 db,
                 existing_version,
-                content_hash=package.content_hash,
+                file_hash=release_file_hash,
             )
             else None
         )
@@ -650,7 +653,7 @@ class SourceReleaseService:
                 package_url=package_url,
                 file_hash=file_hash,
                 file_size=file_size,
-                content_hash=package.content_hash,
+                content_hash=pack_record['content_hash'],
                 is_latest=True,
                 published_at=now,
             )

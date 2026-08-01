@@ -8,6 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from backend.app.hasn_task.model._base import HasnTaskAppBase
 from backend.common.model import UniversalText, id_key
 
+# 广播语义（doc19 §9 / D-24）：master_brain=按 target_agent_type 绑单个分身（NULL 回退主脑，既有语义不变）；
+# all_agents=本节点每个在线分身各执行一次（云端仍只播一行 task，扇出在本地 task_scheduler）。
+TARGET_SCOPE_COMMENT = (
+    '广播语义 (master_brain:绑单个分身:gray/all_agents:每个在线分身各一次:violet)：'
+    'master_brain=按 target_agent_type 绑单个分身（NULL 回退主脑，既有语义不变）；'
+    'all_agents=本节点每个在线分身各执行一次（云端仍只播一行 task，扇出在本地 task_scheduler）'
+)
+
 
 class HasnBuiltinTaskCatalog(HasnTaskAppBase):
     """HASN 官方内置任务目录（云端权威）"""
@@ -44,6 +52,14 @@ class HasnBuiltinTaskCatalog(HasnTaskAppBase):
         sa.String(64),
         default=None,
         comment='承接该任务的内置 agent 类型键(builtin_key)；NULL 表示绑定主脑',
+    )
+    # doc19 §9 / D-24：广播语义。master_brain 沿用「按 target_agent_type 绑单个分身（NULL 回退主脑）」；
+    # all_agents 表示本节点每个在线分身各执行一次——云端受 uq_task_owner_builtin_key 唯一索引约束仍只播
+    # 一行 task，扇出由本地 task_scheduler 完成。
+    target_scope: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='master_brain',
+        comment=TARGET_SCOPE_COMMENT,
     )
     min_node_version: Mapped[str | None] = mapped_column(
         sa.String(32),

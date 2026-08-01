@@ -214,6 +214,7 @@ class Settings(BaseSettings):
     HUANXING_HERMES_RUNTIME_API_TOKEN: str = ''
     HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS: float = 10.0
     HUANXING_HERMES_RUNTIME_ID: str = 'hermes-runtime-local'
+    HUANXING_CLOUD_INTERNAL_BASE_URL: str = 'http://127.0.0.1:8001'
 
     # 内部 service token（runtime ↔ backend 单向调用，仅 .env 配置，不暴露浏览器）
     # 用于 X-Internal-Token header 校验（§09 §5）

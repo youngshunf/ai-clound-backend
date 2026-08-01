@@ -15,6 +15,9 @@ from backend.app.marketplace.api.v1.admin.sync_management import router as admin
 from backend.app.marketplace.api.v1.agent.marketplace_personal_skill import (
     router as agent_marketplace_personal_skill_router,
 )
+from backend.app.marketplace.api.v1.agent.marketplace_skill_pack import (
+    router as agent_marketplace_skill_pack_router,
+)
 from backend.app.marketplace.api.v1.app.marketplace_personal_skill import (
     router as app_marketplace_personal_skill_router,
 )
@@ -52,6 +55,7 @@ agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/marketplace/agent', ta
 agent.include_router(
     agent_marketplace_personal_skill_router, prefix='/personal-skills', tags=['技能市场-个人技能库']
 )
+agent.include_router(agent_marketplace_skill_pack_router, prefix='/skill-packs', tags=['技能市场-技能包'])
 
 # --- 公开（无需认证） ---
 open_api = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/marketplace/open', tags=['技能市场'])

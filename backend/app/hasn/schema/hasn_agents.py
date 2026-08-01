@@ -356,6 +356,10 @@ class AgentProfileResponse(SchemaBase):
         description='per-skill 内容指纹映射 {skill_id: 指纹}，指纹=COALESCE(content_hash,file_hash,version)；'
         'Runtime 据此只重下指纹变化的技能（doc14 §C4）。市场无版本行的技能不出现，Runtime 回落为总是重下',
     )
+    skill_versions: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description='可冻结技能版本快照 {skill_id: {version, content_hash}}；续接按该版本下载，不跟随 latest',
+    )
     skill_bundles: list[dict] = Field(
         default_factory=list,
         description='已安装技能包清单 [{bundle_slug, command_key, hermes_yaml}]（Runtime 据此物化 skill-bundles/*.yaml）',

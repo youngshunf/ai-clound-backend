@@ -1,7 +1,7 @@
 """HASN Agent Profile - Agent 端 API（云端权威化）
 
-认证方式: DependsAgentJwtAuth（Agent JWT）
-身份: **恒取自 JWT**（agent.agent_hasn_id），绝不从请求体/路径读取身份字段。
+认证方式: DependsAgentJwtAuth（Agent JWT / Agent MCP Key）
+身份: **恒取自已验证凭证**（agent.agent_hasn_id），绝不从请求体/路径读取身份字段。
 
 Runtime（huanxing-hermes-runtime）用 agent JWT 直连这里拉取自己 Agent 的 Profile，
 物化为本地 SOUL.md/AGENTS.md/USER.md/MEMORY.md + 按 skills 清单下载技能包。
@@ -22,12 +22,14 @@ from backend.app.hasn.schema.hasn_agents import (
     MemoryContributeResponse,
     OwnerMemoryResponse,
 )
-from backend.app.hasn.service.owner_memory_service import owner_memory_service
+from backend.app.hasn.service.owner_memory_service import MEMORY_CONTRIBUTE_PENDING_NOTE, owner_memory_service
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
+from backend.app.marketplace.service import skill_pack_service
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
     get_installed_skills_revision,
     get_skills_content_fingerprints,
+    get_skills_immutable_snapshots,
     merge_skill_ids,
 )
 from backend.common.dataclasses import AgentTokenPayload
@@ -92,10 +94,13 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
         version = ref.get('version')
         ver_filter = 'AND v.version = :version' if version else 'AND v.is_latest = true'
         bundle_row = (
-            await db.execute(
-                sa.text(
-                    f"""
-                    SELECT v.bundle_slug, v.command_key, v.hermes_yaml
+            (
+                await db.execute(
+                    sa.text(
+                        f"""
+                    SELECT v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
+                           v.skill_dependencies_versioned,
+                           COALESCE(v.content_hash, v.file_hash) AS content_hash
                     FROM hasn_marketplace.marketplace_template_version v
                     JOIN hasn_marketplace.marketplace_template t ON t.template_id = v.template_id
                     WHERE v.template_id = :template_id
@@ -103,19 +108,36 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
                       {ver_filter}
                     LIMIT 1
                     """
-                ),
-                {'template_id': template_id, 'version': version},
+                    ),
+                    {'template_id': template_id, 'version': version},
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if bundle_row is None or not bundle_row.get('hermes_yaml'):
             continue
-        out.append(
-            {
-                'bundle_slug': bundle_row['bundle_slug'],
-                'command_key': bundle_row['command_key'],
-                'hermes_yaml': bundle_row['hermes_yaml'],
-            }
-        )
+        hermes_yaml = str(bundle_row['hermes_yaml'])
+        member_ids = skill_pack_service.member_skill_ids(hermes_yaml)
+        try:
+            member_skills = await skill_pack_service.resolve_member_skill_snapshots(
+                db,
+                member_ids,
+                bundle_row.get('skill_dependencies_versioned'),
+            )
+        except Exception as exc:
+            log.warning(f'已安装技能包 {template_id} 成员不可冻结，本次不下发 Runtime: {exc}')
+            continue
+        out.append({
+            'package_id': template_id,
+            'version': bundle_row['version'],
+            'content_hash': skill_pack_service.content_hash(hermes_yaml),
+            'bundle_slug': bundle_row['bundle_slug'],
+            'command_key': bundle_row['command_key'],
+            'hermes_yaml': hermes_yaml,
+            'member_skill_ids': member_ids,
+            'member_skills': member_skills,
+        })
     return out
 
 
@@ -147,6 +169,7 @@ async def get_agent_profile(
     merged_skill_ids = merge_skill_ids(common_ids, agent_ids)
     # per-skill 指纹映射（doc14 §C4）：让 hermes 只重下指纹变化的技能，省全量重拉。
     skill_fingerprints = await get_skills_content_fingerprints(db, merged_skill_ids)
+    skill_versions = await get_skills_immutable_snapshots(db, merged_skill_ids)
 
     # PDC：把平台默认 agent 运行时四槽 coalesce 进 runtime_config（runtime-facing 拉取式兜底）。
     # agent 显式非空必胜，None → 平台默认；agent 无配置且平台四槽全空 → None（保持"全默认"）。
@@ -168,6 +191,7 @@ async def get_agent_profile(
             # 私有→per-profile 物化」；旧 runtime 不认识该字段则忽略，向后兼容。
             common_skill_ids=common_ids,
             skill_content_hashes=skill_fingerprints,
+            skill_versions=skill_versions,
             skill_bundles=skill_bundles,
             template_id=row.template_id,
             template_version=getattr(row, 'template_version', None),
@@ -192,7 +216,8 @@ async def get_agent_profile_revision(
 ) -> ResponseSchemaModel[AgentProfileRevisionResponse]:
     row = (
         await db.execute(
-            sa.select(HasnAgents.profile_revision, HasnAgents.skills)
+            sa
+            .select(HasnAgents.profile_revision, HasnAgents.skills)
             .where(HasnAgents.hasn_id == agent.agent_hasn_id)
             .limit(1)
         )
@@ -215,17 +240,20 @@ async def get_agent_profile_revision(
 
 @router.post(
     '/memory/contribute',
-    summary='Agent 上传 owner 记忆观察（触发云端合并下发）',
+    summary='Agent 上传 owner 记忆观察（入贡献流，待主脑下次整理并入）',
 )
 async def contribute_owner_memory(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,
     body: MemoryContributeRequest,
 ) -> ResponseSchemaModel[MemoryContributeResponse]:
-    """Agent 把本地 USER.md 观察上传为 contribution，并尽力触发一次合并下发。
+    """Agent 把本地 USER.md 观察上传为 contribution。
 
     owner/agent 身份恒取自 agent JWT（owner_hasn_id / agent_hasn_id），不读 body。
-    合并失败不影响贡献入库：contribution 留待下次合并（零 fake，不产生假合并）。
+
+    **doc19 §10（2026-07-31）**：端点与语义保留，实现改为「只落贡献流，不再内联合并」——
+    云端 LLM 合并已整体退役，合并由**主脑分身在它自己的设备上**做（§5.1）。响应如实反映
+    「已记录，将在下次整理时并入」，**不假装已合并**（零 fake）。
     """
     accepted = await owner_memory_service.contribute(
         db,
@@ -233,28 +261,16 @@ async def contribute_owner_memory(
         agent_hasn_id=agent.agent_hasn_id,
         content=body.content,
     )
-    merged = False
-    version: int | None = None
-    merge_deferred = False
-    merge_error: str | None = None
-    if accepted.get('accepted'):
-        try:
-            outcome = await owner_memory_service.merge_owner_memory(db, owner_id=agent.owner_hasn_id)
-            merged = bool(outcome.get('merged'))
-            version = outcome.get('version')
-        except Exception as exc:
-            # 合并失败如实透出（merge_deferred + 原因摘要），让 runtime/分身别误以为已合并、
-            # 也别编造不存在的「后台异步合并」；贡献已入库、留待下次重试（零 fake）。
-            merge_deferred = True
-            merge_error = (str(exc).strip() or exc.__class__.__name__)[:200]
-            log.warning(f'owner memory merge deferred for {agent.owner_hasn_id}: {exc}')
+    memory = await owner_memory_service.get_owner_memory(db, owner_id=agent.owner_hasn_id)
+    is_accepted = bool(accepted.get('accepted'))
     return response_base.success(
         data=MemoryContributeResponse(
-            accepted=bool(accepted.get('accepted')),
-            merged=merged,
-            version=version,
-            merge_deferred=merge_deferred,
-            merge_error=merge_error,
+            accepted=is_accepted,
+            contribution_id=accepted.get('contribution_id'),
+            pending_merge=is_accepted,
+            merge_note=MEMORY_CONTRIBUTE_PENDING_NOTE if is_accepted else '',
+            owner_memory_version=int(memory.get('version') or 0),
+            reason=None if is_accepted else accepted.get('reason'),
         )
     )
 

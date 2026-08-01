@@ -97,7 +97,11 @@ from backend.app.hasn.api.v1.open.hasn_session_events import router as open_hasn
 from backend.app.hasn.api.v1.open.hasn_sessions import router as open_hasn_sessions_router
 from backend.app.hasn.api.v1.sync import router as sync_router
 from backend.app.hasn_im.api.ws_node import router as ws_node_router
-from backend.app.hasn_memory.api.router import app_owner_profile_coverage_router
+from backend.app.hasn_memory.api.router import (
+    agent_merge_gate_router,
+    app_merge_status_router,
+    app_owner_profile_coverage_router,
+)
 from backend.app.hasn_task.api.v1.admin.skill_bundle import router as admin_hasn_skill_bundle_router
 from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn_skill_bundle_router
 from backend.app.hasn_task.api.v1.app.skill_bundle import router as app_hasn_skill_bundle_router
@@ -112,6 +116,10 @@ v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn', tags=['HASN 管理
 
 v1.include_router(onboarding_router, tags=['HASN Onboarding'])
 v1.include_router(sync_router, tags=['HASN Sync'])
+# doc19 S6 云端合并闸（Agent JWT 自识别）：/api/v1/hasn/memory/agent/merge/{apply,request}。
+# 与既有 /api/v1/hasn/memory/sync/pull 同属「memory」资源域，故挂在 v1（hasn）前缀而非
+# /hasn/agent 前缀下——路径按资源域组织，认证由路由自身的 DependsAgentJwtAuth 收口。
+v1.include_router(agent_merge_gate_router, prefix='/memory/agent', tags=['HASN 记忆合并闸（Agent端）'])
 v1.include_router(admin_hasn_humans_router, prefix='/humans', tags=['用户管理'])
 v1.include_router(admin_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
 v1.include_router(admin_hasn_contacts_router, prefix='/contacts', tags=['联系人管理'])
@@ -172,6 +180,8 @@ app.include_router(app_knowledge_router, tags=['知识库'])
 app.include_router(app_owner_memory_router, prefix='/owner', tags=['Owner 记忆（主人透明）'])
 app.include_router(app_owner_storage_router, prefix='/storage', tags=['用户私有存储'])
 app.include_router(app_owner_profile_coverage_router, prefix='/owner', tags=['主人画像完整度（了解主人）'])
+# doc19 §5.5 主脑单点可见性：/api/v1/hasn/app/memory/merge/status（daemon 代理给记忆页）。
+app.include_router(app_merge_status_router, prefix='/memory', tags=['记忆整理状态（主脑单点可见）'])
 app.include_router(app_platform_config_router, prefix='/platform', tags=['平台默认配置（节点下发）'])
 app.include_router(app_speech_catalog_router, prefix='/speech-catalog', tags=['通用语音模型签名目录（节点下发）'])
 app.include_router(app_suppressed_release_router, tags=['入站门控抑制箱放行'])

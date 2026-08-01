@@ -158,3 +158,21 @@ class WorkbenchPrefService:
 
 
 workbench_pref_service = WorkbenchPrefService()
+
+
+async def resolve_master_brain_agent_id(db: AsyncSession, owner_hasn_id: str) -> str | None:
+    """**主脑判定的唯一实现**（doc19 §4.4）：返回该主人当前主脑分身的 hasn_id，无活跃分身则 None。
+
+    优先级与本模块头部注释一致：主人显式设置且仍有效 → `role='primary'` 最早活跃分身 →
+    最早创建的活跃分身 → None。
+
+    ⚠️ 这里是全仓唯一的主脑算法落点，`hasn_task.builtin_seeding_service` 与
+    `hasn_memory.merge_gate_service`（云端合并闸 §5.6 的「提交者必须是当前主脑」）都调它。
+    doc19 D-18 的权威互斥全靠这一条判定——一旦有第二份副本漂移，「旧主脑的迟到提交」
+    就会在某条路径上被放行，合并闸的兜底价值直接归零。
+    """
+    row: HasnOwnerWorkbenchPref | None = await hasn_owner_workbench_pref_dao.get_by_owner(db, owner_hasn_id)
+    agent_id, _explicit = await workbench_pref_service.resolve_primary_agent(
+        db, owner_hasn_id, row.primary_agent_id if row else None
+    )
+    return agent_id

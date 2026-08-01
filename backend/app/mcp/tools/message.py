@@ -91,6 +91,23 @@ _MIME_EXT = {
     'audio/ogg': '.ogg',
     'application/pdf': '.pdf',
     'text/plain': '.txt',
+    # 办公文档：分身发合同/起诉状/报表是高频场景，缺映射会让兜底名连后缀都没有（只剩 "file"），
+    # 收件人既看不出类型也双击打不开。
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/vnd.ms-excel': '.xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+    'application/rtf': '.rtf',
+    'text/markdown': '.md',
+    'text/csv': '.csv',
+    'text/html': '.html',
+    'application/json': '.json',
+    'application/zip': '.zip',
+    'video/mp4': '.mp4',
+    'video/quicktime': '.mov',
+    'video/webm': '.webm',
 }
 
 
@@ -129,11 +146,28 @@ def _derive_name(kind: str, mime: str) -> str:
     return f'{base}{_MIME_EXT.get(mime, "")}'
 
 
+def _display_name(asset: Any) -> str:
+    """附件展示名：原始文件名优先，缺失才回落 kind + mime 合成名。
+
+    `hasn_assets.original_name` 在上传时已落库（本地 `hasn.asset.upload` 经 multipart 带上），
+    丢弃它会让分身发的每个文件都显示成 `file`/`file.pdf`，收件人分不清哪份是哪份。
+    只做展示归一化（去路径分隔符与控制字符、截断），落盘侧的安全清洗仍由 daemon
+    `sanitize_file_name` 负责，不在此重复。
+    """
+    raw = getattr(asset, 'original_name', None)
+    if isinstance(raw, str):
+        cleaned = raw.replace('\\', '/').rsplit('/', 1)[-1]
+        cleaned = ''.join(ch for ch in cleaned if ch.isprintable()).strip().strip('.').strip()
+        if cleaned:
+            return cleaned[:255]
+    return _derive_name(asset.kind, asset.mime)
+
+
 async def _resolve_attachments(db: Any, owner_hasn_id: str | None, uris: list[Any]) -> tuple[list[dict[str, Any]], int]:
     """资产 URI 列表 → 真实附件元数据 + 推断 content_type（按首个附件 kind）。
 
     零 Fake + 安全：
-    - 元数据全部取自 hasn_assets 注册表（kind/mime/size/宽高/时长），不由分身自报。
+    - 元数据全部取自 hasn_assets 注册表（kind/mime/size/宽高/时长/原始文件名），不由分身自报。
     - 资产必须属本主人（owner_hasn_id），否则拒绝——防分身附带他人资产致跨会话越权 grant。
     """
     asset_ids: list[str] = []
@@ -156,7 +190,7 @@ async def _resolve_attachments(db: Any, owner_hasn_id: str | None, uris: list[An
             'uri': f'hasn://asset/{aid}',
             'kind': asset.kind,
             'mime': asset.mime,
-            'name': _derive_name(asset.kind, asset.mime),
+            'name': _display_name(asset),
             'size': asset.size_bytes,
         }
         if asset.width is not None:

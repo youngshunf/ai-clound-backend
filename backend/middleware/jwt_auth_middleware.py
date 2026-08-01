@@ -91,7 +91,7 @@ class JwtAuthMiddleware(AuthenticationBackend):
         # Agent JWT（token_type=agent，sub=a_*）不走 Owner JWT 中间件：Owner 解析会对
         # 非数字 sub 做 int() 抛 401。这里按 token 类型分流放行，交由路由自身的
         # DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
-        if is_agent_token(token):
+        if is_agent_token(token) or token.startswith('hasn_amk_'):
             return None
 
         return token
@@ -124,4 +124,4 @@ class JwtAuthMiddleware(AuthenticationBackend):
         # 请注意，此返回使用非标准模式，所以在认证通过时，将丢失某些标准特性
         # 标准返回模式请查看：https://www.starlette.io/authentication/
         # Starlette 运行时只保存该对象，不要求继承 BaseUser；现有下游依赖完整用户 schema。
-        return AuthCredentials(['authenticated']), cast(BaseUser, user)
+        return AuthCredentials(['authenticated']), cast('BaseUser', user)

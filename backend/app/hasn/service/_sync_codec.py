@@ -130,6 +130,16 @@ def _normalize_risk_level(value: Any) -> str:
     return risk if risk in _VALID_RISK_LEVELS else 'low'
 
 
+# 内置任务广播语义（doc19 §9 / D-24）：master_brain=只派绑定分身；all_agents=本节点每个在线分身各一次。
+_VALID_TARGET_SCOPES = {'master_brain', 'all_agents'}
+
+
+def _normalize_target_scope(value: Any) -> str:
+    """广播语义收敛为合法枚举，缺省/非法 → master_brain（与列默认及 CHECK 约束一致）。"""
+    scope = str(value or '').strip().lower()
+    return scope if scope in _VALID_TARGET_SCOPES else 'master_brain'
+
+
 def _task_storage_row(
     owner_id: str,
     task_uuid: str,
@@ -184,6 +194,8 @@ def _task_storage_row(
         'created_by_kind': str(payload.get('created_by_kind') or 'owner'),
         'builtin_key': _optional_string(payload.get('builtin_key')),
         'builtin_synced_revision': _optional_int(payload.get('builtin_synced_revision')),
+        # 内置任务广播语义（doc19 §9 / D-24）：从 catalog 透传进任务行，供本地 task_scheduler 决定是否扇出。
+        'target_scope': _normalize_target_scope(payload.get('target_scope')),
         # 任务中心三轴四列（doc12 §6.1）：项目/应用/执行方式贯通事件溯源存储行。
         'project_id': _optional_string(payload.get('project_id')),
         'app_id': _optional_string(payload.get('app_id')),
@@ -223,6 +235,9 @@ def _task_sync_payload(
         'created_by_kind': stored_task['created_by_kind'],
         'builtin_key': stored_task.get('builtin_key'),
         'builtin_synced_revision': stored_task.get('builtin_synced_revision'),
+        # 内置任务广播语义（doc19 §9 / D-24）：必须随下行事件带出去——本地扇出（all_agents 时向本节点
+        # 每个在线分身各派一次）完全依赖这个键，漏带即退化回只派绑定分身。
+        'target_scope': _normalize_target_scope(stored_task.get('target_scope')),
         # 任务中心三轴四列（doc12 §6.1）：随任务下行事件带给 daemon，客户端镜像即可见项目/应用视角。
         'project_id': stored_task.get('project_id'),
         'app_id': stored_task.get('app_id'),
@@ -265,6 +280,9 @@ def _task_sync_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         'created_by_kind': str(row.get('created_by_kind') or 'owner'),
         'builtin_key': row.get('builtin_key'),
         'builtin_synced_revision': _optional_int(row.get('builtin_synced_revision')),
+        # 内置任务广播语义（doc19 §9 / D-24）：assignment 变更等「从存储行重放」的下行路径同样带上，
+        # 否则本地镜像会被一次 assignment 变更把 all_agents 抹回 master_brain。
+        'target_scope': _normalize_target_scope(row.get('target_scope')),
         # 任务中心三轴四列（doc12 §6.1）：从存储行下行时同样带上（assignment 变更等下行路径一致可见）。
         'project_id': _optional_string(row.get('project_id')),
         'app_id': _optional_string(row.get('app_id')),

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 
 from datetime import datetime
@@ -75,14 +77,22 @@ async def e2e():
     package_id = f'huanxing/backend-dev-{tag}'
     bundle_slug = f'backend-dev-{tag}'
     command_key = f'/{bundle_slug}'
+    members = [
+        f'e2e/{tag}/developer-code-review',
+        f'e2e/{tag}/productivity-tdd',
+    ]
     hermes_yaml = (
         f'name: {bundle_slug}\n'
         'description: 后端开发\n'
-        'skills:\n'
-        '  - developer/code-review\n'
-        '  - productivity/tdd\n'
+        f'skills:\n  - {members[0]}\n  - {members[1]}\n'
     )
-    members = ['developer/code-review', 'productivity/tdd']
+    member_snapshots = {
+        skill_id: {
+            'version': '1.0.0',
+            'content_hash': hashlib.sha256(skill_id.encode()).hexdigest(),
+        }
+        for skill_id in members
+    }
     preexisting = 'user/legacy/own-skill'
 
     session.add(
@@ -122,12 +132,56 @@ async def e2e():
         text(
             """
             INSERT INTO hasn_marketplace.marketplace_template_version (template_id, version, bundle_slug, command_key,
-                hermes_yaml, content_hash, file_hash, is_latest, published_at, created_time, updated_time)
-            VALUES (:tid, '1.0.0', :slug, :cmd, :yaml, 'sha256:deadbeef', 'deadbeef', true, now(), now(), now())
+                hermes_yaml, skill_dependencies_versioned, content_hash, file_hash, is_latest,
+                published_at, created_time, updated_time)
+            VALUES (:tid, '1.0.0', :slug, :cmd, :yaml, CAST(:dependencies AS jsonb),
+                'sha256:deadbeef', 'deadbeef', true, now(), now(), now())
             """
         ),
-        {'tid': package_id, 'slug': bundle_slug, 'cmd': command_key, 'yaml': hermes_yaml},
+        {
+            'tid': package_id,
+            'slug': bundle_slug,
+            'cmd': command_key,
+            'yaml': hermes_yaml,
+            'dependencies': json.dumps(member_snapshots),
+        },
     )
+    for skill_id, snapshot in member_snapshots.items():
+        namespace, slug = skill_id.rsplit('/', 1)
+        await session.execute(
+            text(
+                """
+                INSERT INTO hasn_marketplace.marketplace_skill (
+                    skill_id, namespace, slug, name, status, visibility, pricing_type, price,
+                    is_private, is_official, is_common, download_count, star_count,
+                    created_time, updated_time
+                ) VALUES (
+                    :skill_id, :namespace, :slug, :name, 'published', 'public', 'free', 0,
+                    false, false, false, 0, 0, now(), now()
+                )
+                """
+            ),
+            {
+                'skill_id': skill_id,
+                'namespace': namespace,
+                'slug': slug,
+                'name': slug,
+            },
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO hasn_marketplace.marketplace_skill_version (
+                    skill_id, version, content_hash, file_hash, is_latest,
+                    published_at, created_time, updated_time
+                ) VALUES (
+                    :skill_id, :version, :content_hash, :content_hash, true,
+                    now(), now(), now()
+                )
+                """
+            ),
+            {'skill_id': skill_id, **snapshot},
+        )
     await session.flush()
 
     async def _yield_session():
@@ -212,8 +266,16 @@ async def test_install_bundle_expands_members_and_profile_outputs_skill_bundles(
     assert len(bundles) == 1, bundles
     assert bundles[0]['bundle_slug'] == e2e.bundle_slug
     assert bundles[0]['command_key'] == e2e.command_key
-    assert 'developer/code-review' in bundles[0]['hermes_yaml']
-    assert 'productivity/tdd' in bundles[0]['hermes_yaml']
+    for member in e2e.members:
+        assert member in bundles[0]['hermes_yaml']
+    assert bundles[0]['member_skills'] == [
+        {
+            'skill_id': member,
+            'version': '1.0.0',
+            'content_hash': hashlib.sha256(member.encode()).hexdigest(),
+        }
+        for member in e2e.members
+    ]
 
 
 async def test_install_bundle_is_idempotent(e2e) -> None:

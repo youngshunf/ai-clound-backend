@@ -8,6 +8,7 @@ import json
 import logging
 
 from contextvars import ContextVar
+from time import monotonic
 from typing import Any
 
 import sqlalchemy as sa
@@ -17,6 +18,7 @@ from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.types import Receive, Scope, Send
 
+from backend.app.hasn.model.hasn_sessions import HasnSessions
 from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
     KEY_PREFIX as AGENT_MCP_KEY_PREFIX,
 )
@@ -45,6 +47,57 @@ _AGENT_MCP_KEY_BEARER_PREFIX = f'{AGENT_MCP_KEY_PREFIX}_'
 
 # 使用 ContextVar 在异步上下文中传递 AgentContext
 _streamable_agent_context: ContextVar[AgentContext | None] = ContextVar('streamable_agent_context', default=None)
+
+# ── 会话 → 平台项目 反查缓存（doc19 §6.2 项目记忆语境）──────────────────────────────
+# streamable 是 stateless 的，每个 MCP 请求都重建 transport；若每请求都查一次 hasn_sessions，
+# 等于给**每一次工具调用**平白加一次同步 DB 往返（发现面 list_tools 也算），性能会塌。
+# 项目挂靠是低频事件：`hasn_sessions.project_id` 只在派发建会话时由已验证项目透传，会话存续期
+# 内基本不变，因此用进程内短 TTL 缓存扛掉热路径。
+#
+# **失效策略：纯 TTL 到期（60 秒），不做主动失效 / 广播**。
+# - 代价上界：挂靠变更后最多 60 秒内旧值仍被采信 → 这一窗口里新记的事实落到旧项目或落回兜底
+#   作用域，检索的项目并集用旧项目。owner 隔离是另一层硬边界（service 层 owner_id 强制），
+#   缓存陈旧**不会**把事实串到别人名下，最坏只是「短暂挂错自己的项目」，下一次读写即自愈；
+# - 多 worker 各自持有独立副本是可接受的：都只是同一份低频数据的短暂视图，无一致性要求；
+# - 负结果（会话不挂项目）同样入缓存——「非项目会话」是多数路径，不缓存等于每次白查一遍库。
+_SESSION_PROJECT_TTL_SECONDS = 60.0
+_SESSION_PROJECT_CACHE_MAX = 2048
+_session_project_cache: dict[str, tuple[str | None, float]] = {}
+
+
+async def resolve_session_project_id(session_id: str | None) -> str | None:
+    """按会话 id 反查其平台项目挂靠 UUID（doc19 §6.2），带进程内短 TTL 缓存。
+
+    返回云端权威项目 UUID 字符串；会话不存在 / 不挂项目 → None。
+    反查失败（DB 瞬时异常）**绝不阻断本次调用**：退化为「无项目语境」——记忆照常落既有兜底
+    作用域、检索不做项目并集收敛，属于 never over-block 的安全方向，不会把事实写进错项目。
+    """
+    if not session_id:
+        return None
+    now = monotonic()
+    cached = _session_project_cache.get(session_id)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    try:
+        async with async_db_session() as db:
+            raw = (
+                await db.execute(
+                    sa.select(HasnSessions.project_id).where(HasnSessions.session_id == session_id).limit(1)
+                )
+            ).scalar_one_or_none()
+    except Exception as exc:
+        # 不入缓存：瞬时故障不该被固化 60 秒，下次调用重试即可
+        logger.warning(f'解析会话 {session_id} 的项目挂靠失败，本次按无项目语境处理: {exc!r}')
+        return None
+
+    project_id = str(raw) if raw else None
+    if len(_session_project_cache) >= _SESSION_PROJECT_CACHE_MAX:
+        # 无界增长防线：整体丢弃重建。会话 id 基数有限且 TTL 只有 60 秒，
+        # 到顶本身就说明缓存里绝大多数条目已经过期，逐条 LRU 不值那个复杂度。
+        _session_project_cache.clear()
+    _session_project_cache[session_id] = (project_id, now + _SESSION_PROJECT_TTL_SECONDS)
+    return project_id
 
 
 class HasnMcpStreamableServer:
@@ -273,6 +326,21 @@ class HasnMcpStreamableServer:
             work_session_header = headers.get(b'x-hasn-work-session-id')
             if work_session_header is not None:
                 agent_context.work_session_id = work_session_header.decode('utf-8').strip() or None
+
+            # 项目语境（doc19 §6.2 项目记忆）：与会话语境同一通路落 `agent_context.project_id`，
+            # 两级来源按优先级——
+            # ① `X-Hasn-Project-Id` header：daemon 已解析出项目时直接带上，采信即可，零查库；
+            # ② 缺 header 时由工作会话（缺省回落运行时会话）反查 `hasn_sessions.project_id`
+            #    ——该列只由已验证派发项目透传，是云端权威 UUID。反查带 60 秒进程内缓存，
+            #    避免给每次 MCP 请求加一趟同步 DB 往返（见 resolve_session_project_id）。
+            # 分身无论如何都伪造不了它：header 由 daemon 组装、会话挂靠在云端库里。
+            project_header = headers.get(b'x-hasn-project-id')
+            if project_header is not None:
+                agent_context.project_id = project_header.decode('utf-8').strip() or None
+            if not agent_context.project_id:
+                agent_context.project_id = await resolve_session_project_id(
+                    agent_context.work_session_id or agent_context.session_id
+                )
 
             # 一次性能力票据（A-P2 验票跳闸）：带 X-Capability-Ticket 的重试在 call_tool 的 ask 分支验票放行。
             ticket_header = headers.get(b'x-capability-ticket')

@@ -186,6 +186,10 @@ async def test_expiry_reminder_dedup_across_runs(sess: AsyncSession) -> None:
     row = rows[0]
     assert row.category == 'commerce'
     assert row.type == 'billing_expiry'
+    # 来源展示名必须是中文（缺 display_name 时服务号会建成英文 `billing` 条目）
+    assert (row.source or {}).get('display_name') == '费用与账单'
+    # 深链键是 `link`（写成 primary_action 则卡片没有「查看」按钮）
+    assert (row.data or {}).get('link') == 'hasn://billing/center'
     # 聚合计数递增（第二轮命中未读行 → aggregated_count=2），未重复落行
     assert int((row.data or {}).get('aggregated_count', 1)) == 2
     # 未到期（仍剩 ~2.5 天）→ 订阅本身不被置 expired
