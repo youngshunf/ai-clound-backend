@@ -50,6 +50,7 @@ def test_arg_shapes_match_ws_node_handler_signatures() -> None:
         'hasn.message.send': (_WS, _NODE, _PARAMS, _ENTITIES),
         'hasn.message.read': (_PARAMS, _ENTITIES),
         'hasn.typing': (_PARAMS, _ENTITIES),
+        'hasn.agent.progress': (_PARAMS, _ENTITIES),
         'hasn.ping': (_WS, _NODE, _CONN, _PARAMS),
     }
     assert set(expected) == set(HANDLER_SPECS)

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_im.application import message_service
+from backend.app.hasn_im.application import agent_progress_service, message_service
 from backend.app.hasn_im.application.node_session_service import node_session_service
 
 class WsNodeRuntime:
@@ -166,6 +166,22 @@ class WsNodeRuntime:
 
     async def mark_read(self, db, reader: str, conversation_id: str, last_msg_id: int) -> None:
         await message_service.mark_read(db, reader, conversation_id, last_msg_id)
+
+    async def relay_agent_progress(
+        self,
+        db: AsyncSession,
+        *,
+        from_id: str,
+        conversation_id: str,
+        payload: dict[str, Any],
+    ) -> list[str]:
+        """转发分身回复进度（瞬态，不落库、不入离线队列）。"""
+        return await agent_progress_service.relay_agent_progress(
+            db,
+            from_id=from_id,
+            conversation_id=conversation_id,
+            payload=payload,
+        )
 
 
 ws_node_runtime = WsNodeRuntime()
