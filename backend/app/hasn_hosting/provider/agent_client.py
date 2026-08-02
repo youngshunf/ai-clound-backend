@@ -234,6 +234,21 @@ class HostingAgentProvider:
             json_body={'image_ref': image_ref, 'image_digest': image_digest},
         )
 
+    async def resize_node(
+        self, node_id: str, *, memory_mb: int | None = None, cpus: float | None = None
+    ) -> dict[str, Any]:
+        """改资源档位（H9-b）：镜像与卷都不动，宿主按新规格重建容器。
+
+        两个维度都省略是无意义请求，hosting-agent 会 422 打回——所以调用方必须至少给一个，
+        这里不替它兜底成空操作（那会让它以为「改过了」）。
+        """
+        body: dict[str, Any] = {}
+        if memory_mb is not None:
+            body['memory_mb'] = memory_mb
+        if cpus is not None:
+            body['cpus'] = cpus
+        return await self._request('POST', f'/v1/nodes/{node_id}/resize', json_body=body)
+
     async def delete_node(self, node_id: str, *, purge_volume: bool) -> dict[str, Any]:
         return await self._request(
             'DELETE',
