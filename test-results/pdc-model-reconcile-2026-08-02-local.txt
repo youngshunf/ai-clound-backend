@@ -1,0 +1,44 @@
+[对账] PDC revision=28314f962da77f89，配置里共 19 处模型名；注册表 active=64 missing=0
+       OK   node.media.image_models[0] = agnes-image-2.0-flash
+       OK   node.media.image_models[1] = qwen-image-2.0-pro
+   UNKNOWN  node.media.image_models[2] = wan-2.6-i2v-flash
+       OK   node.media.image_edit_models[0] = qwen-image-2.0
+       OK   node.media.image_edit_models[1] = wan2.7-image
+       OK   node.media.image_edit_models[2] = qwen-image-2.0-pro
+   UNKNOWN  node.media.tts_models[0] = cosyvoice-v3-flash
+       OK   node.media.tts_models[1] = cosyvoice-v3.5-flash
+       OK   node.media.tts_models[2] = qwen3-tts
+       OK   node.media.stt_models[0] = qwen3-asr-flash
+       OK   node.media.stt_models[1] = fun-asr-flash-2026-06-15
+       OK   node.media.video_models[0] = agnes-video-v2.0
+       OK   node.media.video_models[1] = happyhorse-1.1-i2v
+       OK   agent_runtime.models.main = deepseek-v4-flash
+       OK   agent_runtime.models.fast = deepseek-v4-flash
+       OK   agent_runtime.model_fallback_pool[0] = deepseek-v4-pro
+       OK   agent_runtime.model_fallback_pool[1] = gpt-5.5
+       OK   agent_runtime.model_fallback_pool[2] = agnes-2.0-flash
+       OK   agent_runtime.model_fallback_pool[3] = deepseek-v4-flash
+
+[对账] 2 处不匹配，需运营修完再开闸：
+[
+  {
+    "path": "node.media.image_models[2]",
+    "model": "wan-2.6-i2v-flash",
+    "reason": "该模型不在模型注册表里（网关上没有这个名字）",
+    "suggestions": [
+      "wan2.6-i2v-flash",
+      "agnes-2.5-flash",
+      "agnes-2.0-flash"
+    ]
+  },
+  {
+    "path": "node.media.tts_models[0]",
+    "model": "cosyvoice-v3-flash",
+    "reason": "该模型不在模型注册表里（网关上没有这个名字）",
+    "suggestions": [
+      "cosyoice-v3-flash",
+      "cosyvoice-v3.5-flash",
+      "deepseek-v4-flash"
+    ]
+  }
+]

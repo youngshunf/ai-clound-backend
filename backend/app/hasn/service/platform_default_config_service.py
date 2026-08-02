@@ -26,6 +26,11 @@ from backend.app.hasn.schema.hasn_platform_default_config import (
     PlatformDefaultConfig,
     PlatformDefaultConfigResponse,
 )
+from backend.app.hasn.service.pdc_model_validation_service import (
+    format_rejections,
+    pdc_model_validation_service,
+)
+from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -207,8 +212,16 @@ class PlatformDefaultConfigService:
         返回的 config/revision 经 get_effective_config 重新组装，使响应 revision 与真实下发口径
         （含 app_configs）一致，避免 Admin 看到的 revision 与 daemon 拉到的不符。
 
+        **保存前校验模型名**（doc02 P3，本次事故的根因闭环）：所有 `*_models`、
+        `agent_runtime.models` 四槽与 `model_fallback_pool` 里的名字必须在模型注册表里且
+        `upstream_status='active'`，否则拒绝保存并给出最接近的候选。存进一个网关上不存在的
+        名字，打到网关只会 503，而 503 看起来像「渠道没开通」，排查方向直接被带偏。
+
         不在此 commit（API 经 CurrentSessionTransaction 自动提交），仅 flush。
         """
+        rejections = await pdc_model_validation_service.validate(db, config)
+        if rejections:
+            raise errors.RequestError(msg=format_rejections(rejections))
         config_json = config.model_dump(mode='json')
         config_json.pop('app_configs', None)  # PDC 表只存 node + agent_runtime
         row_revision = compute_revision(config_json)
