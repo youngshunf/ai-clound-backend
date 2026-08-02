@@ -285,6 +285,47 @@ async def test_同步幂等_连跑两次第二次零新增且标注不变(env) -
     assert row.relative_cost == Decimal('0.8572')
 
 
+async def test_同步幂等_分组顺序抖动与pricing_version变化都不算变更(env) -> None:
+    """网关侧的两类噪声不得被当成「变了」。
+
+    2026-08-02 实测：连着两次拉 `/api/pricing`，同一个模型的 `enable_groups` 顺序会变
+    （new-api 从 Go map 序列化），且 `pricing_version` 每次重算定价都换新哈希。不归一化的话
+    每轮定时同步都报 ~27 行更新 → `registry_revision` 天天变 → WSPUSH 把全网 daemon 打醒
+    重拉整张注册表。
+    """
+    name = _model('sync-noise')
+    env.track([name])
+    env.stub_upstream(
+        [
+            _pricing_row(
+                name,
+                enable_groups=['default', 'vip', 'svip'],
+                pricing_version='a' * 64,
+            )
+        ]
+    )
+    await model_registry_sync_service.sync(env.session)
+    await env.session.commit()
+
+    row = await _row(env.session, name)
+    assert row.enable_groups == ['default', 'svip', 'vip'], '分组必须按稳定顺序落库'
+    assert 'pricing_version' not in row.cost_extra, '重算哈希不该留档，它每轮都变'
+
+    # 同一份事实，换个顺序、换个 pricing_version 再来一轮。
+    env.stub_upstream(
+        [
+            _pricing_row(
+                name,
+                enable_groups=['svip', 'default', 'vip'],
+                pricing_version='b' * 64,
+            )
+        ]
+    )
+    second = await model_registry_sync_service.sync(env.session)
+    await env.session.commit()
+    assert second.updated == 0, f'只是顺序和重算哈希变了，不该报 updated：{second}'
+
+
 async def test_网关拉不到时整轮放弃而不是把现有行统统标missing(env) -> None:
     name = _model('sync-outage')
     env.track([name])
