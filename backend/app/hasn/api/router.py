@@ -19,6 +19,7 @@ from backend.app.hasn.api.v1.admin.hasn_enterprise_membership import router as a
 from backend.app.hasn.api.v1.admin.hasn_group_members import router as admin_hasn_group_members_router
 from backend.app.hasn.api.v1.admin.hasn_humans import router as admin_hasn_humans_router
 from backend.app.hasn.api.v1.admin.hasn_messages import router as admin_hasn_messages_router
+from backend.app.hasn.api.v1.admin.hasn_model_registry import router as admin_hasn_model_registry_router
 from backend.app.hasn.api.v1.admin.hasn_node_bindings import router as admin_hasn_node_bindings_router
 from backend.app.hasn.api.v1.admin.hasn_nodes import router as admin_hasn_nodes_router
 from backend.app.hasn.api.v1.admin.hasn_notifications import router as admin_hasn_notifications_router
@@ -297,6 +298,7 @@ v1.include_router(admin_hasn_app_beta_access_router, prefix='/app-beta-access', 
 v1.include_router(
     admin_hasn_platform_default_config_router, prefix='/platform-default-config', tags=['平台默认配置（节点下发）']
 )
+v1.include_router(admin_hasn_model_registry_router, prefix='/model-registry', tags=['模型注册表（模型清单与语义标注）'])
 v1.include_router(
     admin_hasn_platform_operator_grants_router, prefix='/platform-operator-grants', tags=['平台运维授予源（G1 特权门）']
 )

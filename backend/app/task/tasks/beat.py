@@ -113,6 +113,12 @@ LOCAL_BEAT_SCHEDULE = {
         # 托管设计 §7 生命周期表 / D-14。
         'schedule': TzAwareCrontab('20', '4'),
     },
+    '模型注册表-每日从网关同步': {
+        'task': 'hasn_model_registry_sync',
+        # 每天凌晨 4:40 从 new-api 定价表同步一轮模型清单（upsert，绝不删行）。
+        # 排在云端节点 sweep（4:20）之后；运营也可在 Admin 页点「立即同步」。
+        'schedule': TzAwareCrontab('40', '4'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
         # 每 3 天增量同步一次（真 72h 间隔）。只读取元数据与文件清单，技能 ZIP 由 ClawHub 分发。

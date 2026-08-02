@@ -108,8 +108,12 @@ class NewApiAdminClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
+        return_envelope: bool = False,
     ) -> Any:
         """发请求并解包信封，返回 `data` 字段；失败抛 NewApiError（如实记录）。
+
+        ``return_envelope=True`` 时返回**整个信封**——个别端点把有用信息放在 `data` 的**兄弟**
+        字段上（如 `/pricing` 的顶层 `vendors` 供应商表），只取 `data` 就永远读不到。
 
         两条路径：
         - **caller 传入 client**（login cookie jar 隔离流）：用它 + relative path（client 自带
@@ -145,7 +149,7 @@ class NewApiAdminClient:
                 status_code=resp.status_code,
                 endpoint=path,
             )
-        return body.get('data')
+        return body if return_envelope else body.get('data')
 
     # ------------------------------------------------------------------ #
     # 状态 / 启动校验
@@ -555,6 +559,25 @@ class NewApiAdminClient:
         """
         data = await self._request('GET', '/pricing', headers=self._admin_headers())
         return [m for m in (data or []) if m.get('model_name')]
+
+    async def get_pricing_catalog(self) -> tuple[list[dict], dict[int, str]]:
+        """GET /pricing（admin），同时取回**顶层** `vendors` 供应商表。
+
+        供应商名不在 `data` 行里——行上只有 `vendor_id`（2026-08-02 实测 64 行中 44 行有），
+        名字在信封的兄弟字段 `vendors`（`[{id, name, icon}]`）。模型注册表要显示「阿里巴巴 /
+        DeepSeek」这类供应商名，必须两者一起取，故不能复用只解 `data` 的 :meth:`get_pricing`。
+
+        返回 ``(定价行, {vendor_id: 供应商名})``；`vendors` 缺失时供应商表为空（如实留空，
+        绝不按模型名猜供应商）。
+        """
+        body = await self._request('GET', '/pricing', headers=self._admin_headers(), return_envelope=True)
+        rows = [m for m in (body.get('data') or []) if m.get('model_name')]
+        vendors: dict[int, str] = {}
+        for vendor in body.get('vendors') or []:
+            vendor_id, name = vendor.get('id'), str(vendor.get('name') or '').strip()
+            if isinstance(vendor_id, int) and name:
+                vendors[vendor_id] = name
+        return rows, vendors
 
     async def get_quota_data(
         self,

@@ -14,7 +14,7 @@ def _spec(name: str, modality: str = 'any', dialect: str = 'openai', **kwargs) -
 
 
 def test_只下发在newapi上真实可用的模型() -> None:
-    declared = [
+    declared: list[str | VideoModelSpec] = [
         _spec('happyhorse-1.1-i2v', modality='image_to_video', dialect='ali'),
         _spec('agnes-2.0-video'),  # 线上那个写错的名字：new-api 上不存在
     ]
@@ -23,7 +23,7 @@ def test_只下发在newapi上真实可用的模型() -> None:
 
 
 def test_按档位下发价格且不泄漏计费倍率() -> None:
-    declared = [
+    declared: list[str | VideoModelSpec] = [
         _spec('wan2.6-i2v-flash', modality='image_to_video', dialect='ali', quality='draft'),
         _spec('agnes-video-v2.0', modality='text_to_video'),
         _spec('happyhorse-1.1-i2v', modality='image_to_video', dialect='ali', quality='high'),
@@ -64,6 +64,6 @@ def test_字符串简写归一为无声明形态() -> None:
 
 
 def test_顺序沿用语义表即failover优先级() -> None:
-    declared = [_spec('b-model'), _spec('a-model')]
+    declared: list[str | VideoModelSpec] = [_spec('b-model'), _spec('a-model')]
     catalog = merge_catalog(declared, {'a-model', 'b-model'}, {})
     assert [m['name'] for m in catalog] == ['b-model', 'a-model']
