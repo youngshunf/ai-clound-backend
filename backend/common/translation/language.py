@@ -16,6 +16,13 @@ import re
 from typing import Final, Literal
 
 from langdetect import LangDetectException, detect
+# langdetect 的类型 stub 没导出 DetectorFactory（运行时存在），故定向忽略。
+from langdetect import DetectorFactory  # type: ignore[attr-defined]
+
+# langdetect 默认用随机采样，同一段文本两次调用可能给出不同语言（官方 README 明示需要
+# 自行固定种子）。不固定的后果不只是测试 flaky：source_lang 摇摆会让同一条内容产生
+# 多份译文缓存，也会让「已是目标语言就跳过」的判定时灵时不灵。
+DetectorFactory.seed = 0
 
 # 汉字区段（含扩展 A）。langdetect 对短文本会直接抛异常，靠这个兜底。
 _HAN_RE: Final = re.compile(r'[㐀-䶿一-鿿]')
@@ -134,6 +141,12 @@ def detect_language(text: str) -> str:
         return 'ja'
     if _HANGUL_RE.search(text):
         return 'ko'
+
+    # 汉字同样是硬判据：假名/谚文已在上面排除日韩，剩下含汉字的只能是中文，简繁由特征字定。
+    # 不能只在 langdetect 报 zh 时才复判——它对纯汉字短文本偶尔会给出别的语言码，
+    # 那条路径会直接返回错误结果、绕过下面的简繁复判。
+    if contains_chinese(text):
+        return _han_variant(text)
 
     try:
         raw = detect(text)
