@@ -35,6 +35,16 @@ class VideoModelSpec(SchemaBase):
     dialect: Literal['openai', 'ali'] = Field(
         default='openai', description='入参方言：OpenAI 兼容 / 阿里通义万相系'
     )
+    quality: Literal['draft', 'standard', 'high'] | None = Field(
+        default=None,
+        description=(
+            '质量档（运营人工标注，new-api 注册表没有这项）。留空即未标注——'
+            '分身只按相对成本与模态取舍，不编造质量结论'
+        ),
+    )
+    notes: str | None = Field(
+        default=None, description='适用场景一句话（给分身选型看，如「速度快、成本低，适合草稿与批量」）'
+    )
 
 
 class PlatformMediaDefaults(SchemaBase):

@@ -9,7 +9,8 @@ from fastapi import APIRouter
 
 from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefaultConfigResponse
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
-from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.app.hasn.service.video_model_catalog_service import video_model_catalog_service
+from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
 
@@ -25,3 +26,20 @@ router = APIRouter()
 async def get_platform_default_config(db: CurrentSession) -> ResponseSchemaModel[PlatformDefaultConfigResponse]:
     data = await platform_default_config_service.get_response(db)
     return response_base.success(data=data)
+
+
+@router.get(
+    '/video-models',
+    summary='拉取视频模型目录（new-api 可用性/定价 × PDC 语义元数据）',
+    dependencies=[DependsJwtAuth],
+    name='app_get_video_model_catalog',
+)
+async def get_video_model_catalog(db: CurrentSession) -> ResponseModel:
+    """daemon 拉本目录后暴露给分身，供其按任务复杂度自主选型。
+
+    **不并进 `/platform/config`** 是有意的：PDC 的 revision 由 config_json 算，而可用性与定价
+    来自 new-api、不在 config_json 里——并进去会出现「内容变了 revision 没变」，daemon 的缓存
+    永远刷不新。故单独端点、由 daemon 自己按 TTL 刷新。
+    """
+    models = await video_model_catalog_service.list_catalog(db)
+    return response_base.success(data={'models': models})

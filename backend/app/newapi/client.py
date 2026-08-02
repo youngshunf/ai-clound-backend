@@ -542,6 +542,20 @@ class NewApiAdminClient:
                 log.warning(f'[new-api] list_available_models 到达分页上限 {MODEL_LIST_MAX_PAGES} 页，结果可能不完整')
         return [m for m in out if int(m.get('status') or 0) == 1]
 
+    async def get_pricing(self) -> list[dict]:
+        """GET /pricing（admin）。返回模型定价表，每项含 `{model_name, model_ratio, model_price,
+        quota_type, enable_groups, ...}`。
+
+        用作模型「相对成本」的权威源：`model_ratio` 是同一分组下的倍率（实测 `wan2.6-i2v-flash`
+        0.5、`agnes-video-v2.0` 1.5、`happyhorse-1.1-i2v` 2.5），分身据此在能力够用的前提下挑更
+        省的模型——分身代表主人利益，不该在不知道价格的情况下乱花主人的配额。
+
+        注意 relay key（`sk-`）打不开这个端点（返回 AUTH_UNAUTHORIZED），必须 admin token，
+        故只能由云端代拉后下发，daemon 拿不到。
+        """
+        data = await self._request('GET', '/pricing', headers=self._admin_headers())
+        return [m for m in (data or []) if m.get('model_name')]
+
     async def get_quota_data(
         self,
         *,
