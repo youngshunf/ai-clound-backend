@@ -368,7 +368,9 @@ class HasnSessionsService:
                 'created': False,
             }
 
-        title = (session.title if session and session.title else None) or projection_data.get('title') or session_id
+        # 没有人类可读标题时留 None（不再回落 session_id）：卡片标题会据此走「任务已完成」通用文案，
+        # 不把内部 ULID 写进主人看得见的标题里。
+        title = (session.title if session and session.title else None) or projection_data.get('title')
         origin_type = _normalize_origin_type(
             (session.origin_type if session else None) or projection_data.get('origin_type') or 'task_run'
         )
@@ -424,7 +426,9 @@ class HasnSessionsService:
                 session_id=session_id,
                 agent_hasn_id=agent_id,
                 owner_hasn_id=owner_id,
-                title=title,
+                # 产物登记侧维持原行为：缺人类标题时仍回落 session_id（那是内部记录、不进主人视野的
+                # 卡片标题）。只有卡片标题不再用 ULID。
+                title=title or session_id,
                 summary=content_json.get('summary') or None,
             )
         await db.flush()
@@ -1060,7 +1064,44 @@ async def emit_designsystem_completion_card(
     )
 
 
-def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
+#: 任务运行状态原始值 → 卡片「状态」字段的中文展示文案。
+#: 与 hasn-node `runtime/dispatch.rs::work_session_status_label` 及 daemon
+#: `domains/messaging/card_messages.rs::task_status_label` 保持同一份词表，改一处要三处同步。
+_WORK_SESSION_STATUS_LABELS = {
+    'success': '成功',
+    'error': '失败',
+    'running': '进行中',
+    'cancelled': '已取消',
+    'canceled': '已取消',
+    'timeout': '已超时',
+}
+
+#: 任务完成原因原始值 → 卡片「完成原因」字段的中文展示文案（同上，三处同步）。
+_WORK_SESSION_REASON_LABELS = {
+    'auto_on_final': '自动完成',
+    'runtime_failed': '运行失败',
+    'manual': '手动完成',
+    'cancelled': '已取消',
+    'canceled': '已取消',
+    'timeout': '已超时',
+}
+
+
+def _work_session_status_label(status: Any) -> str:
+    """任务状态 → 中文；未收录的值回落原值（诚实展示，不隐藏没覆盖到的状态）。"""
+    raw = str(status)
+    return _WORK_SESSION_STATUS_LABELS.get(raw, raw)
+
+
+def _work_session_reason_label(reason: Any) -> str:
+    """完成原因 → 中文；未收录的值回落原值。"""
+    raw = str(reason)
+    return _WORK_SESSION_REASON_LABELS.get(raw, raw)
+
+
+def _projection_card_body(
+    *, session_id: str, title: str | None, content_json: dict[str, Any]
+) -> dict[str, Any]:
     # RC-P3：应用资源会话（origin_ref=resource:{app}:{local}）→ 据 descriptor 泛化组「{verb}做好了」卡
     # （分身不自己发卡，去 deck 特例）。判别器用 origin_ref 拆 app_id/local_ref，卡里 `hasn://{域}/{id}`
     # 的 id **只允许云端权威 `{app}_server_id`**——本地 id 跨设备/分享后对端无法解析。资源尚未上云时
@@ -1085,18 +1126,26 @@ def _projection_card_body(*, session_id: str, title: str, content_json: dict[str
     if task_run_id is not None:
         event_payload['task_run_id'] = task_run_id
 
+    # 状态/完成原因必须落中文：卡片是给主人看的，`success` / `auto_on_final` 这类原始枚举
+    # 直接吐到会话里就是技术泄漏，而且同一种任务完成卡在本地 daemon 侧
+    # （`domains/messaging/card_messages.rs::task_status_label`）与 hasn-node
+    # （`runtime/dispatch.rs::work_session_status_label`）都已中文化——这里不翻，同一类卡在
+    # 聊天流里就会出现中英两种长相（主人 2026-08-01 实拍）。未收录的值回落原值，诚实展示。
     fields = [
-        {'label': '状态', 'value': str(content_json.get('status') or 'success')},
-        {'label': '完成原因', 'value': str(content_json.get('completion_reason') or 'manual')},
+        {'label': '状态', 'value': _work_session_status_label(content_json.get('status') or 'success')},
+        {
+            'label': '完成原因',
+            'value': _work_session_reason_label(content_json.get('completion_reason') or 'manual'),
+        },
     ]
-    if task_id is not None:
-        fields.append({'label': '任务 ID', 'value': str(task_id)})
-    if task_run_id is not None:
-        fields.append({'label': '任务执行 ID', 'value': str(task_run_id)})
+    # `任务 ID` / `任务执行 ID` 是内部自增主键，主人拿它做不了任何事（要看任务走 primary_action
+    # 深链），只会把卡片底部撑成一排技术字段。两者仍随 `event.payload` 上报，埋点不受影响。
 
     return {
         'schema_version': 'hasn.card/0.1',
-        'title': f'工作会话「{title}」已完成',
+        # 没有人类可读标题时不要把 session_id 塞进标题（「工作会话「sess_01KYRBY…」已完成」），
+        # 那是内部 ULID，主人看不懂也用不上——直接落通用文案。
+        'title': f'工作会话「{title}」已完成' if title else '任务已完成',
         'description': content_json.get('summary') or '工作会话已完成。',
         'source': {
             'kind': 'task',
