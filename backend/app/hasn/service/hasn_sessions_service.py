@@ -382,7 +382,12 @@ class HasnSessionsService:
             origin_ref=origin_ref,
             projection_data=projection_data,
         )
-        content_card = _projection_card_body(session_id=session_id, title=title, content_json=content_json)
+        content_card = _projection_card_body(
+            session_id=session_id,
+            title=title,
+            content_json=content_json,
+            node_card=projection_data.get('card'),
+        )
         validate_card_message_body(content_card)
 
         principal = _actor_principal(agent_id, origin_session_id=session_id)
@@ -1100,7 +1105,11 @@ def _work_session_reason_label(reason: Any) -> str:
 
 
 def _projection_card_body(
-    *, session_id: str, title: str | None, content_json: dict[str, Any]
+    *,
+    session_id: str,
+    title: str | None,
+    content_json: dict[str, Any],
+    node_card: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # RC-P3：应用资源会话（origin_ref=resource:{app}:{local}）→ 据 descriptor 泛化组「{verb}做好了」卡
     # （分身不自己发卡，去 deck 特例）。判别器用 origin_ref 拆 app_id/local_ref，卡里 `hasn://{域}/{id}`
@@ -1108,6 +1117,8 @@ def _projection_card_body(
     # 不生成应用资源 URI，诚实回落通用工作会话卡；未声明 descriptor 的应用同样回落通用卡。
     resolved = _resolve_app_resource_projection(content_json)
     if resolved is not None:
+        # 应用资源会话（deck/reel…）**必须**云端组卡：卡里的 `hasn://{域}/{id}` 只允许云端权威
+        # server_id，节点手上只有设备本地 ID，组不出跨端可打开的 URI。此时忽略节点卡。
         descriptor, app_id, uri_id = resolved
         return build_generic_resource_card(
             descriptor=descriptor,
@@ -1116,6 +1127,19 @@ def _projection_card_body(
             uri_id=uri_id,
             content_json=content_json,
         )
+    # 普通工作会话回执卡：**节点组好的那张为准**。措辞、失败态标题、运行时错误裸串脱敏都在节点侧
+    # 收口（`hasn-node messaging::work_session_card`），云端再拼一遍必然与节点写进本地镜像的那张
+    # 不一致——实际已经裂开过一次（本地中文、云端英文枚举 + 内部自增 ID）。这里只做 schema 校验。
+    # 校验不过时不让整条投影失败：记 warn 后回落云端自建卡，主人照样收得到回执（真实数据，非兜底假卡）。
+    if node_card:
+        try:
+            return validate_card_message_body(node_card).model_dump()
+        except Exception as exc:
+            log.warning(
+                '工作会话 %s 的节点卡片体未通过校验，回落云端自建卡：%s',
+                session_id,
+                exc,
+            )
     task_id = content_json.get('task_id')
     task_run_id = content_json.get('task_run_id')
     event_payload = {
