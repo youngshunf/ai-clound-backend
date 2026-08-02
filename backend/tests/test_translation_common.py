@@ -170,11 +170,18 @@ def test_glossary_prompt_block_empty_when_no_term_hits() -> None:
     assert glossary_prompt_block('en', source_text='一段完全不含术语的文本。') == ''
 
 
-def test_glossary_matches_track_a_copy_when_available() -> None:
-    """术语表与轨道 A 的 webui/scripts/i18n/glossary.json 必须逐字节一致。
+def test_glossary_shared_contract_matches_track_a_copy_when_available() -> None:
+    """术语表与轨道 A 的 `webui/scripts/i18n/glossary.json` 的**共享契约**必须一致。
+
+    共享契约 = ``terms``（注入两侧翻译 prompt 的指定译法）+ ``forbidden``（产品名禁写法）。
+    这两段一漂，就会出现「按钮上叫 Agent、帖子译文里叫别的」，用户以为是两个东西。
+
+    **不比整份文件**：``overrides``/``audits`` 是轨道 A 静态文案管线的工具配置
+    （存量译文一次性校正、同中文多英译的人工裁决），只对界面文案有意义，云端内容翻译
+    根本不消费；拿它们当门禁只会让两边为了对齐无关配置而互相绊住。
 
     跨仓文件，只有 hasn-node 也 checkout 在旁边时才比得了；找不到就跳过并说明原因，
-    **不假装通过**。改术语表时务必两仓一起改。
+    **不假装通过**。
     """
     here = Path(__file__).resolve()
     cloud = here.parents[2] / 'backend/common/translation/glossary.json'
@@ -184,9 +191,14 @@ def test_glossary_matches_track_a_copy_when_available() -> None:
     webui = next((parent / relative for parent in here.parents if (parent / relative).exists()), None)
     if webui is None:
         pytest.skip('未找到同级 hasn-node 仓的 webui/scripts/i18n/glossary.json，跨仓一致性无法在此校验')
-    assert json.loads(cloud.read_text('utf-8')) == json.loads(webui.read_text('utf-8')), (
-        '云端与 webui 的术语表已漂移：界面里叫 Agent、内容里叫别的，用户会以为是两个东西'
-    )
+
+    cloud_data = json.loads(cloud.read_text('utf-8'))
+    webui_data = json.loads(webui.read_text('utf-8'))
+    for section in ('terms', 'forbidden'):
+        assert cloud_data.get(section) == webui_data.get(section), (
+            f'云端与 webui 的术语表 `{section}` 段已漂移：'
+            '界面里叫 Agent、内容译文里叫别的，用户会以为是两个东西'
+        )
 
 
 # ============================ 翻译器 ============================

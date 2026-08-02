@@ -83,31 +83,87 @@
   "audits": [
     {
       "$comment": "存量译文一次性校正规则：source 命中且 exclude 未命中时，对译文做 replace。",
-      "langs": ["en"],
+      "langs": [
+        "en"
+      ],
       "sourceIncludes": "唤星",
       "from": "Huanxing|HuanXing|Huan Xing",
       "to": "Astra"
     },
     {
       "$comment": "分身 = Agent；头像 = Avatar。两者中文不同、英文历史上混用过，按中文原文区分。",
-      "langs": ["en"],
+      "langs": [
+        "en"
+      ],
       "sourceIncludes": "分身",
       "sourceExcludes": "头像",
       "replacements": [
-        { "from": "Avatars", "to": "Agents" },
-        { "from": "Avatar", "to": "Agent" },
-        { "from": "avatars", "to": "agents" },
-        { "from": "avatar", "to": "agent" }
+        {
+          "from": "Avatars",
+          "to": "Agents"
+        },
+        {
+          "from": "Avatar",
+          "to": "Agent"
+        },
+        {
+          "from": "avatars",
+          "to": "agents"
+        },
+        {
+          "from": "avatar",
+          "to": "agent"
+        }
       ]
     }
   ],
   "overrides": {
     "$comment": "P0.5 的 18 组「同中文多英译」人工裁决结果。key 是中文原文，值是各语言选定译法。翻译脚本与一致性门禁都以此为准，防止后续重翻再漂。",
-    "拒绝": { "en": "Decline" },
-    "联系人": { "en": "Contacts" },
-    "群聊": { "en": "Groups" },
-    "关闭": { "en": "Close" },
-    "AI 分身": { "en": "AI Agents" },
-    "分身": { "en": "Agents" }
+    "拒绝": {
+      "en": "Decline"
+    },
+    "联系人": {
+      "en": "Contacts"
+    },
+    "群聊": {
+      "en": "Groups"
+    },
+    "关闭": {
+      "en": "Close"
+    },
+    "AI 分身": {
+      "en": "AI Agents"
+    },
+    "分身": {
+      "en": "Agents"
+    },
+    "简体中文": {
+      "en": "简体中文",
+      "$reason": "语言名恒用 endonym，不随界面语言变"
+    },
+    "状态": {
+      "en": "Status",
+      "$reason": "存量漂移 State/Status，统一到 Status"
+    },
+    "同步状态": {
+      "en": "Sync status",
+      "$reason": "存量漂移 Sync state/Sync Status，统一并按句式大小写"
+    },
+    "地区": {
+      "en": "Region",
+      "$reason": "存量漂移 Location/Region，统一到 Region"
+    },
+    "手机号": {
+      "en": "Phone",
+      "$reason": "存量漂移 Phone number/Phone，统一到 Phone"
+    },
+    "发布": {
+      "en": "Publish",
+      "$reason": "动作按钮；状态用「已发布」→Published，中文本就已区分，Published 来自已废弃的 nav.publish.mobile"
+    },
+    "命令": {
+      "en": "Commands",
+      "$reason": "权限声明里是命令清单；单数 Command 来自未被引用的死键"
+    }
   }
 }
