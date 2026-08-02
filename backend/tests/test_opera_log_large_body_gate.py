@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from starlette.requests import Request
+from starlette.types import Receive, Scope, Send
 
 from backend.core.conf import settings
 from backend.middleware.opera_log_middleware import OperaLogMiddleware
@@ -38,7 +39,10 @@ def _request(headers: list[tuple[bytes, bytes]], path: str = '/api/v1/hasn/app-c
 
 
 def _middleware() -> OperaLogMiddleware:
-    return OperaLogMiddleware(app=lambda scope, receive, send: None)  # type: ignore[arg-type]
+    async def _app(scope: Scope, receive: Receive, send: Send) -> None:
+        return None
+
+    return OperaLogMiddleware(app=_app)
 
 
 @pytest.mark.asyncio
@@ -61,6 +65,7 @@ async def test_multipart_upload_body_is_never_buffered(monkeypatch: pytest.Monke
     )
     args = await _middleware().get_request_args(request)
 
+    assert args is not None
     assert calls == 0
     assert args['data'].startswith('[BODY OMITTED: multipart/form-data')
     assert str(817 * 1024 * 1024) in args['data']
@@ -83,6 +88,7 @@ async def test_oversized_non_multipart_body_is_omitted(monkeypatch: pytest.Monke
     )
     args = await _middleware().get_request_args(request)
 
+    assert args is not None
     assert args['data'].startswith('[BODY OMITTED: application/octet-stream')
 
 
@@ -103,6 +109,7 @@ async def test_small_json_body_still_recorded() -> None:
     request._receive = _receive  # type: ignore[attr-defined]
     args = await _middleware().get_request_args(request)
 
+    assert args is not None
     assert 'BODY OMITTED' not in str(args.get('data', ''))
     assert args.get('json') == {'name': '图坊'}
 
@@ -121,4 +128,5 @@ async def test_missing_content_length_falls_back_to_content_type_gate(
     request = _request([(b'content-type', b'multipart/form-data; boundary=----abc')])
     args = await _middleware().get_request_args(request)
 
+    assert args is not None
     assert args['data'].startswith('[BODY OMITTED: multipart/form-data, 0 bytes]')

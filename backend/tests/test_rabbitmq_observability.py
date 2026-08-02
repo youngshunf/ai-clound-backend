@@ -11,6 +11,7 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.resources import Resource
 
 from backend.app.hasn_im import consumer_worker
 from backend.app.hasn_im.observability import metrics
@@ -35,7 +36,9 @@ def test_rabbitmq_trace_context_round_trip_uses_w3c_headers_only() -> None:
         headers = inject_rabbitmq_trace_headers()
 
     assert set(headers) <= {'traceparent', 'tracestate'}
-    assert _TRACEPARENT.fullmatch(headers['traceparent'])
+    traceparent = headers['traceparent']
+    assert isinstance(traceparent, str)
+    assert _TRACEPARENT.fullmatch(traceparent)
 
     context = extract_rabbitmq_trace_context(headers)
     with tracer.start_as_current_span('rabbit-consume', context=context) as consumer:
@@ -115,6 +118,7 @@ def test_messaging_span_records_error_type_without_exception_text(
 
     [recorded] = exporter.get_finished_spans()
     assert recorded.status.status_code.name == 'ERROR'
+    assert recorded.attributes is not None
     assert recorded.attributes['error.type'] == 'RuntimeError'
     assert recorded.events == ()
     assert 'secret' not in str(recorded.attributes)
@@ -124,18 +128,26 @@ def test_im_consumer_worker_initializes_tracing_only_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """独立消费者必须显式初始化 tracer，probe/关闭态不得建立 exporter。"""
-    initialized: list[object] = []
+    initialized: list[Resource] = []
     resource_names: list[str] = []
-    resource = object()
+    resource = Resource.create()
+
+    def _init_resource(name: str) -> Resource:
+        resource_names.append(name)
+        return resource
+
+    def _init_tracer(selected: Resource) -> None:
+        initialized.append(selected)
+
     monkeypatch.setattr(
         consumer_worker,
         'init_resource',
-        lambda name: resource_names.append(name) or resource,
+        _init_resource,
     )
     monkeypatch.setattr(
         consumer_worker,
         'init_tracer',
-        lambda selected: initialized.append(selected),
+        _init_tracer,
     )
 
     monkeypatch.setattr(consumer_worker.settings, 'GRAFANA_METRICS_ENABLE', False)
