@@ -68,6 +68,11 @@ _COST_QUANTUM = Decimal('0.0001')
 # new-api 行里已被单独建列的键，其余原样进 `cost_extra` 留档。
 _PROMOTED_PRICING_KEYS = frozenset({'model_name', 'model_ratio', 'enable_groups', 'vendor_id'})
 
+# 每次 new-api 重算定价就换一个值、却不代表这个模型的计费事实变了的键。
+# 存进 `cost_extra` 会让每轮同步都误判「变了」→ `registry_revision` 天天变 →
+# WSPUSH 把全网 daemon 打醒重拉整张注册表。留档价值远不抵这个代价。
+_VOLATILE_PRICING_KEYS = frozenset({'pricing_version'})
+
 
 @dataclass(slots=True)
 class ModelRegistrySyncReport:
@@ -99,16 +104,25 @@ def _decimal_or_none(value: Any) -> Decimal | None:
 
 
 def _enable_groups_of(row: dict[str, Any]) -> list[str]:
-    """取可用分组列表（非列表或含非字符串项时如实降级为空，不猜）。"""
+    """取可用分组列表（非列表或含非字符串项时如实降级为空，不猜）。
+
+    **必须排序去重**：new-api 是从 Go map 序列化的，同一份分组每次响应顺序都不同
+    （实测 `['default','vip','svip']` / `['svip','default','vip']` 交替出现）。
+    分组本身是集合语义、顺序无意义，不归一化就会每轮同步都误判「变了」。
+    """
     groups = row.get('enable_groups')
     if not isinstance(groups, list):
         return []
-    return [str(g) for g in groups if isinstance(g, str) and g.strip()]
+    return sorted({g.strip() for g in groups if isinstance(g, str) and g.strip()})
 
 
 def _cost_extra_of(row: dict[str, Any]) -> dict[str, Any]:
-    """把 new-api 行里没被提升成列的计费字段原样留档（不下发，仅运维核对）。"""
-    return {key: value for key, value in row.items() if key not in _PROMOTED_PRICING_KEYS}
+    """把 new-api 行里没被提升成列的计费字段留档（不下发，仅运维核对）。"""
+    return {
+        key: value
+        for key, value in row.items()
+        if key not in _PROMOTED_PRICING_KEYS and key not in _VOLATILE_PRICING_KEYS
+    }
 
 
 @dataclass(slots=True)
