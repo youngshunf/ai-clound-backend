@@ -17,11 +17,13 @@
 合并规则是**交集**：语义表列出的模型，只有在 new-api 里真实可用才会下发。语义表没列的
 视频模型不会凭空出现（能力语义猜不出来，猜错就是静默失败），但会 warn 提示运营去补。
 
-## 为什么分身需要价格
+## 为什么分身需要价格，以及为什么只给档位
 
-分身代表主人利益。同一件事用 `wan2.6-i2v-flash`（倍率 0.5）还是 `happyhorse-1.1-i2v`
-（倍率 2.5）差 5 倍，草稿和终稿显然不该用同一个。不把成本告诉分身，它只能瞎选或永远用
-第一个——那笔钱是主人的。
+分身代表主人利益。同一件事用 `wan2.6-i2v-flash` 还是 `happyhorse-1.1-i2v` 差 5 倍，草稿和
+终稿显然不该用同一个。不把成本告诉分身，它只能瞎选或永远用第一个——那笔钱是主人的。
+
+但**只给档位、不给原始倍率**：倍率是内部计费参数，下发出去等于把计费口径泄漏给分身和主人，
+而他们要的判断只有「这个贵不贵」。档位在本次实际下发的模型之间比较得出。
 """
 
 from typing import Any
@@ -34,6 +36,30 @@ from backend.app.newapi.client import NewApiError, newapi_admin_client
 from backend.common.log import log
 
 
+# 价格档位阈值：相对**同类最便宜的那个**的倍数。分身只需要判断贵不贵，
+# 不需要（也不该）知道我们的计费口径。
+_ECONOMY_MAX_MULTIPLE = 1.5
+_STANDARD_MAX_MULTIPLE = 4.0
+
+
+def cost_tier_of(ratio: float, cheapest: float) -> str:
+    """把计费倍率折成价格档位（`economy` / `standard` / `premium`）。
+
+    以同类里最便宜的模型为基准取倍数分档——绝对倍率是内部计费参数，下发出去等于泄漏计费
+    口径，而分身要的判断只有「这个比那个贵多少」。实测视频三档正好落成：
+    `wan2.6-i2v-flash` 0.5（基准 → economy）、`agnes-video-v2.0` 1.5（3 倍 → standard）、
+    `happyhorse-1.1-i2v` 2.5（5 倍 → premium）。
+    """
+    if cheapest <= 0:
+        return 'standard'
+    multiple = ratio / cheapest
+    if multiple <= _ECONOMY_MAX_MULTIPLE:
+        return 'economy'
+    if multiple <= _STANDARD_MAX_MULTIPLE:
+        return 'standard'
+    return 'premium'
+
+
 def merge_catalog(
     declared: list[str | VideoModelSpec],
     available_names: set[str],
@@ -43,8 +69,12 @@ def merge_catalog(
 
     顺序沿用语义表，即运营指定的 failover 优先级。语义表里配了但 new-api 上没有的模型会被
     跳过并 warn——那多半是模型名写错或渠道被下掉，正是线上踩过的坑。
+
+    价格以 `cost_tier` 档位下发，**不下发原始倍率**（那是内部计费参数）。档位在**本次实际
+    下发的模型之间**比较得出，因此它回答的正是分身该问的那个问题：在我能用的这几个里，
+    这个算贵的还是便宜的。
     """
-    catalog: list[dict[str, Any]] = []
+    survivors: list[dict[str, Any]] = []
     for spec in declared:
         normalized = _normalize(spec)
         name = normalized['name']
@@ -53,11 +83,18 @@ def merge_catalog(
         if name not in available_names:
             log.warning(f'[video-catalog] PDC 声明的视频模型 {name!r} 在 new-api 上不可用，已跳过')
             continue
-        entry: dict[str, Any] = dict(normalized)
-        ratio = pricing.get(name)
-        if ratio is not None:
-            # 相对倍率（同分组内可比），不是绝对单价——绝对扣费还要乘时长/分辨率等档位倍率。
-            entry['relative_cost'] = ratio
+        survivors.append(normalized)
+
+    # 基准取「本次下发的模型里最便宜的那个」。**不足两个有价格的模型时整体不分档**：
+    # 档位是比较出来的结论，唯一选择既不贵也不便宜，标成 economy 等于凭空给了个便宜的暗示。
+    ratios = [pricing[m['name']] for m in survivors if m['name'] in pricing]
+    cheapest = min(ratios) if len(ratios) >= 2 else None
+
+    catalog: list[dict[str, Any]] = []
+    for entry in survivors:
+        ratio = pricing.get(entry['name'])
+        if ratio is not None and cheapest is not None:
+            entry['cost_tier'] = cost_tier_of(ratio, cheapest)
         catalog.append(entry)
     return catalog
 

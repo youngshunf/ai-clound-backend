@@ -22,26 +22,38 @@ def test_只下发在newapi上真实可用的模型() -> None:
     assert [m['name'] for m in catalog] == ['happyhorse-1.1-i2v'], '不存在的模型必须被跳过而非下发'
 
 
-def test_附带相对成本供分身取舍() -> None:
+def test_按档位下发价格且不泄漏计费倍率() -> None:
     declared = [
         _spec('wan2.6-i2v-flash', modality='image_to_video', dialect='ali', quality='draft'),
+        _spec('agnes-video-v2.0', modality='text_to_video'),
         _spec('happyhorse-1.1-i2v', modality='image_to_video', dialect='ali', quality='high'),
     ]
-    available = {'wan2.6-i2v-flash', 'happyhorse-1.1-i2v'}
-    catalog = merge_catalog(declared, available, {'wan2.6-i2v-flash': 0.5, 'happyhorse-1.1-i2v': 2.5})
+    available = {'wan2.6-i2v-flash', 'agnes-video-v2.0', 'happyhorse-1.1-i2v'}
+    # 生产实测倍率：0.5 / 1.5 / 2.5，相对最便宜的分别是 1x / 3x / 5x。
+    catalog = merge_catalog(
+        declared, available, {'wan2.6-i2v-flash': 0.5, 'agnes-video-v2.0': 1.5, 'happyhorse-1.1-i2v': 2.5}
+    )
     by_name = {m['name']: m for m in catalog}
-    # 5 倍差价是分身选型的关键依据（草稿用便宜的、终稿用贵的）。
-    assert by_name['wan2.6-i2v-flash']['relative_cost'] == 0.5
-    assert by_name['happyhorse-1.1-i2v']['relative_cost'] == 2.5
+    assert by_name['wan2.6-i2v-flash']['cost_tier'] == 'economy'
+    assert by_name['agnes-video-v2.0']['cost_tier'] == 'standard'
+    assert by_name['happyhorse-1.1-i2v']['cost_tier'] == 'premium'
+    # 原始计费倍率是内部参数，绝不下发。
+    assert all('relative_cost' not in m and 'model_ratio' not in m for m in catalog)
     assert by_name['wan2.6-i2v-flash']['quality'] == 'draft'
     assert by_name['happyhorse-1.1-i2v']['modality'] == 'image_to_video'
 
 
-def test_缺定价时仍下发目录只是不带成本() -> None:
+def test_缺定价时仍下发目录只是不带档位() -> None:
     # 定价拉不到不该让整个目录不可用——少一个选型依据，但模型仍能用。
     catalog = merge_catalog([_spec('agnes-video-v2.0')], {'agnes-video-v2.0'}, {})
     assert len(catalog) == 1
-    assert 'relative_cost' not in catalog[0], '没有价格就不写这个字段，绝不编一个默认值'
+    assert 'cost_tier' not in catalog[0], '没有价格就不标档位，绝不编一个默认值'
+
+
+def test_只有一个模型时不分档() -> None:
+    # 档位是比较出来的结论。唯一选择既不贵也不便宜，标成 economy 等于凭空暗示它便宜。
+    catalog = merge_catalog([_spec('only-model')], {'only-model'}, {'only-model': 9.9})
+    assert 'cost_tier' not in catalog[0], '不足两个可比模型时不该给出档位结论'
 
 
 def test_字符串简写归一为无声明形态() -> None:
