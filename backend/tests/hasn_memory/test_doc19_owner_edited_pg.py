@@ -43,6 +43,7 @@ from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.model import HasnOwnerMemory
 from backend.app.hasn_memory.schema.merge_gate import MergeApplyRequest, MergeOwnerMemoryPayload
 from backend.app.hasn_memory.service.merge_gate_service import merge_gate_service
+from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 from backend.database.schema_names import SCHEMA_NAMES
 
@@ -115,7 +116,6 @@ async def env() -> AsyncIterator[tuple[AsyncSession, Fixture]]:
                 sa.text('DELETE FROM hasn_memory.merge_run WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_memory.merge_request WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_memory.owner_memory WHERE owner_id = :o'),
-                sa.text('DELETE FROM hasn_memory.owner_memory_contribution WHERE owner_id = :o'),
                 sa.text(f'DELETE FROM {_SYNC_EVENTS} WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_agents WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_humans WHERE hasn_id = :o'),
@@ -159,12 +159,19 @@ async def _owner_writes_user_md(db: AsyncSession, fx: Fixture, content: str) -> 
     )
 
 
-def _merge_body(fx: Fixture, *, base_version: int, content: str | None) -> MergeApplyRequest:
+def _merge_body(
+    fx: Fixture,
+    *,
+    base_version: int,
+    content: str | None,
+    base_owner_memory_edited: bool = False,
+) -> MergeApplyRequest:
     """一轮合并提交体；``content=None`` 时**整个省略** `owner_memory` 键（与本地构造点同形）。"""
     payload: dict[str, Any] = {
         'run_id': f'mrun_{uuid.uuid4().hex[:24]}',
         'node_id': fx.node_id,
         'base_owner_memory_version': base_version,
+        'base_owner_memory_edited': base_owner_memory_edited,
         'verdicts': [],
         'derived_facts': [],
         'peer_portraits': [],
@@ -215,10 +222,29 @@ async def test_owner_manual_write_does_not_move_merge_baseline(env: tuple[AsyncS
         db,
         owner_id=fx.owner_id,
         agent_id=fx.agent_id,
-        body=_merge_body(fx, base_version=0, content='健康: 主人注重抗衰老'),
+        body=_merge_body(
+            fx,
+            base_version=0,
+            content='健康: 主人注重抗衰老',
+            base_owner_memory_edited=True,
+        ),
     )
     assert result.applied is True
     assert result.new_owner_memory_version == 1
+
+
+async def test_agent_owner_memory_snapshot_exposes_cas_state(env: tuple[AsyncSession, Fixture]) -> None:
+    """Agent 读面必须同时给出 version 与主人直编标记，主脑才能基于最新权威快照重算。"""
+    db, fx = env
+    await _owner_writes_user_md(db, fx, '称呼: 老板\n§\n偏好: 保留主人原话')
+    await db.flush()
+
+    snapshot = await owner_memory_service.get_owner_memory(db, owner_id=fx.owner_id)
+    assert snapshot == {
+        'content': None,
+        'version': 0,
+        'owner_edited': True,
+    }
 
 
 async def test_clearing_user_md_does_not_mark_owner_edited(env: tuple[AsyncSession, Fixture]) -> None:
@@ -311,7 +337,12 @@ async def test_merge_apply_with_owner_memory_resets_owner_edited(env: tuple[Asyn
         db,
         owner_id=fx.owner_id,
         agent_id=fx.agent_id,
-        body=_merge_body(fx, base_version=0, content='口味: 只喝冰美式（主人手工确认）'),
+        body=_merge_body(
+            fx,
+            base_version=0,
+            content='口味: 只喝冰美式（主人手工确认）',
+            base_owner_memory_edited=True,
+        ),
     )
     assert result.applied is True
 
@@ -333,7 +364,7 @@ async def test_merge_apply_without_owner_memory_keeps_owner_edited(env: tuple[As
     await db.flush()
     assert await _owner_edited(db, fx.owner_id) is True
 
-    body = _merge_body(fx, base_version=0, content=None)
+    body = _merge_body(fx, base_version=0, content=None, base_owner_memory_edited=True)
     assert body.owner_memory is None, '缺键必须解析成 None，而不是 422'
     result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.agent_id, body=body)
     assert result.applied is True
@@ -354,7 +385,12 @@ async def test_merge_apply_with_blank_owner_memory_keeps_owner_edited(env: tuple
         db,
         owner_id=fx.owner_id,
         agent_id=fx.agent_id,
-        body=_merge_body(fx, base_version=0, content='   '),
+        body=_merge_body(
+            fx,
+            base_version=0,
+            content='   ',
+            base_owner_memory_edited=True,
+        ),
     )
     assert result.applied is True
 
@@ -390,7 +426,12 @@ async def test_merge_status_exposes_owner_memory_edited(env: tuple[AsyncSession,
         db,
         owner_id=fx.owner_id,
         agent_id=fx.agent_id,
-        body=_merge_body(fx, base_version=0, content='口味: 只喝冰美式（已并入）'),
+        body=_merge_body(
+            fx,
+            base_version=0,
+            content='口味: 只喝冰美式（已并入）',
+            base_owner_memory_edited=True,
+        ),
     )
     merged = await merge_gate_service.merge_status(db, owner_id=fx.owner_id)
     assert merged.owner_memory_edited is False, '重算消费后提示随即消失'

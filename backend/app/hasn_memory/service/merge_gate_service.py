@@ -56,7 +56,7 @@ from backend.app.hasn_memory.schema.merge_gate import (
     PendingMergeRequest,
     SkippedVerdict,
 )
-from backend.app.hasn_memory.service.fact_uplink_service import bump_memory_invalidate, fact_uplink_service
+from backend.app.hasn_memory.service.fact_uplink_service import fact_uplink_service
 from backend.app.hasn_memory.service.merge_request_service import merge_request_service
 from backend.app.hasn_memory.service.merge_run_service import merge_run_service
 from backend.app.hasn_memory.service.owner_memory_service import _ensure_identity_lines, _estimate_tokens
@@ -77,6 +77,8 @@ STALE_THRESHOLD_DAYS = 7
 #: 拒绝原因枚举（与 `merge_run.reject_reason` 落库值一致，主脑据此决定下轮怎么重跑）。
 REJECT_NOT_MASTER_BRAIN = 'not_master_brain'
 REJECT_VERSION_CONFLICT = 'version_conflict'
+REJECT_OWNER_EDIT_CONFLICT = 'owner_edit_conflict'
+REJECT_FACT_SNAPSHOT_CONFLICT = 'fact_snapshot_conflict'
 REJECT_RUN_ID_OWNER_MISMATCH = 'run_id_owner_mismatch'
 
 _SECONDS_PER_DAY = 86400.0
@@ -139,7 +141,7 @@ class MergeGateService:
             return await self._replay_response(db, owner_id=owner_id, body=body)
 
         # 4) CAS：基线必须与库中当前版本一致（§5.6）。
-        current_version = await self._owner_memory_version(db, owner_id)
+        current_version, current_owner_edited = await self._owner_memory_state(db, owner_id)
         if int(body.base_owner_memory_version) != current_version:
             await self._record_rejected(owner_id=owner_id, agent_id=agent_id, body=body,
                                         reason=REJECT_VERSION_CONFLICT)
@@ -148,6 +150,26 @@ class MergeGateService:
                 f'base={body.base_owner_memory_version} current={current_version}'
             )
             raise MergeGateRejectedError(REJECT_VERSION_CONFLICT, 'owner_memory 基线版本与云端不一致，请重跑本轮合并')
+        if body.base_owner_memory_edited != current_owner_edited:
+            await self._record_rejected(
+                owner_id=owner_id,
+                agent_id=agent_id,
+                body=body,
+                reason=REJECT_OWNER_EDIT_CONFLICT,
+            )
+            log.warning(
+                f'合并闸拒绝 owner_edit_conflict：owner={owner_id} run={body.run_id} '
+                f'base={body.base_owner_memory_edited} current={current_owner_edited}'
+            )
+            raise MergeGateRejectedError(
+                REJECT_OWNER_EDIT_CONFLICT,
+                '主人在本轮计算后修改了 USER.md，请拉取新版本并重跑本轮合并',
+            )
+
+        # 画像和派生事实都由整份 active 事实集计算，不能只给 verdict 做逐条 revision 护栏。
+        # 这里要求「事实 ID + revision」集合完全一致，新增、撤回、purge、正文修订任一种竞态
+        # 都整轮拒绝，避免旧画像把已经删除的敏感事实重新写回 USER.md / MEMORY.md。
+        await self._assert_fact_snapshot(db, owner_id=owner_id, agent_id=agent_id, body=body)
 
         touched_fact_ids: list[str] = []
 
@@ -159,17 +181,20 @@ class MergeGateService:
         derived_created, derived_ids = await self._apply_derived_facts(db, owner_id=owner_id, body=body)
         touched_fact_ids.extend(derived_ids)
 
-        new_version = await self._apply_owner_memory(db, owner_id=owner_id, agent_id=agent_id, body=body,
-                                                     base_version=current_version)
+        new_version = await self._apply_owner_memory(
+            db,
+            owner_id=owner_id,
+            body=body,
+            base_version=current_version,
+        )
         portraits_updated = await self._apply_portraits(db, owner_id=owner_id, agent_id=agent_id, body=body)
 
         # 回灌广播：overlay 变更（含被清空的旧裁决）与派生事实都要发，否则各节点看到的
         # 生效可见性与云端不一致——「本机查不到、别的设备查得到」正是要消灭的困惑。
         for fact_id in dict.fromkeys(touched_fact_ids):
             await fact_uplink_service.emit_fact_downlink(db, owner_id=owner_id, fact_id=fact_id)
-        # 只发事件不唤醒，各节点要等到下次登录才知道裁决变了（daemon 侧拉记忆命名空间的唯一
-        # 触发器就是这条 invalidate）。合并的产出恰恰是「全网可见性」，静默等于没合并。
-        await bump_memory_invalidate(db, owner_id)
+        # memory / agents invalidate 必须由 API 在本事务明确提交后发布。若在这里提前推送，
+        # daemon 会抢在 commit 前回源并把旧 USER.md 写穿到 Runtime，提交后又没有第二次通知。
 
         await self._upsert_run(
             db,
@@ -298,6 +323,59 @@ class MergeGateService:
             )
         ).scalar_one_or_none()
         return int(row) if row is not None else None
+
+    async def _assert_fact_snapshot(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        agent_id: str,
+        body: MergeApplyRequest,
+    ) -> None:
+        """提交所依据的全部 active 事实版本必须与云端当前快照完全一致。"""
+        submitted: dict[str, int] = {}
+        duplicate_ids: list[str] = []
+        for item in body.fact_snapshot:
+            if item.fact_id in submitted:
+                duplicate_ids.append(item.fact_id)
+            submitted[item.fact_id] = int(item.revision)
+        rows = (
+            await db.execute(
+                sa.text(
+                    "SELECT fact_id, revision FROM hasn_memory.semantic_fact "
+                    "WHERE owner_id = :owner_id AND status = 'active' ORDER BY fact_id"
+                ),
+                {'owner_id': owner_id},
+            )
+        ).all()
+        current = {str(row[0]): int(row[1]) for row in rows}
+        if not duplicate_ids and submitted == current:
+            return
+
+        await self._record_rejected(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            body=body,
+            reason=REJECT_FACT_SNAPSHOT_CONFLICT,
+        )
+        missing = sorted(set(submitted) - set(current))
+        added = sorted(set(current) - set(submitted))
+        changed = sorted(
+            fact_id
+            for fact_id in set(submitted) & set(current)
+            if submitted[fact_id] != current[fact_id]
+        )
+        detail = (
+            f'duplicate={sorted(set(duplicate_ids))};missing={missing};added={added};changed={changed}'
+        )
+        log.warning(
+            f'合并闸拒绝 fact_snapshot_conflict：owner={owner_id} run={body.run_id} {detail}'
+        )
+        raise MergeGateRejectedError(
+            REJECT_FACT_SNAPSHOT_CONFLICT,
+            '本轮计算期间活跃事实已变化，请同步后重跑本轮合并',
+            detail=detail,
+        )
 
     # ------------------------------------------------------------ overlay 应用
 
@@ -462,7 +540,6 @@ class MergeGateService:
         db: AsyncSession,
         *,
         owner_id: str,
-        agent_id: str,
         body: MergeApplyRequest,
         base_version: int,
     ) -> int:
@@ -481,6 +558,7 @@ class MergeGateService:
         """
         new_version = base_version + 1
         content = (body.owner_memory.content or '').strip() if body.owner_memory else ''
+        clear = bool(body.owner_memory and body.owner_memory.clear)
         now = timezone.now()
         values: dict[str, Any] = {
             'version': new_version,
@@ -502,6 +580,12 @@ class MergeGateService:
             # 的 prompt 就不再携带主人版本，手工编辑被静默冲掉（§4.6 明令禁止）。
             # 回归钉子：`test_missing_owner_memory_key_does_not_reset_owner_edited`。
             values['owner_edited'] = False
+        elif clear:
+            # 最后一条 owner 事实被撤回或 purge 后，主脑会明确提交 clear。这里必须真正清掉
+            # 合并态与 Runtime 渲染源；把空串当 no-op 会让已删除的敏感事实永久残留。
+            values['content'] = None
+            values['token_count'] = 0
+            values['owner_edited'] = False
 
         # 本轮无正文时只推进版本与 last_merge_*，**不覆盖已有正文**（插入分支才落 content=None）。
         insert_values: dict[str, Any] = {'owner_id': owner_id, 'content': None}
@@ -513,7 +597,7 @@ class MergeGateService:
         )
         await db.flush()
 
-        if content:
+        if content or clear:
             # MEMPUSH（doc19 §10 保留）：覆盖该 owner 全部分身的 user_md 并 bump profile_revision，
             # Runtime 轮询 revision 变化后重新拉取覆盖本地 USER.md。
             await db.execute(
@@ -522,28 +606,56 @@ class MergeGateService:
                 .where(HasnAgents.owner_id == owner_id)
                 .values(user_md=content, profile_revision=HasnAgents.profile_revision + 1)
             )
-            try:
-                from backend.app.hasn.service.sync_invalidate_service import KIND_AGENTS, bump_owner
-
-                await bump_owner(KIND_AGENTS, db, owner_id)
-            except Exception as exc:  # 推送 best-effort：权威已落库，推送失败靠重连握手追平
-                log.warning(f'合并闸 WSPUSH agents invalidate 失败 owner={owner_id} agent={agent_id}: {exc}')
         return new_version
 
     async def _apply_portraits(
         self, db: AsyncSession, *, owner_id: str, agent_id: str, body: MergeApplyRequest
     ) -> int:
-        """落主脑重算好的 peer 画像并发下行；返回写入条数。"""
+        """落主脑重算好的分身自我画像与 peer 画像并发下行；返回写入条数。"""
         updated = 0
-        for item in body.peer_portraits:
-            await peer_portrait_service.upsert_merged_portrait(
-                db,
-                owner_id=owner_id,
-                peer_hasn_id=item.peer_hasn_id,
-                portrait_text=item.portrait_text,
-                peer_kind=item.peer_kind,
-                revised_by=agent_id,
-            )
+        seen_agents: set[str] = set()
+        for agent_portrait in body.agent_self_portraits:
+            if agent_portrait.agent_id in seen_agents:
+                raise ValueError(f'同一轮重复提交 agent_self 画像：{agent_portrait.agent_id}')
+            seen_agents.add(agent_portrait.agent_id)
+            portrait_text = (agent_portrait.portrait_text or '').strip()
+            if not portrait_text and not agent_portrait.clear:
+                raise ValueError(f'agent_self 画像正文为空且未明确 clear：{agent_portrait.agent_id}')
+            target = (
+                await db.execute(
+                    sa
+                    .update(HasnAgents)
+                    .where(
+                        HasnAgents.owner_id == owner_id,
+                        HasnAgents.hasn_id == agent_portrait.agent_id,
+                    )
+                    .values(memory_md=portrait_text, profile_revision=HasnAgents.profile_revision + 1)
+                    .returning(HasnAgents.hasn_id)
+                )
+            ).scalar_one_or_none()
+            if target is None:
+                raise ValueError(f'agent_self 画像目标不属于当前主人：{agent_portrait.agent_id}')
+            updated += 1
+        seen_peers: set[str] = set()
+        for peer_portrait in body.peer_portraits:
+            if peer_portrait.peer_hasn_id in seen_peers:
+                raise ValueError(f'同一轮重复提交 peer 画像：{peer_portrait.peer_hasn_id}')
+            seen_peers.add(peer_portrait.peer_hasn_id)
+            if peer_portrait.clear:
+                await peer_portrait_service.delete_merged_portrait(
+                    db,
+                    owner_id=owner_id,
+                    peer_hasn_id=peer_portrait.peer_hasn_id,
+                )
+            else:
+                await peer_portrait_service.upsert_merged_portrait(
+                    db,
+                    owner_id=owner_id,
+                    peer_hasn_id=peer_portrait.peer_hasn_id,
+                    portrait_text=peer_portrait.portrait_text or '',
+                    peer_kind=peer_portrait.peer_kind,
+                    revised_by=agent_id,
+                )
             updated += 1
         return updated
 

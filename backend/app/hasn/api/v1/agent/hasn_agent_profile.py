@@ -18,11 +18,9 @@ from backend.app.hasn.model import HasnAgents
 from backend.app.hasn.schema.hasn_agents import (
     AgentProfileResponse,
     AgentProfileRevisionResponse,
-    MemoryContributeRequest,
-    MemoryContributeResponse,
     OwnerMemoryResponse,
 )
-from backend.app.hasn.service.owner_memory_service import MEMORY_CONTRIBUTE_PENDING_NOTE, owner_memory_service
+from backend.app.hasn.service.owner_memory_service import owner_memory_service
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
 from backend.app.marketplace.service.agent_profile_sources import (
     build_agent_profile_skill_sources,
@@ -41,7 +39,7 @@ from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 
@@ -191,43 +189,6 @@ async def get_agent_profile_revision(
     )
 
 
-@router.post(
-    '/memory/contribute',
-    summary='Agent 上传 owner 记忆观察（入贡献流，待主脑下次整理并入）',
-)
-async def contribute_owner_memory(
-    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    db: CurrentSessionTransaction,
-    body: MemoryContributeRequest,
-) -> ResponseSchemaModel[MemoryContributeResponse]:
-    """Agent 把本地 USER.md 观察上传为 contribution。
-
-    owner/agent 身份恒取自 agent JWT（owner_hasn_id / agent_hasn_id），不读 body。
-
-    **doc19 §10（2026-07-31）**：端点与语义保留，实现改为「只落贡献流，不再内联合并」——
-    云端 LLM 合并已整体退役，合并由**主脑分身在它自己的设备上**做（§5.1）。响应如实反映
-    「已记录，将在下次整理时并入」，**不假装已合并**（零 fake）。
-    """
-    accepted = await owner_memory_service.contribute(
-        db,
-        owner_id=agent.owner_hasn_id,
-        agent_hasn_id=agent.agent_hasn_id,
-        content=body.content,
-    )
-    memory = await owner_memory_service.get_owner_memory(db, owner_id=agent.owner_hasn_id)
-    is_accepted = bool(accepted.get('accepted'))
-    return response_base.success(
-        data=MemoryContributeResponse(
-            accepted=is_accepted,
-            contribution_id=accepted.get('contribution_id'),
-            pending_merge=is_accepted,
-            merge_note=MEMORY_CONTRIBUTE_PENDING_NOTE if is_accepted else '',
-            owner_memory_version=int(memory.get('version') or 0),
-            reason=None if is_accepted else accepted.get('reason'),
-        )
-    )
-
-
 @router.get(
     '/memory',
     summary='Agent 拉取当前 owner 记忆（下发的 USER.md）',
@@ -238,5 +199,9 @@ async def get_owner_memory(
 ) -> ResponseSchemaModel[OwnerMemoryResponse]:
     memory = await owner_memory_service.get_owner_memory(db, owner_id=agent.owner_hasn_id)
     return response_base.success(
-        data=OwnerMemoryResponse(content=memory.get('content'), version=int(memory.get('version') or 0))
+        data=OwnerMemoryResponse(
+            content=memory.get('content'),
+            version=int(memory.get('version') or 0),
+            owner_edited=bool(memory.get('owner_edited')),
+        )
     )

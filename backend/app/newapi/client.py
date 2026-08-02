@@ -11,7 +11,8 @@
 - **代用户建 relay token**：new-api 无 admin 建 token 接口；建 token 必须以用户身份
   （`POST /api/token/`，UserAuth=调用方）。流程：admin 设密码 → 用户 login（独立 client）→
   携 login 返回的短期 Bearer 调 `GET /api/user/token` 铸用户 access_token → 用该 token（cookieless）AddToken →
-  admin `admin_token` 取明文 key。用户 access_token 由 service 加密存映射表复用。
+  admin `admin_token` 取明文 key。旧版仅返回 cookie 会话时沿用同一 client；用户 access_token
+  由 service 加密存映射表复用。
 - **trust_env=False**（强制）：本机/生产可能配 HTTP_PROXY/ALL_PROXY，httpx 默认会把
   localhost:3180 也走代理 → 503/ERR。new-api 是内网服务，绝不经外部代理。
 - **不自动重试非幂等 POST**（与项目网关铁律一致）；连接级错误如实抛出。
@@ -92,7 +93,7 @@ class NewApiAdminClient:
         }
 
     def _new_client(self) -> httpx.AsyncClient:
-        """独立短命 client（带 base_url + 独立 cookie jar）——**仅供 login 等需要会话隔离的流程**。
+        """独立短命 client（带 base_url）——**仅供 login 等短期认证流程**。
 
         trust_env=False：绝不经外部代理访问内网 new-api（见类 docstring）。普通 admin 调用走
         进程级连接池（见 :meth:`_request` 默认路径），不用本方法。
@@ -116,7 +117,7 @@ class NewApiAdminClient:
         字段上（如 `/pricing` 的顶层 `vendors` 供应商表），只取 `data` 就永远读不到。
 
         两条路径：
-        - **caller 传入 client**（login cookie jar 隔离流）：用它 + relative path（client 自带
+        - **caller 传入 client**（login 短期认证流）：用它 + relative path（client 自带
           base_url），**由 caller 负责关闭**（其 ``async with`` 收尾），本方法不关。
         - **默认**（无 caller client）：走进程级连接池单例 ``get_service_client('newapi')``——
           **绝不 aclose**（lifespan 统一关），且池单例无 base_url，须用**绝对 URL**

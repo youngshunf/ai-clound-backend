@@ -102,9 +102,8 @@ def clear_current_work_session_id() -> None:
 # register-on-write 公共接缝 `register_app_resource_artifact` 缺省经 `get_current_project_id()` 取本次
 # 项目 id 落 `hasn_artifacts.project_id`（自动打标·只进不退），已接应用零改造。None = 不在项目中工作
 # （产物不挂项目，仍凭 resource_uri 进分身产物 tab 与工作会话资源栏）。分发入口 finally 清，防跨调用串味。
-# doc19 §6.2 起本通道**同时**承载项目记忆语境：`hasn.memory.save` 未显式给 scope 时据它自动落
-# `scope_kind='project'`，读三工具据它做「当前项目 ∪ 非项目作用域」并集检索。值与
-# `AgentContext.project_id` 由 `server.call_tool` 归一（保留参数优先、auth 绑定次之），不会分叉。
+# 本通道同时承载系统注入的项目语境，供云端应用工具与产物登记使用。值与
+# `AgentContext.project_id` 由 `server.call_tool` 归一（保留参数优先、auth 绑定次之）。
 # ⚠️ finally 不清 = 重入串项目（同 `tool.call 重入覆写 ContextVar 会话` 的既有教训），必须清。
 _project_id_var: ContextVar[str | None] = ContextVar('hasn_project_id', default=None)
 

@@ -1,8 +1,8 @@
 """记忆独立模块与 schema 拆分（ADR-15，记忆实施 95）静态契约测试。
 
 不连库、不起 HTTP——纯导入 + metadata/源码内省，验收 doc 95 §6：
-- 6 张记忆表在 metadata 中 schema 全为 `hasn_memory`，无 public 旧表名残留；
-- owner_memory 用户端 URL（`/memory`、`/memory/contributions`）不变；
+- 记忆表在 metadata 中 schema 全为 `hasn_memory`，无 public 旧表名残留；
+- owner_memory 用户端只保留 `/memory`；
 - `app/hasn` 旧位置 re-export shim 兼容（model/service/api/schema）；
 - 裸 SQL 已全限定 `hasn_memory.namespace_revision`（无 `public.memory_namespace_revisions`）；
 - 历史迁移 SQL 覆盖当年的记忆表（SET SCHEMA + 去前缀 RENAME）。
@@ -17,10 +17,9 @@ from pathlib import Path
 
 REPO_BACKEND = Path(__file__).resolve().parents[2]
 
-# hasn_memory schema 内的 6 张表（去前缀；extraction_job 已随 doc18 退役删除）
+# hasn_memory schema 内的存量基础表（贡献表随 doc100 退役）
 MEMORY_TABLES = {
     'owner_memory',
-    'owner_memory_contribution',
     'namespace_revision',
     'episodic_turn',
     'semantic_fact',
@@ -39,8 +38,8 @@ STALE_PUBLIC_NAMES = {
 
 
 def _metadata():
-    # 导入全量 router 树，触发所有 model 注册进 MappedBase.metadata
-    import backend.app.router  # noqa: F401
+    # 只导入记忆域模型即可完成本测试所需的元数据注册，避免静态契约测试初始化整棵应用路由。
+    import backend.app.hasn_memory.model  # ruff: ignore[unused-import]
 
     from backend.common.model import MappedBase
 
@@ -67,18 +66,20 @@ def test_no_stale_public_memory_tables_in_metadata() -> None:
 def test_owner_memory_routes_preserved() -> None:
     from backend.app.hasn_memory.api.v1.app.owner_memory import router
 
-    paths = {getattr(r, 'path') for r in router.routes}
-    assert paths == {'/memory', '/memory/contributions'}, f'owner_memory 路由漂移：{sorted(paths)}'
+    paths = {
+        path
+        for route in router.routes
+        if isinstance(path := getattr(route, 'path', None), str)
+    }
+    assert paths == {'/memory'}, f'owner_memory 路由漂移：{sorted(paths)}'
 
 
 def test_legacy_shims_reexport() -> None:
     # model shim
-    from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemory, HasnOwnerMemoryContribution
+    from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemory
     from backend.app.hasn_memory.model import HasnOwnerMemory as NewOM
-    from backend.app.hasn_memory.model import HasnOwnerMemoryContribution as NewOMC
 
     assert HasnOwnerMemory is NewOM
-    assert HasnOwnerMemoryContribution is NewOMC
 
     # service shim（单例同一对象）
     from backend.app.hasn.service.owner_memory_service import owner_memory_service as legacy_svc
@@ -100,15 +101,13 @@ def test_legacy_shims_reexport() -> None:
 
 
 def test_owner_memory_models_use_hasn_memory_base() -> None:
-    from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
+    from backend.app.hasn_memory.model import HasnOwnerMemory
     from backend.app.hasn_memory.model._base import APP_SCHEMA, HasnMemoryBase
 
     assert APP_SCHEMA == 'hasn_memory'
     assert issubclass(HasnOwnerMemory, HasnMemoryBase)
-    assert issubclass(HasnOwnerMemoryContribution, HasnMemoryBase)
     assert HasnOwnerMemory.__table__.schema == 'hasn_memory'
     assert HasnOwnerMemory.__tablename__ == 'owner_memory'
-    assert HasnOwnerMemoryContribution.__tablename__ == 'owner_memory_contribution'
 
 
 def test_sync_service_raw_sql_fully_qualified() -> None:

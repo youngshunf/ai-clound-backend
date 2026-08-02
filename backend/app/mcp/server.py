@@ -30,7 +30,6 @@ from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
 from backend.app.mcp.tools.group import GroupJoinTool, GroupMessageListTool
-from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
     ConversationListTool,
     MessageListTool,
@@ -62,7 +61,7 @@ _DISPATCH_TOOL_NAMES = frozenset({'hasn.cloud.tool.call', 'hasn.local.tool.call'
 _SUMMARY_AUDIT_SAMPLE_RATE = 10
 
 
-async def load_app_tools_for_agent(agent_id: str, owner_id: str) -> list[BaseTool]:  # noqa: RUF029
+async def load_app_tools_for_agent(agent_id: str, owner_id: str) -> list[BaseTool]:  # ruff: ignore[unused-async]
     """Agent 维度的 App 工具（P4-B）。
 
     当前 AI-Native App 的可见性按 workspace 已发布 manifest 投影（见
@@ -202,12 +201,6 @@ class HasnCloudMcpServer:
         # 工作台工具（13-工作台/04-doc §5）：主脑发布每日关注简报。
         for tool_cls in WORKBENCH_TOOLS:
             self.tool_registry.register(tool_cls())
-
-        # 记忆工具（doc16 Phase C1：记忆迁云端权威）：save/search/recall/list 四工具，
-        # 直调云端权威 semantic_fact_service 读写 hasn_memory.semantic_fact（单一云端记忆）。
-        # save=memory:write（出厂 Allow，owner 三态可覆盖）；读类（search/recall/list）无 scope。
-        for memory_tool in MEMORY_TOOLS:
-            self.tool_registry.register(memory_tool)
 
         logger.info(f'Registered {len(self.tool_registry.get_all_tools())} builtin tools')
 

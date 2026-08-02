@@ -14,6 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter
 
+from backend.app.hasn.service.sync_invalidate_service import KIND_AGENTS, KIND_MEMORY, bump_owner
 from backend.app.hasn_memory.schema.merge_gate import (
     MergeApplyRequest,
     MergeApplyResponse,
@@ -23,11 +24,32 @@ from backend.app.hasn_memory.schema.merge_gate import (
 from backend.app.hasn_memory.service.merge_gate_service import MergeGateRejectedError, merge_gate_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.database.db import CurrentSessionTransaction
+from backend.database.db import CurrentSessionTransaction, async_db_session
 
 router = APIRouter()
+
+
+def _changes_agent_profile(body: MergeApplyRequest) -> bool:
+    """本轮是否改了 USER.md / MEMORY.md，决定是否发布 agents 失效。"""
+    owner_changed = bool(
+        body.owner_memory
+        and (body.owner_memory.clear or (body.owner_memory.content or '').strip())
+    )
+    return owner_changed or bool(body.agent_self_portraits)
+
+
+async def _publish_committed_invalidations(owner_id: str, *, agents_changed: bool) -> None:
+    """在合并事务提交后重算 revision 并推送；失败不反悔已提交的权威写。"""
+    kinds = (KIND_MEMORY, KIND_AGENTS) if agents_changed else (KIND_MEMORY,)
+    for kind in kinds:
+        try:
+            async with async_db_session() as snapshot_db:
+                await bump_owner(kind, snapshot_db, owner_id)
+        except Exception as exc:
+            log.warning(f'合并闸提交后 WSPUSH 失败 kind={kind} owner={owner_id}: {exc}')
 
 
 @router.post(
@@ -42,7 +64,8 @@ async def apply_merge(
     """整轮原子应用（doc19 §5.6）。
 
     拒绝时返回 **409** + `data.rejected_reason`（`not_master_brain` / `version_conflict` /
-    `run_id_owner_mismatch`），并已在独立事务里登记 `merge_run(status='rejected')`——主脑据此
+    `owner_edit_conflict` / `fact_snapshot_conflict` / `run_id_owner_mismatch`），并已在独立事务里登记
+    `merge_run(status='rejected')`——主脑据此
     下轮重跑，主人在记忆页看得到「为什么没整理成」，不静默停摆。
     """
     try:
@@ -62,6 +85,14 @@ async def apply_merge(
                 'detail': rejected.detail,
             },
         ) from rejected
+    # CurrentSessionTransaction 原本在依赖退出时才提交；invalidate 若在 service 内发布，在线
+    # daemon 会回源读到旧快照。这里先明确提交，再用新会话按已提交数据计算 revision 并推送。
+    await db.commit()
+    if not result.replayed:
+        await _publish_committed_invalidations(
+            agent.owner_hasn_id,
+            agents_changed=_changes_agent_profile(body),
+        )
     return response_base.success(data=result)
 
 

@@ -406,20 +406,7 @@ class AgentProfileRevisionResponse(SchemaBase):
     installed_skills_revision: str = Field(default='0', description='Agent 自装技能内容修订号（doc14 §B4）')
 
 
-# [ADR-15 收编兼容 re-export] Owner 记忆 DTO 已迁入 `app/hasn_memory.schema.owner_memory`。
-# 保持既有 importer（本文件 + agent 侧 hasn_agent_profile.py）兼容；新代码请直接从 hasn_memory 导入。
-from backend.app.hasn_memory.schema.owner_memory import (  # noqa: E402
-    MemoryContributeRequest as MemoryContributeRequest,
-)
-from backend.app.hasn_memory.schema.owner_memory import (
-    MemoryContributeResponse as MemoryContributeResponse,
-)
-from backend.app.hasn_memory.schema.owner_memory import (
-    OwnerMemoryContributionItem as OwnerMemoryContributionItem,
-)
-from backend.app.hasn_memory.schema.owner_memory import (
-    OwnerMemoryContributionsResponse as OwnerMemoryContributionsResponse,
-)
-from backend.app.hasn_memory.schema.owner_memory import (
+# [ADR-15 收编兼容 re-export] Owner 合并态 DTO 已迁入 `app/hasn_memory.schema.owner_memory`。
+from backend.app.hasn_memory.schema.owner_memory import (  # ruff: ignore[module-import-not-at-top-of-file]
     OwnerMemoryResponse as OwnerMemoryResponse,
 )

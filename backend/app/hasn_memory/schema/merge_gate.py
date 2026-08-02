@@ -13,7 +13,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -31,6 +31,13 @@ class MergeVerdictItem(SchemaBase):
         description='裁决 (merged_into:已并入派生事实/disputed:矛盾待主人确认)'
     )
     judged_revision: int = Field(ge=0, description='裁决所依据的 revision；与库中当前值不等即该条作废（§3.4 失效护栏）')
+
+
+class MergeFactRevisionItem(SchemaBase):
+    """主脑计算本轮时读到的一条活跃事实及其业务版本。"""
+
+    fact_id: str = Field(min_length=1, max_length=40, description='活跃事实 ID')
+    revision: int = Field(ge=1, description='计算画像与裁决时读到的业务 revision')
 
 
 class MergeDerivedFactItem(SchemaBase):
@@ -52,14 +59,47 @@ class MergeOwnerMemoryPayload(SchemaBase):
     """主脑重算后的 USER.md 正文（无变化时整个字段不传）。"""
 
     content: str | None = Field(None, description='重算后的 USER.md 正文')
+    clear: bool = Field(False, description='明确清空已失去事实依据的 USER.md；与非空 content 互斥')
+
+    @model_validator(mode='after')
+    def validate_clear_contract(self) -> 'MergeOwnerMemoryPayload':
+        """明确清空不能同时携带新正文；空正文且未 clear 仍按兼容 no-op 处理。"""
+        if self.clear and (self.content or '').strip():
+            raise ValueError('owner_memory.clear=true 时不得同时提交 content')
+        return self
+
+
+class MergeAgentSelfPortraitItem(SchemaBase):
+    """主脑重算后的一份分身自我画像（该分身的 ``MEMORY.md``）。"""
+
+    agent_id: str = Field(min_length=1, max_length=40, description='目标分身 HASN ID')
+    portrait_text: str | None = Field(None, description='分身自我画像正文')
+    clear: bool = Field(False, description='明确清空已失去事实依据的 MEMORY.md；与非空 portrait_text 互斥')
+
+    @model_validator(mode='after')
+    def validate_clear_contract(self) -> 'MergeAgentSelfPortraitItem':
+        """分身画像必须提交非空正文，或明确要求清空，不能两者皆无或同时存在。"""
+        has_text = bool((self.portrait_text or '').strip())
+        if self.clear == has_text:
+            raise ValueError('agent_self 画像必须在非空 portrait_text 与 clear=true 中二选一')
+        return self
 
 
 class MergePeerPortraitItem(SchemaBase):
     """主脑重算后的一份 peer 画像。"""
 
     peer_hasn_id: str = Field(max_length=40, description='对方 HASN ID')
-    portrait_text: str = Field(min_length=1, description='画像正文')
+    portrait_text: str | None = Field(None, description='画像正文')
+    clear: bool = Field(False, description='明确删除已失去事实依据的 peer 画像；与非空 portrait_text 互斥')
     peer_kind: Literal['human', 'agent'] | None = Field(None, description='对方类别（缺省按 hasn_id 前缀判定）')
+
+    @model_validator(mode='after')
+    def validate_clear_contract(self) -> 'MergePeerPortraitItem':
+        """联系人画像必须提交非空正文，或明确要求删除，不能两者皆无或同时存在。"""
+        has_text = bool((self.portrait_text or '').strip())
+        if self.clear == has_text:
+            raise ValueError('peer 画像必须在非空 portrait_text 与 clear=true 中二选一')
+        return self
 
 
 class MergeStats(SchemaBase):
@@ -78,9 +118,21 @@ class MergeApplyRequest(SchemaBase):
     base_owner_memory_version: int = Field(
         ge=0, description='提交声明的基线 owner_memory.version（CAS 依据；无行时为 0）'
     )
+    base_owner_memory_edited: bool = Field(
+        False,
+        description='计算本轮时读到的主人直编标记；提交前发生手工编辑则整轮拒绝',
+    )
+    fact_snapshot: list[MergeFactRevisionItem] = Field(
+        default_factory=list,
+        description='计算本轮时读取的全部 active 事实与 revision；云端要求与当前集合完全一致',
+    )
     verdicts: list[MergeVerdictItem] = Field(default_factory=list, description='overlay 裁决（整轮替换上一轮）')
     derived_facts: list[MergeDerivedFactItem] = Field(default_factory=list, description='派生事实集')
     owner_memory: MergeOwnerMemoryPayload | None = Field(None, description='重算后的 USER.md（无变化时不传）')
+    agent_self_portraits: list[MergeAgentSelfPortraitItem] = Field(
+        default_factory=list,
+        description='按分身重算后的 MEMORY.md 集',
+    )
     peer_portraits: list[MergePeerPortraitItem] = Field(default_factory=list, description='重算后的 peer 画像集')
     summary: str | None = Field(None, description='给主人看的人话摘要')
     stats: MergeStats = Field(default_factory=MergeStats, description='本轮裁决计数')

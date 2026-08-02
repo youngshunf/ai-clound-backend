@@ -56,7 +56,6 @@ from backend.app.hasn.model.hasn_nodes import HasnNodes as HasnNodes
 from backend.app.hasn.model.hasn_notifications import HasnNotifications as HasnNotifications
 from backend.app.hasn.model.hasn_owner_api_keys import HasnOwnerApiKeys as HasnOwnerApiKeys
 from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemory as HasnOwnerMemory
-from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemoryContribution as HasnOwnerMemoryContribution
 from backend.app.hasn.model.hasn_pending_intents import HasnPendingIntents as HasnPendingIntents
 from backend.app.hasn.model.hasn_platform_default_config import (
     HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,

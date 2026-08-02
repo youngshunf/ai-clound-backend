@@ -6,9 +6,8 @@
 
 钉死的核心不变量：
 
-1. **写继承**（§6.2）：有项目语境且调用方没表达 scope 意图 → 自动落
-   `scope_kind='project'` + `scope_id=<云端权威项目 UUID>`；调用方**显式**给了 scope → 永远
-   照办，项目语境不许覆盖它；
+1. **上行不改写作用域**：本地 hasn-node 选好的 `project` / `global` 作用域，云端
+   唯一事实上行入口必须原样保留；云端不再提供直写或项目写继承入口；
 2. **读不收窄**（铁律「项目轴写继承·读不收窄」+ §6.2 并集检索）：在项目里检索，**必定**
    看得见全局常识，只是看不见**别的项目**的专属事实。若这条测试变红，说明分身一进项目
    就与自己的全局记忆断联——比「没打通项目记忆」更糟；
@@ -35,6 +34,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn_memory.model.semantic_fact import SemanticFact
 from backend.app.hasn_memory.service.semantic_fact_service import semantic_fact_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
+from backend.tests.hasn_memory.fact_uplink_seed import seed_local_fact_uplink
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -83,142 +83,65 @@ def _project() -> str:
 
 
 # --------------------------------------------------------------------------------------
-# 一、写继承：项目语境自动带入（§6.2）
+# 一、上行保留本地已选定的作用域（§6.2）
 # --------------------------------------------------------------------------------------
 
 
-async def test_save_inherits_project_scope_when_no_explicit_scope(session: AsyncSession) -> None:
-    """有项目语境 + 未显式给 scope → 自动落 project 作用域 + 云端项目 UUID。"""
+async def test_uplink_preserves_project_and_global_scopes(session: AsyncSession) -> None:
+    """项目作用域由本地选定，云端上行只保留，不自行继承或改写。"""
     owner, agent, project = _owner(), _agent(), _project()
     try:
-        out = await semantic_fact_service.save_fact(
+        project_fact = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
             subject_kind='agent_self',
             predicate='项目约定',
             object_value='提交信息用中文',
-            project_id=project,
+            scope_kind='project',
+            scope_id=project,
         )
-        await session.commit()
-        assert out['scope_kind'] == 'project'
-        assert out['scope_id'] == project
-
-        row = (await session.execute(select(SemanticFact).where(SemanticFact.fact_id == out['fact_id']))).scalar_one()
-        assert row.scope_kind == 'project'
-        assert row.scope_id == project
-    finally:
-        await _cleanup(session, owner)
-
-
-async def test_save_without_project_context_keeps_legacy_fallback(session: AsyncSession) -> None:
-    """无项目语境 → 兜底逻辑一字不动：scope_kind='global'、scope_id 回落主体 id。"""
-    owner, agent = _owner(), _agent()
-    try:
-        out = await semantic_fact_service.save_fact(
+        global_fact = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
             subject_kind='agent_self',
             predicate='偏好',
             object_value='冰美式',
+            scope_kind='global',
+            scope_id=agent,
         )
-        await session.commit()
-        assert out['scope_kind'] == 'global'
-        assert out['scope_id'] == agent
+        assert (project_fact['scope_kind'], project_fact['scope_id']) == (
+            'project',
+            project,
+        )
+        assert (global_fact['scope_kind'], global_fact['scope_id']) == (
+            'global',
+            agent,
+        )
     finally:
         await _cleanup(session, owner)
 
 
-@pytest.mark.parametrize(
-    ('explicit_kind', 'explicit_id'),
-    [
-        ('global', None),  # 显式要全局：项目语境不许把它拽进项目
-        ('topic', 'topic:rust'),  # 显式要话题作用域
-        (None, 'scope_only_no_kind'),  # 只给 scope_id 也算表达了意图
-    ],
-)
-async def test_explicit_scope_beats_project_context(
-    session: AsyncSession, explicit_kind: str | None, explicit_id: str | None
-) -> None:
-    """显式传 scope_* → 原样采用，绝不被项目语境覆盖（§6.2「显式传参优先」）。"""
+async def test_world_subject_plus_project_scope_survives_uplink(session: AsyncSession) -> None:
+    """§6.1/D-5：合法的 world + project 本地事实上行后原样保留。"""
     owner, agent, project = _owner(), _agent(), _project()
     try:
-        out = await semantic_fact_service.save_fact(
-            session,
-            owner_id=owner,
-            agent_id=agent,
-            subject_kind='agent_self',
-            predicate='偏好',
-            object_value='显式作用域',
-            scope_kind=explicit_kind,
-            scope_id=explicit_id,
-            project_id=project,
-        )
-        await session.commit()
-        assert out['scope_id'] != project, '显式给了 scope 就不该被项目语境接管'
-        if explicit_kind:
-            assert out['scope_kind'] == explicit_kind
-        else:
-            # 只给 scope_id：kind 走既有兜底 global，id 照办
-            assert out['scope_kind'] == 'global'
-            assert out['scope_id'] == explicit_id
-    finally:
-        await _cleanup(session, owner)
-
-
-async def test_world_subject_plus_project_scope_survives_world_correction(session: AsyncSession) -> None:
-    """§6.1/D-5：项目记忆 = world 主体 + project 作用域，不许被 world 纠偏逻辑改掉。
-
-    纠偏只针对 `world + global`（表 CHECK ck_semantic_fact_world_scope 不许这个组合），
-    project 作用域完全合法，落库后必须原样保留。
-    """
-    owner, agent, project = _owner(), _agent(), _project()
-    try:
-        # ① 自动带入路径
-        auto = await semantic_fact_service.save_fact(
+        fact = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
             subject_kind='world',
-            subject_id=f'proj_{project[:20]}',  # subject_id 是 varchar(40)，别用完整 'proj:<uuid>'（41 字符）
+            subject_id=f'proj_{project[:20]}',
             predicate='技术决策',
             object_value='本项目数据库用 PostgreSQL 16',
-            project_id=project,
-        )
-        # ② 显式指定路径
-        explicit = await semantic_fact_service.save_fact(
-            session,
-            owner_id=owner,
-            agent_id=agent,
-            subject_kind='world',
-            subject_id=f'proj_{project[:20]}',  # subject_id 是 varchar(40)，别用完整 'proj:<uuid>'（41 字符）
-            predicate='踩过的坑',
-            object_value='codegen 会改坏 router',
             scope_kind='project',
             scope_id=project,
         )
-        await session.commit()
-
-        for out in (auto, explicit):
-            assert out['subject_kind'] == 'world'
-            assert out['scope_kind'] == 'project', 'world + project 是项目记忆的正规形态，不该被纠偏'
-            assert out['scope_id'] == project
-            assert out['agent_id'] is None  # world 主体 agent_id 必空（表 CHECK）
-
-        # world + global 仍然被纠偏（既有行为不许回归）
-        corrected = await semantic_fact_service.save_fact(
-            session,
-            owner_id=owner,
-            agent_id=agent,
-            subject_kind='world',
-            subject_id='geo:beijing',
-            predicate='常识',
-            object_value='北京是中国首都',
-            scope_kind='global',
-        )
-        await session.commit()
-        assert corrected['scope_kind'] == 'topic'
+        assert fact['subject_kind'] == 'world'
+        assert fact['scope_kind'] == 'project'
+        assert fact['scope_id'] == project
+        assert fact['agent_id'] is None
     finally:
         await _cleanup(session, owner)
 
@@ -232,25 +155,27 @@ async def _seed_three_scopes(session: AsyncSession, owner: str, agent: str, mark
     """造 3 条同关键词事实：当前项目 / 另一个项目 / 全局。返回 {档位: fact_id}。"""
     here = _project()
     elsewhere = _project()
-    mine = await semantic_fact_service.save_fact(
+    mine = await seed_local_fact_uplink(
         session,
         owner_id=owner,
         agent_id=agent,
         subject_kind='agent_self',
         predicate='部署方式',
         object_value=f'{marker}·本项目走 systemd',
-        project_id=here,
+        scope_kind='project',
+        scope_id=here,
     )
-    theirs = await semantic_fact_service.save_fact(
+    theirs = await seed_local_fact_uplink(
         session,
         owner_id=owner,
         agent_id=agent,
         subject_kind='agent_self',
         predicate='部署方式',
         object_value=f'{marker}·别的项目走 docker',
-        project_id=elsewhere,
+        scope_kind='project',
+        scope_id=elsewhere,
     )
-    globally = await semantic_fact_service.save_fact(
+    globally = await seed_local_fact_uplink(
         session,
         owner_id=owner,
         agent_id=agent,
@@ -318,7 +243,7 @@ async def test_union_search_keeps_non_project_scopes_visible(session: AsyncSessi
     owner, agent, project = _owner(), _agent(), _project()
     marker = f'世界{uuid.uuid4().hex[:6]}'
     try:
-        world_fact = await semantic_fact_service.save_fact(
+        world_fact = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
@@ -407,14 +332,15 @@ async def test_project_union_still_respects_effective_visibility(session: AsyncS
     owner, agent, project = _owner(), _agent(), _project()
     marker = f'撤回{uuid.uuid4().hex[:6]}'
     try:
-        out = await semantic_fact_service.save_fact(
+        out = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
             subject_kind='agent_self',
             predicate='项目约定',
             object_value=marker,
-            project_id=project,
+            scope_kind='project',
+            scope_id=project,
         )
         await session.commit()
         assert any(
@@ -452,14 +378,15 @@ async def test_project_memory_is_owner_scoped(session: AsyncSession) -> None:
     owner, other_owner, agent, project = _owner(), _owner(), _agent(), _project()
     marker = f'私有{uuid.uuid4().hex[:6]}'
     try:
-        await semantic_fact_service.save_fact(
+        await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
             subject_kind='agent_self',
             predicate='项目约定',
             object_value=marker,
-            project_id=project,
+            scope_kind='project',
+            scope_id=project,
         )
         await session.commit()
         # 同一 project_id、不同 owner → 空
@@ -484,7 +411,7 @@ async def test_supersedes_hint_persists_to_column_and_reads_back(session: AsyncS
     owner, agent = _owner(), _agent()
     marker = f'纠正{uuid.uuid4().hex[:6]}'
     try:
-        old = await semantic_fact_service.save_fact(
+        old = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
@@ -492,7 +419,7 @@ async def test_supersedes_hint_persists_to_column_and_reads_back(session: AsyncS
             predicate='住址',
             object_value=f'{marker}·老地址',
         )
-        new = await semantic_fact_service.save_fact(
+        new = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,
@@ -531,7 +458,7 @@ async def test_supersedes_hint_absent_stays_null(session: AsyncSession) -> None:
     """不带 hint（含空串）→ 列留 NULL，不落空字符串污染合并规则层判据。"""
     owner, agent = _owner(), _agent()
     try:
-        out = await semantic_fact_service.save_fact(
+        out = await seed_local_fact_uplink(
             session,
             owner_id=owner,
             agent_id=agent,

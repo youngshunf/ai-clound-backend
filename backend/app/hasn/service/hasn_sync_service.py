@@ -64,7 +64,6 @@ from backend.app.hasn.service._sync_codec import (
 from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
 from backend.app.hasn_sync.ports.dto import SyncEnvelope
 from backend.common.exception import errors
-from backend.common.log import log
 from backend.database.schema_names import SCHEMA_NAMES
 from backend.utils.timezone import timezone
 
@@ -1055,20 +1054,33 @@ class SqlAlchemySyncGateway:
         result = await db.execute(
             sa.text(
                 """
-                SELECT owner_id, agent_id
-                FROM hasn_task.task
-                WHERE task_uuid = :task_uuid
+                SELECT
+                    task.owner_id,
+                    task.agent_id,
+                    task.target_scope,
+                    EXISTS (
+                        SELECT 1
+                        FROM hasn_agents AS agent
+                        WHERE agent.hasn_id = :reporter_agent_id
+                          AND agent.owner_id = task.owner_id
+                          AND agent.status = 'active'
+                    ) AS reporter_owned
+                FROM hasn_task.task AS task
+                WHERE task.task_uuid = :task_uuid
                 LIMIT 1
                 """
             ),
-            {'task_uuid': task_uuid},
+            {'task_uuid': task_uuid, 'reporter_agent_id': agent_hasn_id},
         )
         task_row = result.mappings().first()
-        if task_row is not None and (
-            task_row['owner_id'] != owner_id
-            or task_row['agent_id'] != agent_hasn_id
-        ):
-            raise errors.ForbiddenError(msg='agent cannot report this task run')
+        if task_row is not None:
+            # 普通任务仍只允许绑定分身上报；all_agents 由 daemon 在本节点逐分身扇出，
+            # 每条 run 必须允许实际执行且仍归属同一主人的分身上报自己的摘要。
+            reporter_allowed = task_row['agent_id'] == agent_hasn_id or (
+                task_row['target_scope'] == 'all_agents' and bool(task_row['reporter_owned'])
+            )
+            if task_row['owner_id'] != owner_id or not reporter_allowed:
+                raise errors.ForbiddenError(msg='agent cannot report this task run')
 
         payload_json = {
             'token_usage': json.dumps(summary.get('token_usage'), ensure_ascii=False, sort_keys=True, default=str)
