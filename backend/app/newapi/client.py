@@ -9,8 +9,8 @@
   access_token 持有者 id（无跨用户冒充），故管理类操作以 root 身份 + 显式目标定位，
   **不用 `/self` 冒充他人**。
 - **代用户建 relay token**：new-api 无 admin 建 token 接口；建 token 必须以用户身份
-  （`POST /api/token/`，UserAuth=调用方）。流程：admin 设密码 → 用户 login（独立 cookie
-  jar）→ `GET /api/user/token` 铸用户 access_token → 用该 token（cookieless）AddToken →
+  （`POST /api/token/`，UserAuth=调用方）。流程：admin 设密码 → 用户 login（独立 client）→
+  携 login 返回的短期 Bearer 调 `GET /api/user/token` 铸用户 access_token → 用该 token（cookieless）AddToken →
   admin `admin_token` 取明文 key。用户 access_token 由 service 加密存映射表复用。
 - **trust_env=False**（强制）：本机/生产可能配 HTTP_PROXY/ALL_PROXY，httpx 默认会把
   localhost:3180 也走代理 → 503/ERR。new-api 是内网服务，绝不经外部代理。
@@ -316,18 +316,26 @@ class NewApiAdminClient:
     async def bootstrap_user_access_token(self, *, newapi_user_id: int, username: str) -> str:
         """为用户铸 new-api access_token（管理面身份令牌，配 New-Api-User 用）。
 
-        admin 设临时密码 → 用户 login（独立 cookie jar）→ GET /user/token。
+        admin 设临时密码 → 用户 login（独立 client）→ 携短期 Bearer 调 GET /user/token。
+        旧版 NewAPI 只建立 cookie 会话且不返回 access_token，仍沿用同一 client 兼容调用。
         返回明文 access_token（service 负责加密落库复用）。
         """
         password = _gen_password()
         await self.set_user_password(newapi_user_id=newapi_user_id, username=username, password=password)
-        # 独立 client 持 login 会话（cookie jar 不污染 admin 调用）
+        # 独立 client 隔离 login 的短期 Bearer 与旧版 cookie，不污染 admin 调用。
         async with self._new_client() as login_c:
-            await self._request(
+            login_data = await self._request(
                 'POST', '/user/login', json={'username': username, 'password': password}, client=login_c
             )
+            token_headers = {'New-Api-User': str(newapi_user_id)}
+            if isinstance(login_data, dict):
+                login_access_token = login_data.get('access_token')
+                if isinstance(login_access_token, str) and login_access_token.strip():
+                    token_type = login_data.get('token_type')
+                    normalized_type = token_type.strip() if isinstance(token_type, str) else 'Bearer'
+                    token_headers['Authorization'] = f'{normalized_type or "Bearer"} {login_access_token.strip()}'
             token = await self._request(
-                'GET', '/user/token', headers={'New-Api-User': str(newapi_user_id)}, client=login_c
+                'GET', '/user/token', headers=token_headers, client=login_c
             )
         if not token or not isinstance(token, str):
             raise NewApiError(f'铸 access_token 失败 user={username}', endpoint='/user/token')

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -65,6 +65,33 @@ async def test_provision_user_relay_token_reuses_existing_token_before_add() -> 
 
 def _client() -> NewApiAdminClient:
     return NewApiAdminClient(base_url='http://newapi.local/api', access_token='admin-token', admin_user_id=1)
+
+
+async def test_bootstrap_user_access_token_uses_login_bearer_for_user_token() -> None:
+    """新版 NewAPI 登录返回短期 Bearer，铸 PAT 时必须显式携带，不能再依赖旧 cookie 会话。"""
+    client = _client()
+    client.set_user_password = AsyncMock()  # type: ignore[method-assign]
+    client._request = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {'access_token': 'dashboard-access-token', 'token_type': 'Bearer'},
+            'user-management-token',
+        ]
+    )
+    login_client = AsyncMock()
+    login_context = MagicMock()
+    login_context.__aenter__ = AsyncMock(return_value=login_client)
+    login_context.__aexit__ = AsyncMock(return_value=None)
+    client._new_client = MagicMock(return_value=login_context)  # type: ignore[method-assign]
+
+    token = await client.bootstrap_user_access_token(newapi_user_id=117, username='13800138000')
+
+    assert token == 'user-management-token'
+    token_request = client._request.await_args_list[1]
+    assert token_request.args == ('GET', '/user/token')
+    assert token_request.kwargs['headers'] == {
+        'Authorization': 'Bearer dashboard-access-token',
+        'New-Api-User': '117',
+    }
 
 
 async def test_ensure_user_group_sets_group_when_empty() -> None:
