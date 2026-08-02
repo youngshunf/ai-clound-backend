@@ -28,7 +28,7 @@ Sort = Literal['relevance', 'downloads', 'updated']
 async def _publish(
     *,
     agent: AgentTokenPayload,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     resource_kind: Literal['skill', 'template', 'skill_pack'],
     payload: AgentMarketplacePublishRequest,
     idempotency_key: str,
@@ -53,7 +53,7 @@ async def _publish(
 )
 async def publish_skill(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     payload: AgentMarketplacePublishRequest,
     idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128)],
     work_session_id: Annotated[
@@ -78,7 +78,7 @@ async def publish_skill(
 )
 async def publish_template(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     payload: AgentMarketplacePublishRequest,
     idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128)],
     work_session_id: Annotated[
@@ -103,7 +103,7 @@ async def publish_template(
 )
 async def publish_skill_pack(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     payload: AgentMarketplacePublishRequest,
     idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128)],
     work_session_id: Annotated[

@@ -24,7 +24,7 @@ from backend.app.marketplace.storage.s3_storage import marketplace_storage_servi
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
-from backend.database.db import async_db_session, get_db, get_db_transaction
+from backend.database.db import async_db_session, get_db
 from backend.plugin.s3.service.storage_service import StorageService
 from backend.utils.timezone import timezone
 
@@ -297,7 +297,6 @@ async def e2e():
         )
 
     _APP.dependency_overrides[get_db] = _yield_session
-    _APP.dependency_overrides[get_db_transaction] = _yield_session
     _APP.dependency_overrides[agent_jwt_auth] = _auth
     identity.http = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')
     identity.storage = OwnerStorageService(async_db_session)
@@ -442,6 +441,31 @@ async def test_skill_publish_replays_same_key_and_rejects_changed_content_withou
             )
         ).mappings().one()
     assert dict(counts) == {'requests': 1, 'resources': 1}
+
+
+async def test_submit_review_uses_production_session_boundary(e2e) -> None:
+    """生产会话依赖允许服务先提交草稿，再在新事务中完成提审。"""
+    slug = f'session-boundary-{uuid.uuid4().hex[:8]}'
+    asset_uri = await _upload_asset(e2e, _skill_zip(slug), name=f'{slug}.zip')
+    session_override = _APP.dependency_overrides.pop(get_db)
+    try:
+        response = await e2e.http.post(
+            '/api/v1/marketplace/agent/publish/skills',
+            headers={'Idempotency-Key': f'session-boundary-{uuid.uuid4().hex}'},
+            json={
+                'asset_uri': asset_uri,
+                'visibility': 'public',
+                'submit_review': True,
+            },
+        )
+    finally:
+        _APP.dependency_overrides[get_db] = session_override
+
+    assert response.status_code == 200, response.text
+    result = response.json()['data']
+    assert result['resource_id'] == f'user/{e2e.owner}/{slug}'
+    assert result['status'] == 'pending_review'
+    assert result['review_submission']['status'] == 'submitted'
 
 
 async def test_publish_rejects_foreign_owner_asset(e2e) -> None:
