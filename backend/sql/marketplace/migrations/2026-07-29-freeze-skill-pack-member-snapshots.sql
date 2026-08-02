@@ -12,7 +12,12 @@ WITH frozen AS (
             ORDER BY dependency.key
         ) AS member_snapshots,
         count(*) AS resolved_count,
-        jsonb_object_length(tv.skill_dependencies_versioned) AS expected_count
+        (
+            SELECT count(*)
+            FROM jsonb_object_keys(
+                COALESCE(tv.skill_dependencies_versioned, '{}'::jsonb)
+            )
+        ) AS expected_count
     FROM hasn_marketplace.marketplace_template_version AS tv
     JOIN hasn_marketplace.marketplace_template AS template
       ON template.template_id = tv.template_id

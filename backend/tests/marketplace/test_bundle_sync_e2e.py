@@ -14,6 +14,7 @@ hub 子集（bundles/*/bundle.yaml + common-bundles.yaml），断言：
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 import pytest
@@ -24,7 +25,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.marketplace.model import MarketplaceSkill
+from backend.app.marketplace.model import MarketplaceSkill, MarketplaceSkillVersion
 from backend.app.marketplace.service.github_sync_service import GitHubSyncService
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -36,11 +37,22 @@ def _tag() -> str:
 
 
 async def _seed_skill(session, namespace: str, slug: str) -> None:
-    """落一条已发布公开技能（实施/92：技能包成员落库时按完整 id 校验已发布公开才放行）。"""
+    """落已发布公开技能及其不可变版本，等价于生产先同步技能、再同步技能包。"""
     skill_id = f'{namespace}/{slug}'
+    await session.execute(delete(MarketplaceSkillVersion).where(MarketplaceSkillVersion.skill_id == skill_id))
     await session.execute(delete(MarketplaceSkill).where(MarketplaceSkill.skill_id == skill_id))
+    content_hash = hashlib.sha256(f'{skill_id}@1.0.0'.encode()).hexdigest()
     session.add(
         MarketplaceSkill(skill_id=skill_id, namespace=namespace, slug=slug, name=slug, status='published', visibility='public')
+    )
+    session.add(
+        MarketplaceSkillVersion(
+            skill_id=skill_id,
+            version='1.0.0',
+            content_hash=content_hash,
+            file_hash=content_hash,
+            is_latest=True,
+        )
     )
     await session.flush()
 
