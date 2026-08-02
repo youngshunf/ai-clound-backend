@@ -324,20 +324,22 @@ async def test_author_can_translate_own_private_post(pg_sessionmaker, cleanup) -
 
 
 async def test_concurrent_first_translation_calls_llm_once(pg_sessionmaker, cleanup) -> None:
-    """10 个并发请求同一条帖子 → Redis 短锁收敛，只产生 1 次 LLM 调用。"""
+    """10 个**不同账号**并发点同一条帖子 → Redis 短锁收敛，只产生 1 次 LLM 调用。
+
+    刻意用不同 viewer（P4 出口判据原话是「两个账号同时点同一条只产生一次 LLM 调用」）：
+    缓存与锁都是**全站共享**的，键里不含身份；若哪天有人把 owner 掺进缓存键或锁键，
+    这条会立刻变红。同一个账号点十次是发现不了这个退化的。
+    """
     author = f'h_{uuid.uuid4()}'
-    viewer = f'h_{uuid.uuid4()}'
+    viewers = [f'h_{uuid.uuid4()}' for _ in range(10)]
     post_id = await _make_post(
         pg_sessionmaker, content='一条会被十个人同时点翻译的热帖内容。', author=author
     )
 
-    async def slow_responder(_user: str) -> str:
-        return 'TRANSLATED'
-
-    gateway = _CountingGateway(responder=lambda user: slow_responder and 'TRANSLATED')
+    gateway = _CountingGateway()
     service = _service(gateway)
 
-    async def one_request() -> dict[str, Any]:
+    async def one_request(viewer: str) -> dict[str, Any]:
         # 每个并发请求各自一个 DB 会话（AsyncSession 不是并发安全的）
         async with pg_sessionmaker() as db:
             return await service.translate_resource(
@@ -345,7 +347,7 @@ async def test_concurrent_first_translation_calls_llm_once(pg_sessionmaker, clea
                 target_lang='en', viewer_hasn_id=viewer,
             )
 
-    results = await asyncio.gather(*(one_request() for _ in range(10)))
+    results = await asyncio.gather(*(one_request(viewer) for viewer in viewers))
 
     assert all(item['fields']['content'] == 'TRANSLATED' for item in results)
     assert gateway.call_count == 1, (
