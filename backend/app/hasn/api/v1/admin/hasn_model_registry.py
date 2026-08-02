@@ -57,6 +57,20 @@ def _to_row(item: Any, tiers: dict[int, str] | None = None) -> ModelRegistryRow:
     )
 
 
+async def _bump_registry_revision(db) -> None:
+    """注册表内容变更 → 主动 push `hasn.sync.invalidate(model_registry)` 给在线节点。
+
+    best-effort：推送失败绝不影响已写入的标注/同步结果——离线节点靠重连握手快照对账追平。
+    """
+    try:
+        from backend.app.hasn.service.sync_invalidate_service import KIND_MODEL_REGISTRY
+        from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+        await sync_bump(KIND_MODEL_REGISTRY, db)
+    except Exception as exc:  # noqa: BLE001 - 推送失败不致命
+        log.warning(f'[HASN] model_registry invalidate 推送失败 (非致命): {exc}')
+
+
 @router.get(
     '',
     summary='分页列出模型注册表（可按能力类别 / 网关状态 / 关键字过滤）',
@@ -94,6 +108,7 @@ async def patch_model_registry_annotation(
 ) -> ResponseSchemaModel[ModelRegistryRow]:
     row = await hasn_model_registry_service.patch_annotation(db=db, pk=pk, obj=obj)
     tiers = cost_tier_map(await hasn_model_registry_service.get_all(db=db))
+    await _bump_registry_revision(db)
     return response_base.success(data=_to_row(row, tiers))
 
 
@@ -110,4 +125,5 @@ async def sync_model_registry(db: CurrentSessionTransaction) -> ResponseSchemaMo
     """同步失败**不吞**：new-api 不可达时抛 `NewApiError`，运营看到真实错误，
     而不是一份「同步成功、0 个模型」的假报告（零 fake）。"""
     report = await model_registry_sync_service.sync(db)
+    await _bump_registry_revision(db)
     return response_base.success(data=ModelRegistrySyncReportSchema(**report.as_dict()))
