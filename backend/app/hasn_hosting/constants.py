@@ -87,6 +87,9 @@ EVENT_REAUTHORIZED: Final[str] = 'reauthorized'
 EVENT_DELETED: Final[str] = 'deleted'
 EVENT_BACKUP: Final[str] = 'backup'
 EVENT_FAILED: Final[str] = 'failed'
+# 改资源档位（H9-b）。与 `updated` 分开：那条是换镜像，这条是改内存/CPU，
+# 事件流水里混成一种会让「这次重启到底为什么」查不清楚。
+EVENT_RESIZED: Final[str] = 'resized'
 
 EVENT_TYPES: Final[tuple[str, ...]] = (
     EVENT_CREATED,
@@ -96,6 +99,7 @@ EVENT_TYPES: Final[tuple[str, ...]] = (
     EVENT_UPDATE_FAILED,
     EVENT_ROLLED_BACK,
     EVENT_REAUTHORIZED,
+    EVENT_RESIZED,
     EVENT_DELETED,
     EVENT_BACKUP,
     EVENT_FAILED,
@@ -113,6 +117,10 @@ ERR_GRANT_INVALID: Final[str] = 'session_grant_invalid'
 ERR_GRANT_REPLAYED: Final[str] = 'session_grant_replayed'
 ERR_SERVICE_UNCONFIGURED: Final[str] = 'service_unconfigured'
 ERR_REAUTHORIZE_NOT_ALLOWED: Final[str] = 'reauthorize_not_allowed'
+# 改档超过订阅档允许的单节点内存上限（H9-b）。与 ERR_QUOTA_EXCEEDED 分开：
+# 那条是「节点数量」超了，这条是「单个节点太大」，WebUI 的引导文案完全不同
+# （前者要删节点或加购，后者要升档）。
+ERR_NODE_MEMORY_CEILING: Final[str] = 'cloud_node_memory_ceiling_exceeded'
 ERR_RATE_LIMITED: Final[str] = 'rate_limited'
 
 # ─── Redis key（§3.4） ───

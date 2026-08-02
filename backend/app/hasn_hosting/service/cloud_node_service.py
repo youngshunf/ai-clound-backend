@@ -29,6 +29,7 @@ from backend.app.hasn_hosting.constants import (
     CLOUD_NODE_FEATURE_KEY,
     CODE_PURPOSE_CREATE,
     CODE_PURPOSE_REAUTHORIZE,
+    ERR_NODE_MEMORY_CEILING,
     ERR_QUOTA_EXCEEDED,
     ERR_REAUTHORIZE_NOT_ALLOWED,
     ERR_SUBSCRIPTION_REQUIRED,
@@ -36,6 +37,7 @@ from backend.app.hasn_hosting.constants import (
     EVENT_DELETED,
     EVENT_FAILED,
     EVENT_REAUTHORIZED,
+    EVENT_RESIZED,
     EVENT_STARTED,
     EVENT_STOPPED,
     EVENT_TYPES,
@@ -127,27 +129,25 @@ class CloudNodeService:
         return None
 
     @staticmethod
-    async def _tier_grant(db: AsyncSession, subscription: UserSubscription) -> int:
-        """**来源 A**：该订阅所在 LLM 档位**附赠**的云端节点数。
+    async def _tier_quota(db: AsyncSession, subscription: UserSubscription, key: str) -> int:
+        """从订阅档位读一个配额键，取值顺序固定（先命中先返回）：
 
-        取值顺序（先命中先返回）：
-
-        1. 合同快照 `plan_snapshot.max_cloud_nodes`——购买时固化的合同参数，权威且不随改价漂移；
+        1. 合同快照 `plan_snapshot.<key>`——购买时固化的合同参数，权威且不随改价漂移；
         2. `billing_plan.quota_json`，按合同上的 `(offering_key, plan_key)` 精确命中；
         3. `billing_plan.quota_json`，按 `tier` 名反查 `llm:tier` 档位——存量合同（尤其
            `credit_grant_service` 建的 free 档）根本不写 `offering_key`/`plan_key`，没有这一步
-           它们会一路掉到兜底值；月付/年付同档附赠数相同，取任一即可；
+           它们会一路掉到兜底值；月付/年付同档配额相同，取任一即可；
         4. **兜底 fail-closed 为 0**，并 `warn` 记录是哪个档位没定档。
 
-        第 4 条原先回落配置 `HOSTING_MAX_NODES_PER_OWNER`（=1），主人 2026-08-01 五档定档后
-        必须改判：只有 `pro` 及以上附赠 1 个，`free` 与新增的 `lite` 都是 0。新档位若上线时
-        漏写 `max_cloud_nodes`，回落 1 就等于**免费级别的档白得一个常驻容器**（真金白银的算力）。
-        送资源必须是显式定档的结果，没定档就是 0——并且要在日志里看得见，而不是静默送。
+        第 4 条是本方法的立场：**送资源必须是显式定档的结果，没定档就是 0**，并且要在日志里
+        看得见，而不是静默送。`max_cloud_nodes` 曾回落配置值 1，主人 2026-08-01 五档定档后
+        改判——新档位若上线时漏写，回落 1 就等于免费级别的档白得一个常驻容器（真金白银的算力）。
+        `max_node_memory_mb`（H9-b）沿用同一取向：没定档就调不上去，不白送内存。
 
         事实源：`docs/hasn-node设计文档/16-订阅与积分计费/05-订阅档位与权益定档（五档命名·额度·门禁口径）.md` §2.1
         """
         snapshot = subscription.plan_snapshot or {}
-        raw = snapshot.get('max_cloud_nodes')
+        raw = snapshot.get(key)
         if raw is None and subscription.offering_key and subscription.plan_key:
             plan = (
                 await db.execute(
@@ -158,7 +158,7 @@ class CloudNodeService:
                 )
             ).scalar_one_or_none()
             if plan is not None:
-                raw = (plan.quota_json or {}).get('max_cloud_nodes')
+                raw = (plan.quota_json or {}).get(key)
         if raw is None and subscription.tier:
             plan = (
                 await db.execute(
@@ -172,10 +172,10 @@ class CloudNodeService:
                 )
             ).scalars().first()
             if plan is not None:
-                raw = (plan.quota_json or {}).get('max_cloud_nodes')
+                raw = (plan.quota_json or {}).get(key)
         if raw is None:
             log.warning(
-                f'[hosting] 档位未定档云端节点附赠数，按 0 计（不静默送资源）: '
+                f'[hosting] 档位未定档 {key}，按 0 计（不静默送资源）: '
                 f'订阅 {subscription.id}, tier={subscription.tier!r}, '
                 f'offering={subscription.offering_key!r}, plan={subscription.plan_key!r}'
             )
@@ -183,10 +183,23 @@ class CloudNodeService:
         try:
             return max(0, int(raw))
         except (TypeError, ValueError):
-            log.warning(
-                f'[hosting] 订阅 {subscription.id} 的 max_cloud_nodes 非法（{raw!r}），按 0 计（不静默送资源）'
-            )
+            log.warning(f'[hosting] 订阅 {subscription.id} 的 {key} 非法（{raw!r}），按 0 计（不静默送资源）')
             return TIER_GRANT_FALLBACK
+
+    @classmethod
+    async def _tier_grant(cls, db: AsyncSession, subscription: UserSubscription) -> int:
+        """**来源 A**：该订阅所在 LLM 档位**附赠**的云端节点数。"""
+        return await cls._tier_quota(db, subscription, 'max_cloud_nodes')
+
+    @classmethod
+    async def _tier_memory_ceiling(cls, db: AsyncSession, subscription: UserSubscription) -> int:
+        """该订阅档位允许的**单节点内存上限**（MiB，H9-b）。
+
+        与 `_tier_grant` 语义不同：那个是**数量**（档位附赠 ＋ 加购**求和**），这个是**每个
+        节点多大**的天花板（档位与加购之间取 **max**）。买两份加购不该让单个节点变成两倍大
+        ——那是买了两个节点，不是买了一个双倍大的节点。
+        """
+        return await cls._tier_quota(db, subscription, 'max_node_memory_mb')
 
     @staticmethod
     async def _addon_access(db: AsyncSession, *, owner_hasn_id: str) -> tuple[bool, int]:
@@ -219,6 +232,42 @@ class CloudNodeService:
         grant = await self._tier_grant(db, subscription) if subscription is not None else 0
         _, addon = await self._addon_access(db, owner_hasn_id=owner_hasn_id)
         return grant + addon
+
+    @staticmethod
+    async def _addon_memory_ceiling(db: AsyncSession, *, owner_hasn_id: str) -> int:
+        """`cloud:node` 加购权益允许的单节点内存上限（MiB，H9-b）。
+
+        没有权益、权益不带这个键、或者值非法 → 一律 0（fail closed，不静默送内存），
+        与 `_tier_quota` 的兜底取向一致。
+        """
+        decision = await resolve_access(
+            db, feature_key=CLOUD_NODE_FEATURE_KEY, subject_type='owner', subject_id=owner_hasn_id
+        )
+        if not decision.allowed or decision.reason not in _ADDON_HELD_REASONS:
+            return 0
+        snapshot = (decision.quota.snapshot if decision.quota else None) or {}
+        raw = snapshot.get('max_node_memory_mb')
+        if raw is None:
+            return 0
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            log.warning(
+                f'[hosting] 主人 {owner_hasn_id} 的 cloud_node 权益 max_node_memory_mb 非法（{raw!r}），按 0 计'
+            )
+            return 0
+
+    async def _memory_ceiling_of(self, db: AsyncSession, *, user_id: int, owner_hasn_id: str) -> int:
+        """该主人的**单节点内存上限**（MiB）= max(档位天花板, 加购天花板)。
+
+        **取 max 不是求和**：天花板是「每个节点能有多大」，买两份加购是买了两个节点，
+        不是把一个节点变成两倍大。这一条与 `_quota_of`（数量，求和）的差别必须记牢，
+        写成求和会让加购用户拿到远超定价意图的单机规格。
+        """
+        subscription = await self._active_subscription(db, user_id=user_id)
+        tier = await self._tier_memory_ceiling(db, subscription) if subscription is not None else 0
+        addon = await self._addon_memory_ceiling(db, owner_hasn_id=owner_hasn_id)
+        return max(tier, addon)
 
     async def _assert_can_create(self, db: AsyncSession, *, user_id: int, owner_hasn_id: str) -> None:
         """创建前置闸：附赠/加购并集准入 + 未超配额（求和上限）。任一不过即抛带错误码的 4xx。"""
@@ -417,6 +466,14 @@ class CloudNodeService:
             # NULL 表示尚无备份，UI 必须如实显示，不许当成 0 或隐藏
             'last_backup_at': row.last_backup_at.isoformat() if row.last_backup_at else None,
             'online_since': row.online_since.isoformat() if row.online_since else None,
+            # 资源档位（H9-b）：0 表示**尚未从宿主回报过**，不是「限 0 字节」；
+            # UI 遇到 0 应显示「未知」而不是「0 MiB」。
+            'memory_mb': row.memory_mb,
+            'cpus': row.cpus,
+            # NULL 表示**测不出来**（宿主看不到卷路径），不是 0；0 会被读成「没占空间」。
+            'disk_used_mb': row.disk_used_mb,
+            # 数据卷当前**没有任何硬配额**，如实告知，别让 UI 编一个「已用 x/y」的进度条出来。
+            'disk_quota_active': False,
             'created_time': row.created_time.isoformat() if row.created_time else None,
             'updated_time': row.updated_time.isoformat() if row.updated_time else None,
         }
@@ -692,6 +749,89 @@ class CloudNodeService:
 
     async def restart_node(self, db: AsyncSession, *, owner_hasn_id: str, node_id: str) -> dict[str, Any]:
         return await self._agent_action(db, owner_hasn_id=owner_hasn_id, node_id=node_id, action='restart')
+
+    async def resize_node(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int,
+        owner_hasn_id: str,
+        node_id: str,
+        memory_mb: int | None = None,
+        cpus: float | None = None,
+    ) -> dict[str, Any]:
+        """改节点资源档位（H9-b）：按订阅档校验天花板 → 中转 hosting-agent → 回写规格镜像。
+
+        触发场景：主人在该节点的 WebUI 装了图坊/语音引擎，内存需求跳一档。容器里的 daemon
+        改不了自己的 cgroup 上限，只能由宿主侧重建容器来调。
+
+        两道闸各管各的，**不能合并**：
+        - 这里管**订阅档天花板**（这个主人的档位允许单节点多大）；
+        - hosting-agent 管**宿主水位**（这台机器此刻还放不放得下）。
+          天花板过了但宿主满了照样要拒，那是 `resource_exhausted`，不是「你档位不够」。
+        """
+        row = await self._get_owned(db, owner_hasn_id=owner_hasn_id, node_id=node_id)
+
+        if memory_mb is not None:
+            ceiling = await self._memory_ceiling_of(db, user_id=user_id, owner_hasn_id=owner_hasn_id)
+            if memory_mb > ceiling:
+                log.warning(
+                    f'[hosting] 改档超过档位天花板: owner={owner_hasn_id}, node_id={node_id}, '
+                    f'请求 {memory_mb}MiB, 天花板 {ceiling}MiB'
+                )
+                raise errors.ForbiddenError(
+                    msg=f'当前订阅档最多支持单节点 {ceiling}MiB 内存，升级订阅后可调更高',
+                    data={
+                        'error': ERR_NODE_MEMORY_CEILING,
+                        'requested_mb': memory_mb,
+                        'ceiling_mb': ceiling,
+                    },
+                )
+
+        try:
+            agent_view = await hosting_agent_provider.resize_node(node_id, memory_mb=memory_mb, cpus=cpus)
+        except HostingAgentError as exc:
+            row.failure_reason = exc.failure_reason or FAILURE_INTERNAL_ERROR
+            row.failure_detail = str(exc)
+            await self.record_event(
+                db,
+                cloud_node=row,
+                event_type=EVENT_FAILED,
+                detail={
+                    'stage': 'resize',
+                    'error': exc.code,
+                    'status_code': exc.status_code,
+                    'requested_memory_mb': memory_mb,
+                    'requested_cpus': cpus,
+                },
+            )
+            await db.flush()
+            log.error(f'[hosting] 改档失败: node_id={node_id}, err={exc}')
+            raise errors.ServerError(msg=f'托管宿主执行改档失败：{exc}')
+
+        # 回写**宿主回读的真实生效值**，不是我们请求过的值——两者混同会让改档失败被读成成功。
+        applied_memory = agent_view.get('memory_mb')
+        applied_cpus = agent_view.get('cpus')
+        if isinstance(applied_memory, int) and applied_memory > 0:
+            row.memory_mb = applied_memory
+        if isinstance(applied_cpus, (int, float)) and applied_cpus > 0:
+            row.cpus = float(applied_cpus)
+        row.status = NODE_STATUS_STARTING
+        row.failure_reason = None
+        row.failure_detail = None
+        await self.record_event(
+            db,
+            cloud_node=row,
+            event_type=EVENT_RESIZED,
+            detail={
+                'requested_memory_mb': memory_mb,
+                'requested_cpus': cpus,
+                'applied_memory_mb': row.memory_mb,
+                'applied_cpus': row.cpus,
+            },
+        )
+        await db.flush()
+        return await self._render_one(db, row, with_agent_view=True)
 
     async def reauthorize_node(
         self,

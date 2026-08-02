@@ -21,6 +21,7 @@ from backend.app.hasn_hosting.schema.cloud_node import (
     CloudNodeView,
     CreateCloudNodeRequest,
     DeleteCloudNodeResult,
+    ResizeCloudNodeRequest,
 )
 from backend.app.hasn_hosting.service.cloud_node_service import cloud_node_service
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -105,6 +106,30 @@ async def reauthorize_cloud_node(
     """仅 `failed(credential_invalid)` 可用：铸新授权码重新注入并重启，**数据卷不动**。"""
     data = await cloud_node_service.reauthorize_node(
         db, user_id=auth['user_id'], owner_hasn_id=auth['hasn_id'], node_id=node_id
+    )
+    return response_base.success(data=CloudNodeView(**data))
+
+
+@router.post('/{node_id}/resize', summary='调整云端节点资源档位', name='hasn_hosting_app_resize_cloud_node')
+async def resize_cloud_node(
+    db: CurrentSessionTransaction,
+    node_id: _NodeId,
+    obj: ResizeCloudNodeRequest,
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
+) -> ResponseSchemaModel[CloudNodeView]:
+    """按新规格重建容器，**镜像与数据卷都不动**（H9-b）。
+
+    主人在该节点的 WebUI 装了图坊/语音引擎后内存需求跳一档，而容器里的 daemon 改不了自己的
+    cgroup 上限，只能从宿主侧调。内存上限受订阅档天花板约束（超了报
+    `cloud_node_memory_ceiling_exceeded`，与「节点数量超配额」是两个不同的引导）。
+    """
+    data = await cloud_node_service.resize_node(
+        db,
+        user_id=auth['user_id'],
+        owner_hasn_id=auth['hasn_id'],
+        node_id=node_id,
+        memory_mb=obj.memory_mb,
+        cpus=obj.cpus,
     )
     return response_base.success(data=CloudNodeView(**data))
 

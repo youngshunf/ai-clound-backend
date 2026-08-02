@@ -30,3 +30,9 @@ class HasnCloudNodes(Base):
     retain_until: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='订阅到期后的数据保留截止时刻')
     last_backup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近一次卷备份时刻，NULL 表示尚无备份')
     online_since: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='本次上线起始时刻')
+    # 资源档位（H9-b）：主人装了引擎后内存需求跳一档，容器内改不了自己的 cgroup 上限，
+    # 只能由 hosting-agent 重建容器来调。这里记的是**云端已知的**规格，权威仍在 hosting-agent
+    # （它从 docker inspect 回读）；两者不一致时以 hosting-agent 为准并回写这里。
+    memory_mb: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='单节点内存上限 MiB（0=尚未从宿主回报）')
+    cpus: Mapped[float] = mapped_column(sa.Float(), default=0.0, comment='单节点 CPU 配额（核数，0=尚未从宿主回报）')
+    disk_used_mb: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='数据卷实际占用 MiB；NULL=测不出来（不是 0，0 会被读成没占空间）')

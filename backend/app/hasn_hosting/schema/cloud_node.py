@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -59,6 +59,19 @@ class CloudNodeView(SchemaBase):
     retain_until: str | None = Field(default=None, description='订阅到期后的数据保留截止')
     last_backup_at: str | None = Field(default=None, description='最近卷备份时刻；null=尚无备份（如实显示）')
     online_since: str | None = Field(default=None, description='本次上线起始时刻')
+    # 资源档位（H9-b）。装了引擎的节点内存要上调，UI 得先能如实显示「现在什么规格」。
+    memory_mb: int = Field(default=0, description='单节点内存上限 MiB；0=尚未从宿主回报（不是「限 0 字节」，UI 显示未知）')
+    cpus: float = Field(default=0.0, description='单节点 CPU 配额（核数）；0=尚未从宿主回报')
+    disk_used_mb: int | None = Field(
+        default=None, description='数据卷实际占用 MiB；null=测不出来（**不是 0**，0 会被读成没占空间）'
+    )
+    disk_quota_active: bool = Field(
+        default=False,
+        description=(
+            '数据卷是否有硬配额。当前恒 false —— Docker 具名卷默认不限大小，容器内 df 看到的是'
+            '整个宿主盘。UI 不得据此画「已用 x/y」的进度条（分母根本不存在）'
+        ),
+    )
     created_time: str | None = None
     updated_time: str | None = None
     # 以下三项由 hosting-agent `GET /v1/nodes/{node_id}` 原样透传（契约 §4.5⑤），仅详情端点返回；
@@ -72,6 +85,26 @@ class CreateCloudNodeRequest(SchemaBase):
     """创建云端节点入参（当前无可调参数；保留占位以便后续加档位/区域而不破坏契约）。"""
 
     node_name: str | None = Field(default=None, max_length=100, description='节点显示名（可选）')
+
+
+class ResizeCloudNodeRequest(SchemaBase):
+    """改资源档位入参（H9-b）。**镜像与数据卷都不动**，宿主按新规格重建容器。
+
+    典型场景：主人在该节点的 WebUI 装了图坊/语音引擎，内存需求跳一档——容器里的 daemon
+    改不了自己的 cgroup 上限，只能从宿主侧调。
+
+    省略的维度保持当前值；**两个都省略是无意义请求**，422 打回，不静默变成空操作
+    （那会让调用方以为「改过了」）。
+    """
+
+    memory_mb: int | None = Field(default=None, ge=256, description='新的内存上限 MiB，受订阅档天花板约束')
+    cpus: float | None = Field(default=None, gt=0, description='新的 CPU 配额（核数）')
+
+    @model_validator(mode='after')
+    def _at_least_one(self) -> ResizeCloudNodeRequest:
+        if self.memory_mb is None and self.cpus is None:
+            raise ValueError('memory_mb 与 cpus 至少要给一个，否则这次改档没有任何含义')
+        return self
 
 
 class AccessTicketResponse(SchemaBase):
