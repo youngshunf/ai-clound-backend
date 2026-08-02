@@ -59,6 +59,7 @@ from backend.app.hasn.api.v1.ai_native_app import apps_router as ai_native_apps_
 from backend.app.hasn.api.v1.ai_native_app import audit_router as ai_native_audit_router
 from backend.app.hasn.api.v1.ai_native_app import runtime_router as ai_native_runtime_router
 from backend.app.hasn.api.v1.app.contacts import router as app_contacts_router
+from backend.app.hasn.api.v1.app.content_translation import router as app_content_translation_router
 from backend.app.hasn.api.v1.app.enterprise import router as enterprise_router
 from backend.app.hasn.api.v1.app.hasn_agent_channel_mirrors import router as app_hasn_agent_channel_mirrors_router
 from backend.app.hasn.api.v1.app.hasn_agent_mcp_keys import router as app_hasn_agent_mcp_keys_router
@@ -247,6 +248,7 @@ ws.include_router(ws_node_router)
 # --- 用户端业务 API（联系人 + 认证 + 搜索） ---
 
 app.include_router(app_contacts_router, tags=['联系人管理'])
+app.include_router(app_content_translation_router, tags=['用户内容按需翻译（轨道B）'])
 app.include_router(app_hasn_auth_router, tags=['HASN认证'])
 v1.include_router(enterprise_router, tags=['企业与工作空间'])
 v1.include_router(workspace_router, tags=['工作区切换'])
