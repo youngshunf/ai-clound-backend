@@ -1,0 +1,169 @@
+{
+  "$comment": "术语表：翻译入口的强制约束。terms 会注入每一批 system prompt；forbidden 由 i18n:check 断言；audits 供存量译文一次性校正（codemod.mjs --audit-glossary）。命名铁律见父仓 CLAUDE.md §6。",
+  "terms": {
+    "唤星": {
+      "en": "Astra",
+      "ja": "Astra",
+      "ko": "Astra",
+      "zh-TW": "喚星",
+      "es": "Astra",
+      "fr": "Astra",
+      "de": "Astra"
+    },
+    "分身": {
+      "en": "Agent",
+      "ja": "エージェント",
+      "ko": "에이전트",
+      "zh-TW": "分身",
+      "es": "Agente",
+      "fr": "Agent",
+      "de": "Agent"
+    },
+    "星座": {
+      "en": "Constellation",
+      "ja": "コンステレーション",
+      "ko": "컨스텔레이션",
+      "zh-TW": "星座",
+      "es": "Constelación",
+      "fr": "Constellation",
+      "de": "Konstellation"
+    },
+    "主人": {
+      "en": "Owner",
+      "ja": "オーナー",
+      "ko": "오너",
+      "zh-TW": "主人",
+      "es": "Propietario",
+      "fr": "Propriétaire",
+      "de": "Besitzer"
+    },
+    "节点": {
+      "en": "Node",
+      "ja": "ノード",
+      "ko": "노드",
+      "zh-TW": "節點",
+      "es": "Nodo",
+      "fr": "Nœud",
+      "de": "Node"
+    },
+    "工作会话": {
+      "en": "Work Session",
+      "ja": "ワークセッション",
+      "ko": "작업 세션",
+      "zh-TW": "工作會話",
+      "es": "Sesión de trabajo",
+      "fr": "Session de travail",
+      "de": "Arbeitssitzung"
+    },
+    "技能": {
+      "en": "Skill",
+      "ja": "スキル",
+      "ko": "스킬",
+      "zh-TW": "技能",
+      "es": "Habilidad",
+      "fr": "Compétence",
+      "de": "Fähigkeit"
+    },
+    "唤星号": {
+      "en": "Astra ID",
+      "ja": "Astra ID",
+      "ko": "Astra ID",
+      "zh-TW": "喚星號",
+      "es": "Astra ID",
+      "fr": "Astra ID",
+      "de": "Astra-ID"
+    }
+  },
+  "forbidden": [
+    {
+      "pattern": "Huanxing|HuanXing|Huan Xing|HUANXING",
+      "reason": "产品名统一为 Astra（命名铁律），历史译文里的 Huanxing/HuanXing 一律替换"
+    }
+  ],
+  "audits": [
+    {
+      "$comment": "存量译文一次性校正规则：source 命中且 exclude 未命中时，对译文做 replace。",
+      "langs": [
+        "en"
+      ],
+      "sourceIncludes": "唤星",
+      "from": "Huanxing|HuanXing|Huan Xing",
+      "to": "Astra"
+    },
+    {
+      "$comment": "分身 = Agent；头像 = Avatar。两者中文不同、英文历史上混用过，按中文原文区分。",
+      "langs": [
+        "en"
+      ],
+      "sourceIncludes": "分身",
+      "sourceExcludes": "头像",
+      "replacements": [
+        {
+          "from": "Avatars",
+          "to": "Agents"
+        },
+        {
+          "from": "Avatar",
+          "to": "Agent"
+        },
+        {
+          "from": "avatars",
+          "to": "agents"
+        },
+        {
+          "from": "avatar",
+          "to": "agent"
+        }
+      ]
+    }
+  ],
+  "overrides": {
+    "$comment": "P0.5 的 18 组「同中文多英译」人工裁决结果。key 是中文原文，值是各语言选定译法。翻译脚本与一致性门禁都以此为准，防止后续重翻再漂。",
+    "拒绝": {
+      "en": "Decline"
+    },
+    "联系人": {
+      "en": "Contacts"
+    },
+    "群聊": {
+      "en": "Groups"
+    },
+    "关闭": {
+      "en": "Close"
+    },
+    "AI 分身": {
+      "en": "AI Agents"
+    },
+    "分身": {
+      "en": "Agents"
+    },
+    "简体中文": {
+      "en": "简体中文",
+      "$reason": "语言名恒用 endonym，不随界面语言变"
+    },
+    "状态": {
+      "en": "Status",
+      "$reason": "存量漂移 State/Status，统一到 Status"
+    },
+    "同步状态": {
+      "en": "Sync status",
+      "$reason": "存量漂移 Sync state/Sync Status，统一并按句式大小写"
+    },
+    "地区": {
+      "en": "Region",
+      "$reason": "存量漂移 Location/Region，统一到 Region"
+    },
+    "手机号": {
+      "en": "Phone",
+      "$reason": "存量漂移 Phone number/Phone，统一到 Phone"
+    },
+    "发布": {
+      "en": "Publish",
+      "$reason": "动作按钮；状态用「已发布」→Published，中文本就已区分，Published 来自已废弃的 nav.publish.mobile"
+    },
+    "命令": {
+      "en": "Commands",
+      "$reason": "权限声明里是命令清单；单数 Command 来自未被引用的死键"
+    }
+  }
+}

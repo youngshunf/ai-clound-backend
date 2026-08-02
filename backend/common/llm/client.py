@@ -140,6 +140,35 @@ class LLMChatClient:
         默认 ``stream=True``：部分 new-api 网关渠道在 stream=false 时只回空 chunk
         (completion_tokens=0)，stream=true 才出内容；解析层同时兼容 SSE 与普通 JSON 响应。
         """
+        content, _usage = await self.complete_with_usage(
+            messages,
+            model=model,
+            models=models,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            timeout=timeout,
+            stream=stream,
+        )
+        return content
+
+    async def complete_with_usage(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str | None = None,
+        models: list[str] | None = None,
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        stream: bool = True,
+    ) -> tuple[str, dict[str, Any]]:
+        """同 :meth:`complete`，但额外回网关给的 ``usage``（token 计数）。
+
+        给需要记账的调用方用（如内容翻译要把 ``total_tokens`` 落到译文缓存表做成本核算）。
+        网关没回 usage 时返回空 dict —— **不估算、不编数**，调用方自己决定怎么表达「未知」。
+        """
         base_url = self.base_url
         api_key = self.api_key
         model_chain = self._model_chain(model, models)
@@ -156,18 +185,18 @@ class LLMChatClient:
                     payload['response_format'] = response_format
                 try:
                     for attempt in range(_MAX_ATTEMPTS):
-                        content = await self._post(client, base_url, api_key, payload, model_name, attempt)
+                        content, usage = await self._post(client, base_url, api_key, payload, model_name, attempt)
                         if content:
-                            return content
+                            return content, usage
                         if attempt < _MAX_ATTEMPTS - 1:
                             await asyncio.sleep(2.0 * (attempt + 1))
                     # fallback 模型上若带 response_format 仍失败，放宽一次（部分模型不支持 json mode）。
                     if model_index > 0 and response_format:
-                        content = await self._post(
+                        content, usage = await self._post(
                             client, base_url, api_key, {**base_payload, 'model': model_name}, model_name, _MAX_ATTEMPTS
                         )
                         if content:
-                            return content
+                            return content, usage
                     last_error = f'{model_name}: 空内容'
                 except LLMError as exc:
                     # 该模型硬错误（非瞬时 4xx：model_not_found / 余额不足 / 鉴权等）→ 记录并切下一个
@@ -216,8 +245,12 @@ class LLMChatClient:
         payload: dict[str, Any],
         model: str,
         attempt: int,
-    ) -> str | None:
-        """POST 一次；成功返回正文，瞬时错误/空内容返回 None（让调用方重试），硬错误抛。"""
+    ) -> tuple[str | None, dict[str, Any]]:
+        """POST 一次；返回 ``(正文, usage)``。
+
+        瞬时错误/空内容时正文为 None（让调用方重试），硬错误抛。``usage`` 是网关原样回的
+        token 计数，网关没给就是空 dict（不补默认值，避免把「未知」记成 0）。
+        """
         response = await client.post(
             f'{base_url}/chat/completions',
             json=payload,
@@ -226,7 +259,7 @@ class LLMChatClient:
         if response.status_code != 200:
             log.error(f'LLM API error: {response.status_code} - {response.text[:500]}')
             if response.status_code in _TRANSIENT_STATUS:
-                return None
+                return None, {}
             raise LLMError(f'LLM API error: {response.status_code}')
 
         content_type = response.headers.get('content-type', '')
@@ -235,11 +268,12 @@ class LLMChatClient:
             if 'text/event-stream' in content_type
             else response.json()
         )
+        usage = result.get('usage') if isinstance(result, dict) else None
         content = self._extract_content(result)
         if content:
-            return content
+            return content, usage if isinstance(usage, dict) else {}
         log.warning(f'LLM 返回空内容 model={model} attempt={attempt + 1}: {str(result)[:300]}')
-        return None
+        return None, {}
 
     @staticmethod
     def _extract_content(result: dict[str, Any]) -> str | None:

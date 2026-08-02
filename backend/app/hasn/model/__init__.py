@@ -99,3 +99,4 @@ from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as Hasn
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
 from backend.app.hasn.model.hasn_unread_projection import HasnUnreadProjection as HasnUnreadProjection
 from backend.app.hasn.model.hasn_model_registry import HasnModelRegistry as HasnModelRegistry
+from backend.app.hasn.model.hasn_content_translations import HasnContentTranslations as HasnContentTranslations

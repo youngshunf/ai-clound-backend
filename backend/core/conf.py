@@ -646,6 +646,26 @@ class Settings(BaseSettings):
     # LiteLLM 调试模式（生产环境建议关闭）
     LITELLM_DEBUG: bool = False
 
+    ##################################################
+    # [ 内容翻译 ] 用户内容按需翻译（国际化轨道 B）
+    ##################################################
+    # 翻译模型（new-api 网关模型名）。已在生产网关 https://llm.dcfuture.cn 验证可用。
+    CONTENT_TRANSLATION_MODEL: str = 'agnes-2.5-flash'
+    # 翻译管线版本：改 prompt / 换模型时递增，缓存整体失效，不用清表。
+    CONTENT_TRANSLATION_ENGINE_VERSION: str = 'v1'
+    # 单主人翻译请求限速（次/分钟）。超限 429，按日志规范记 warn（4xx 属可自愈）。
+    CONTENT_TRANSLATION_RATE_LIMIT_PER_MIN: int = 60
+    # 单次可翻文本长度上限（字符）。超限直接拒绝，不截断——截断会产出半截译文。
+    CONTENT_TRANSLATION_MAX_CHARS: int = 20000
+    # 批量接口单请求最多几条。
+    CONTENT_TRANSLATION_BATCH_MAX_ITEMS: int = 20
+    # 计费策略：platform=平台承担首译成本（默认，共享缓存摊薄）；owner_credit=扣主人积分。
+    # 预留开关，成本失控时只改这一处即可切换。
+    CONTENT_TRANSLATION_CHARGE_POLICY: str = 'platform'
+    # 并发首译收敛锁的 TTL（秒）。热帖被 N 人同时点时，只有拿到锁的那个真调 LLM，
+    # 后到者等待并读缓存，避免 N 次付费翻译。
+    CONTENT_TRANSLATION_LOCK_TTL: int = 30
+
     # 智能上下文压缩
     LLM_COMPRESS_ENABLED: bool = True
     LLM_COMPRESS_THRESHOLD_RATIO: float = 0.75

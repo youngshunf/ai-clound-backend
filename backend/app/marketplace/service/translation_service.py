@@ -5,10 +5,10 @@ import re
 
 from typing import Any, Literal
 
-from langdetect import LangDetectException, detect
-
 from backend.common.llm import LLMChatClient
 from backend.common.log import log
+from backend.common.translation import contains_chinese as _contains_chinese_shared
+from backend.common.translation import detect_binary_language, split_long_text
 from backend.core.conf import settings
 
 LANGUAGES = {'en', 'zh'}
@@ -28,37 +28,12 @@ class TranslationService:
         )
 
     def detect_language(self, text: str) -> Literal['en', 'zh', 'unknown']:
+        """英中二元语言检测（技能市场历史口径）。
+
+        实现已抽到 :func:`backend.common.translation.detect_binary_language` 与内容翻译共享；
+        这里保留方法名与返回口径不变（存量调用点与测试都按 ``'en'/'zh'/'unknown'`` 断言）。
         """
-        Detect language of text
-
-        Args:
-            text: Text to detect
-
-        Returns:
-            'en', 'zh', or 'unknown'
-        """
-        if not text or not text.strip():
-            return 'unknown'
-
-        try:
-            # Use langdetect library
-            lang = detect(text)
-
-            # Map to our supported languages
-            if lang == 'en':
-                return 'en'
-            if lang in ['zh-cn', 'zh-tw', 'zh']:
-                return 'zh'
-            # Fallback: check for Chinese characters
-            if re.search(r'[一-鿿]', text):
-                return 'zh'
-            return 'en'  # Default to English
-
-        except LangDetectException:
-            # Fallback: check for Chinese characters
-            if re.search(r'[一-鿿]', text):
-                return 'zh'
-            return 'en'
+        return detect_binary_language(text)
 
     async def translate(
         self,
@@ -151,24 +126,12 @@ class TranslationService:
 
     @staticmethod
     def _split_markdown_for_translation(text: str, budget: int = 3500) -> list[str]:
-        """Split a Markdown doc into chunks under ``budget`` chars on paragraph
-        boundaries, never breaking inside a fenced code block. Small docs stay one chunk.
+        """按段落边界分块，不切开代码围栏。
+
+        实现已抽到 :func:`backend.common.translation.split_long_text` 与内容翻译共享；
+        这里保留方法名与 3500 字的历史预算（SKILL.md 正文按这个尺寸调过，别改）。
         """
-        if len(text) <= budget:
-            return [text]
-        chunks: list[str] = []
-        cur = ''
-        for para in text.split('\n\n'):
-            candidate = f'{cur}\n\n{para}' if cur else para
-            # 仅在当前块未处于未闭合代码围栏内（``` 计数为偶数）时，才允许在此切块
-            if cur and len(candidate) > budget and cur.count('```') % 2 == 0:
-                chunks.append(cur)
-                cur = para
-            else:
-                cur = candidate
-        if cur:
-            chunks.append(cur)
-        return chunks
+        return split_long_text(text, max_chars=budget)
 
     async def _translate_markdown_chunk(
         self,
@@ -619,7 +582,8 @@ Translation:"""
 
     @staticmethod
     def _contains_chinese(text: str | None) -> bool:
-        return bool(text and re.search(r'[\u4e00-\u9fff]', text))
+        """\u6587\u672c\u662f\u5426\u542b\u6c49\u5b57\uff08\u5b9e\u73b0\u62bd\u5230 :mod:`backend.common.translation`\uff0c\u4e0e\u5185\u5bb9\u7ffb\u8bd1\u5171\u4eab\uff09\u3002"""
+        return _contains_chinese_shared(text)
 
     @classmethod
     def _detect_language_by_script(cls, name: str | None, description: str | None) -> Literal['en', 'zh']:
