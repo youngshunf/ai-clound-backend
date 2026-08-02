@@ -413,6 +413,84 @@ def _deck_projection_card(
     )
 
 
+def _plain_card_body(*, node_card: dict[str, Any] | None = None) -> dict[str, Any]:
+    """普通工作会话（非应用资源）完成卡：origin_ref 不带 `resource:` 前缀。"""
+    content_json = service_module._projection_content_json(
+        session_id=SESSION_ID,
+        agent_id=AGENT_ID,
+        origin_type='task_run',
+        origin_ref='task_run:1069',
+        projection_data=_projection_payload(status='success', completion_reason='auto_on_final'),
+    )
+    return service_module._projection_card_body(
+        session_id=SESSION_ID,
+        title='周报汇总',
+        content_json=content_json,
+        node_card=node_card,
+    )
+
+
+def test_projection_uses_node_built_card_verbatim() -> None:
+    """节点组好的卡片体原样投递——云端不再重拼。
+
+    工作会话完成卡由节点组装（措辞、失败态标题、运行时错误裸串脱敏都在节点侧收口），
+    节点同时把同一张卡写进本地会话镜像。云端若再拼一张，两张必然不一致——线上已经裂开过：
+    本地是中文「成功/自动完成」，云端是英文枚举 `success`/`auto_on_final` 外加两个内部自增 ID。
+    """
+    node_card = {
+        'schema_version': 'hasn.card/0.1',
+        'title': '任务未完成',
+        'description': '分身这次没能完成任务，请稍后再试一次。',
+        'source': {'kind': 'task', 'id': 'task-system', 'display_name': '任务系统', 'verified': True},
+        'resource': {
+            'type': 'task_session',
+            'id': SESSION_ID,
+            'app_id': 'tasks',
+            'uri': f'hasn://tasks/sessions/{SESSION_ID}',
+        },
+        'fields': [
+            {'label': '状态', 'value': '失败'},
+            {'label': '完成原因', 'value': '运行失败'},
+        ],
+    }
+
+    card = _plain_card_body(node_card=node_card)
+
+    # 标题/正文/字段一字不改地透传，云端不得用自己那套「工作会话「…」已完成」覆盖。
+    assert card['title'] == '任务未完成'
+    assert card['description'] == '分身这次没能完成任务，请稍后再试一次。'
+    assert card['fields'] == node_card['fields']
+
+
+def test_projection_falls_back_when_node_card_is_invalid() -> None:
+    """节点卡片体不合规时不拖垮整条投影：回落云端自建卡，主人照样收得到回执。"""
+    card = _plain_card_body(node_card={'schema_version': 'hasn.card/0.1'})  # 缺 title/source
+
+    assert card['title'] == '工作会话「周报汇总」已完成'
+    # 回落的是云端自建卡（真实数据），不是任何形式的占位假卡。
+    assert {'label': '状态', 'value': '成功'} in card['fields']
+
+
+def test_projection_app_resource_card_ignores_node_card() -> None:
+    """应用资源会话仍由云端组卡：跨端 URI 只能用云端权威 server_id，节点组不出来。"""
+    content_json = service_module._projection_content_json(
+        session_id=SESSION_ID,
+        agent_id=AGENT_ID,
+        origin_type='app',
+        origin_ref='resource:deck:01LOCALULID0000000000000',
+        projection_data=_projection_payload(deck_server_id='deck_cloud_1'),
+    )
+    card = service_module._projection_card_body(
+        session_id=SESSION_ID,
+        title='唤星融资路演 · 生成',
+        content_json=content_json,
+        node_card={'schema_version': 'hasn.card/0.1', 'title': '节点自己组的卡'},
+    )
+
+    assert card['title'] != '节点自己组的卡'
+    assert 'deck_cloud_1' in card['resource']['uri']
+
+
 def test_projection_deck_card_prefers_cloud_server_id() -> None:
     """演示文稿完成卡的 `hasn://deck/{id}` 必须用**云端权威 deck id**（非设备本地 ULID）。
 

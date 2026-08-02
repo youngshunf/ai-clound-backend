@@ -95,6 +95,12 @@ class SessionProjectionRequest(BaseModel):
     workflow_run_id: str | None = Field(None, description='Workflow Run ID')
     external_app_id: str | None = Field(None, description='外部 App ID')
     milestone_id: str | None = Field(None, description='阶段性投影 ID')
+    # 节点已组好的卡片体（`hasn.card/0.1`）。工作会话完成卡由节点组装——正文措辞、失败态标题、
+    # 运行时错误裸串的脱敏都在节点侧收口，云端再拼一遍必然与本地镜像那张不一致（实际已裂开过：
+    # 本地中文、云端英文枚举）。给了就直接投递，云端只做 schema 校验，不再重拼。
+    # 例外：应用资源会话（deck/reel 等）仍由云端组卡——那张卡的 `hasn://{域}/{id}` 必须用云端权威
+    # server_id，节点手上只有设备本地 ID，组不出跨端可打开的 URI。
+    card: dict[str, Any] | None = Field(None, description='节点已组好的卡片体（hasn.card/0.1）')
 
 
 class ExternalProjectionPolicy(BaseModel):
