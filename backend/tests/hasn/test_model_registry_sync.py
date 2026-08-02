@@ -91,6 +91,17 @@ async def env(monkeypatch):
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     created: list[str] = []
+    # 同步是**全表**语义：本轮上游没出现的行一律标 missing。夹具只喂两三个测试模型，
+    # 会把本机已同步的真实模型统统标成 missing，污染同一个开发库上的其它测试（PDC 写入校验
+    # 就会因此把真实模型判成「网关上已消失」）。故先快照、收尾还原。
+    baseline_status: dict[str, str] = {
+        name: status
+        for name, status in (
+            await session.execute(
+                sa.select(HasnModelRegistry.model_name, HasnModelRegistry.upstream_status)
+            )
+        ).all()
+    }
 
     async def _yield_session():
         yield session
@@ -136,10 +147,20 @@ async def env(monkeypatch):
         await client.aclose()
         _APP.dependency_overrides.clear()
         # 测试造的行是真实落库的，收尾按模型名精确清掉（不碰真实同步进来的行）。
+        await session.rollback()
         if created:
-            await session.rollback()
             await session.execute(sa.delete(HasnModelRegistry).where(HasnModelRegistry.model_name.in_(created)))
-            await session.commit()
+        # 还原被本轮全表同步误标的既有行状态（见上方快照说明）。
+        for name, status in baseline_status.items():
+            await session.execute(
+                sa.update(HasnModelRegistry)
+                .where(
+                    HasnModelRegistry.model_name == name,
+                    HasnModelRegistry.upstream_status != status,
+                )
+                .values(upstream_status=status)
+            )
+        await session.commit()
         await session.close()
         await engine.dispose()
 

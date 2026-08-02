@@ -22,9 +22,11 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
+from backend.app.hasn.model.hasn_model_registry import HasnModelRegistry
 from backend.app.hasn.model.hasn_platform_default_config import HasnPlatformDefaultConfig
 from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefaultConfig, VideoModelSpec
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
+from backend.app.hasn.service.pdc_model_validation_service import collect_configured_models
 from backend.app.hasn.service.platform_default_config_service import (
     DEFAULT_PLATFORM_CONFIG,
     normalize_legacy_media_gateway_defaults,
@@ -35,6 +37,42 @@ from backend.app.hasn.service.platform_default_config_service import (
 from backend.database.db import async_db_session
 
 pytestmark = pytest.mark.asyncio(loop_scope='session')
+
+
+async def _seed_registry(db: AsyncSession, config: PlatformDefaultConfig) -> None:
+    """把这份配置里用到的模型名全部登记进注册表（active）。
+
+    P3 起 `update_config` 会校验模型名必须在注册表且 active——这正是本次事故的根因闭环
+    （存进网关上不存在的名字，打到网关只会 503）。本函数让测试显式声明「这些模型在网关上真有」，
+    而不是绕过校验；随外层事务一起回滚，不污染注册表。
+    """
+    existing = set(
+        (await db.execute(sa.select(HasnModelRegistry.model_name))).scalars()
+    )
+    for _path, name in collect_configured_models(config):
+        if name in existing:
+            continue
+        existing.add(name)
+        db.add(
+            HasnModelRegistry(
+                model_name=name,
+                capability='unclassified',
+                inputs={},
+                dialect=None,
+                quality=None,
+                scenario=None,
+                agent_visible=False,
+                sort_order=0,
+                vendor_name=None,
+                relative_cost=None,
+                cost_extra={},
+                cost_tier_override=None,
+                enable_groups=[],
+                upstream_status='active',
+                last_synced_time=None,
+            )
+        )
+    await db.flush()
 
 
 def _config(
@@ -159,7 +197,9 @@ async def test_factory_default_when_no_row() -> None:
 async def test_update_persists_video_models_for_node_downlink() -> None:
     async with async_db_session() as db:
         # 运营下发视频模型 → node.media.video_models 落库并回读（daemon 据此覆盖本机 config）。
-        resp = await svc.update_config(db, config=_config(video=['sora-1', 'kling-1']), updated_by='pytest')
+        config = _config(video=['sora-1', 'kling-1'])
+        await _seed_registry(db, config)
+        resp = await svc.update_config(db, config=config, updated_by='pytest')
         cfg, rev = await svc.get_effective_config(db)
         assert rev == resp.revision
         assert cfg.node.media.video_models == ['sora-1', 'kling-1']
@@ -168,14 +208,12 @@ async def test_update_persists_video_models_for_node_downlink() -> None:
 async def test_update_persists_image_edit_models_separately_from_generation() -> None:
     """图像编辑模型必须独立下发，不能被文生图模型列表覆盖。"""
     async with async_db_session() as db:
-        await svc.update_config(
-            db,
-            config=_config(
-                image=['agnes-image-2.1-flash'],
-                image_edit=['gpt-image-2'],
-            ),
-            updated_by='pytest',
+        config = _config(
+            image=['agnes-image-2.1-flash'],
+            image_edit=['gpt-image-2'],
         )
+        await _seed_registry(db, config)
+        await svc.update_config(db, config=config, updated_by='pytest')
         cfg, _rev = await svc.get_effective_config(db)
         assert cfg.node.media.image_models == ['agnes-image-2.1-flash']
         assert cfg.node.media.image_edit_models == ['gpt-image-2']
@@ -239,6 +277,7 @@ async def test_pdc_update_does_not_persist_app_configs() -> None:
             'agent_runtime': {'models': {'main': None, 'fast': None, 'vision': None, 'delegation': None}},
             'app_configs': {'film': {'models': {'llm': ['injected-should-be-dropped']}}},
         })
+        await _seed_registry(db, config)
         await svc.update_config(db, config=config, updated_by='pytest')
         row = await svc._get_row(db)
         assert row is not None
@@ -248,7 +287,9 @@ async def test_pdc_update_does_not_persist_app_configs() -> None:
 async def test_update_changes_revision_and_persists_in_txn() -> None:
     async with async_db_session() as db:
         _, base_rev = await svc.get_effective_config(db)
-        resp = await svc.update_config(db, config=_config(image=['gpt-image-1'], main='gpt-5'), updated_by='pytest')
+        config = _config(image=['gpt-image-1'], main='gpt-5')
+        await _seed_registry(db, config)
+        resp = await svc.update_config(db, config=config, updated_by='pytest')
         assert resp.revision != base_rev
         # 同事务内重读：flush 后可见，配置与 revision 一致（退出回滚不落库）。
         cfg, rev = await svc.get_effective_config(db)
@@ -273,11 +314,9 @@ async def test_update_persists_model_fallback_pool_for_runtime_downlink() -> Non
     """
     async with async_db_session() as db:
         _, base_rev = await svc.get_effective_config(db)
-        resp = await svc.update_config(
-            db,
-            config=_config(main='gpt-5.5', fallback_pool=['gpt-4o', 'claude-sonnet-4-6']),
-            updated_by='pytest',
-        )
+        config = _config(main='gpt-5.5', fallback_pool=['gpt-4o', 'claude-sonnet-4-6'])
+        await _seed_registry(db, config)
+        resp = await svc.update_config(db, config=config, updated_by='pytest')
         assert resp.revision != base_rev  # 兜底池属 PDC 权威 → 改值 bump revision → daemon 重拉。
         cfg, rev = await svc.get_effective_config(db)
         assert rev == resp.revision
@@ -286,9 +325,9 @@ async def test_update_persists_model_fallback_pool_for_runtime_downlink() -> Non
 
 async def test_build_effective_runtime_config_coalesce() -> None:
     async with async_db_session() as db:
-        await svc.update_config(
-            db, config=_config(main='p-main', fast='p-fast', vision='p-vision'), updated_by='pytest'
-        )
+        config = _config(main='p-main', fast='p-fast', vision='p-vision')
+        await _seed_registry(db, config)
+        await svc.update_config(db, config=config, updated_by='pytest')
         # agent: main 显式 / fast 显式 null / 其余缺省 null；knob max_turns=80。
         raw = {'models': {'main': 'a-main', 'fast': None}, 'max_turns': 80}
         eff = await svc.build_effective_runtime_config(db, raw)
@@ -303,12 +342,16 @@ async def test_build_effective_runtime_config_coalesce() -> None:
 async def test_build_effective_none_when_all_empty() -> None:
     async with async_db_session() as db:
         # 平台四槽全空（默认）+ agent 无配置 → None（保持"全默认"语义，零行为变化）。
-        await svc.update_config(db, config=_config(), updated_by='pytest')
+        config = _config()
+        await _seed_registry(db, config)
+        await svc.update_config(db, config=config, updated_by='pytest')
         assert await svc.build_effective_runtime_config(db, None) is None
 
 
 async def test_build_effective_platform_only_when_raw_none() -> None:
     async with async_db_session() as db:
-        await svc.update_config(db, config=_config(main='only-platform'), updated_by='pytest')
+        config = _config(main='only-platform')
+        await _seed_registry(db, config)
+        await svc.update_config(db, config=config, updated_by='pytest')
         eff = await svc.build_effective_runtime_config(db, None)
         assert eff is not None and eff['models']['main'] == 'only-platform'
