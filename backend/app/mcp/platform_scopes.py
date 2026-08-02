@@ -41,9 +41,6 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'plan:manage': {'label_zh': '管理企业会议协同', 'label_en': 'Manage enterprise meetings', 'domain': 'plan', 'risk': 'medium', 'description': '管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）', 'description_en': "Coordinate enterprise meetings: add or remove attendees (invite) and reply to RSVPs on the owner's behalf (PLAN-ENT enterprise mode, owner isolation plus enterprise-role intersection)"},
     # —— platform · 工作台（hasn.workbench.pending.scan：主脑聚合各应用未处理项，主动分诊派发，doc05）——
     'workbench:pending:read': {'label_zh': '扫描未处理项', 'label_en': 'Scan pending items', 'domain': 'workbench', 'risk': 'low', 'description': '聚合主人名下各应用的未处理项（只读，供主脑分诊派发；简报发布 publish 无需 scope）', 'description_en': "Aggregate pending items across the owner's apps (read-only, for the main brain to triage and dispatch; publishing a briefing needs no scope)"},
-    # —— platform · 记忆（hasn.memory.save：分身把长期语义事实写入云端权威记忆，doc16 Phase C）——
-    # 读类（search/recall/list）无需授权；写类 memory:write 出厂 Allow，owner 三态可覆盖、事后可改可删。
-    'memory:write': {'label_zh': '记录记忆', 'label_en': 'Save memory', 'domain': 'memory', 'risk': 'low', 'description': '把长期语义事实（偏好/事实/目标等）写入云端权威记忆（读类无需授权）', 'description_en': 'Write long-term semantic facts (preferences, facts, goals, etc.) to cloud-authoritative memory (reads need no authorization)'},
     # 注：diag:*（错误诊断，模块 21）等特权 scope 的**展示元数据**随其应用目录 `app/hasn_diag/scopes.py`
     # 落地（与 plan/deck/task 一致），由 `app/mcp/scopes.py` 聚合——本平台表只留真正的平台基线域。
     # 本文件仅保留 diag/ops/platform 的**特权门机制**（PRIVILEGED_SCOPE_PREFIXES / PRIVILEGED_SCOPES 白名单）。

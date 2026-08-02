@@ -16,7 +16,6 @@ from backend.app.hasn_memory.model.merge_run import MergeRun as MergeRun
 # namespace_revision（同步命名空间权威 revision，原 public.memory_namespace_revisions）
 from backend.app.hasn_memory.model.namespace_revision import MemoryNamespaceRevision as MemoryNamespaceRevision
 from backend.app.hasn_memory.model.owner_memory import HasnOwnerMemory as HasnOwnerMemory
-from backend.app.hasn_memory.model.owner_memory import HasnOwnerMemoryContribution as HasnOwnerMemoryContribution
 from backend.app.hasn_memory.model.owner_profile_coverage import OwnerProfileCoverage as OwnerProfileCoverage
 from backend.app.hasn_memory.model.peer_portrait import PeerPortrait as PeerPortrait
 from backend.app.hasn_memory.model.semantic_fact import SemanticFact as SemanticFact

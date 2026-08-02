@@ -7,14 +7,10 @@ celery beat 全部删除。理由见 doc19 §5.1（福仔拍板）：合并需�
 
 现在的分工：
 
+- **事实写入发生在 hasn-node 本地**，云端不再接收 contribution；
 - **合并在主脑分身的设备上做**，整轮结果经云端合并闸 `merge_gate_service.apply` 提交；
-- 本 service 退为「贡献流入 + 合并态读出」：`contribute` 只落 contribution(pending)，
-  **不再内联合并**；`get_owner_memory` / `list_contributions` 是纯读；
-- `owner_memory` 表继续作为合并态存储与 MEMPUSH（→ 各 Agent user_md）下发源，写者换成合并闸。
-
-**显式承认的体验回退**（doc19 §10）：一条贡献进 USER.md 由「即时」变成「最长至下次整理」
-（主脑离线更久）。缓解手段是主人「立即整理」+ 云端合并待办（§5.5），**不是**在响应里假装
-已经合并——`contribute` 返回 `pending_merge=True` 如实说明，零 fake。
+- 本 service 只读 owner 合并态，并保留主人手工编辑标记；
+- `owner_memory` 表继续作为 MEMPUSH（→ 各 Agent USER.md）下发源，唯一业务写者是合并闸。
 
 `_ensure_identity_lines` 保留：它是**合并闸**写 `owner_memory` 前的身份兜底（称呼 / Owner
 HASN ID 从权威来源补回），与谁在跑 LLM 无关，纯函数。
@@ -30,38 +26,13 @@ import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
+from backend.app.hasn_memory.model import HasnOwnerMemory
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-#: 贡献入流后给主人的**唯一**如实说法。REST `/memory/contribute` 与 MCP
-#: `hasn.owner.memory.contribute` 共用一份，避免两处措辞漂移出「已合并」之类的假承诺。
-MEMORY_CONTRIBUTE_PENDING_NOTE = (
-    '已记录这条观察，会在下次记忆整理时并入主人档案（整理由主脑分身在它所在的设备上执行）。'
-)
-
 
 class OwnerMemoryService:
-    async def contribute(self, db: AsyncSession, *, owner_id: str, agent_hasn_id: str, content: str) -> dict[str, Any]:
-        """Agent 上传一条 USER.md 观察，落 contribution(pending)。
-
-        **只落贡献，不合并**（doc19 §5.1 / §10）：合并由主脑分身在它自己的设备上做。调用方须
-        对主人如实说「已记下来了，会在下次整理时并入」，禁止编造「已合并 / 后台异步合并完成」。
-        """
-        text = (content or '').strip()
-        if not text:
-            return {'accepted': False, 'reason': 'empty_content'}
-        contribution = HasnOwnerMemoryContribution(
-            owner_id=owner_id,
-            agent_hasn_id=agent_hasn_id,
-            content=text,
-            status='pending',
-        )
-        db.add(contribution)
-        await db.flush()
-        return {'accepted': True, 'contribution_id': contribution.id}
-
     async def mark_owner_edited(self, db: AsyncSession, *, owner_id: str) -> None:
         """标记「主人手工改过档案正文」（doc19 §4.6 正文直编逃生口 · D-20）。
 
@@ -101,49 +72,14 @@ class OwnerMemoryService:
             await db.execute(sa.select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == owner_id).limit(1))
         ).scalar_one_or_none()
         if row is None:
-            return {'content': None, 'version': 0}
+            return {'content': None, 'version': 0, 'owner_edited': False}
         # `version=0` 如实返回 0（= 尚未合并过），不折成 1：主人先手工直编、还没整理过时行就是
         # 这个状态（`mark_owner_edited` 的建行分支），谎报成 1 会让完整度判定误以为画像前进了一版。
-        return {'content': row.content, 'version': int(row.version or 0)}
-
-    async def list_contributions(self, db: AsyncSession, *, owner_id: str, limit: int = 50) -> dict[str, Any]:
-        """列出该 owner 的记忆贡献流（owner 透明视图，按时间倒序）。"""
-        rows = list(
-            (
-                await db.execute(
-                    sa
-                    .select(HasnOwnerMemoryContribution)
-                    .where(HasnOwnerMemoryContribution.owner_id == owner_id)
-                    .order_by(HasnOwnerMemoryContribution.id.desc())
-                    .limit(max(1, min(int(limit), 200)))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        pending_count = (
-            await db.execute(
-                sa
-                .select(sa.func.count())
-                .select_from(HasnOwnerMemoryContribution)
-                .where(
-                    HasnOwnerMemoryContribution.owner_id == owner_id,
-                    HasnOwnerMemoryContribution.status == 'pending',
-                )
-            )
-        ).scalar_one()
-        items = [
-            {
-                'id': int(r.id),
-                'agent_hasn_id': r.agent_hasn_id,
-                'content': r.content,
-                'status': r.status,
-                'merged_into_version': r.merged_into_version,
-                'created_time': r.created_time,
-            }
-            for r in rows
-        ]
-        return {'items': items, 'pending_count': int(pending_count or 0)}
+        return {
+            'content': row.content,
+            'version': int(row.version or 0),
+            'owner_edited': bool(row.owner_edited),
+        }
 
 
 # 匹配建档身份行：行首「称呼:/昵称:」（半/全角冒号）。用于判断合并结果是否已含身份。

@@ -16,19 +16,17 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_memory.crud.crud_owner_profile_coverage import owner_profile_coverage_dao
 from backend.app.hasn_memory.model import HasnOwnerMemory, OwnerProfileCoverage
-from backend.app.hasn_memory.model.owner_memory import HasnOwnerMemoryContribution
 from backend.app.hasn_memory.service.owner_profile_coverage_service import PROFILE_DIMENSIONS
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.owner import (
     OwnerCoverageGetTool,
     OwnerGrowthClaimTool,
-    OwnerMemoryContributeTool,
     OwnerOnboardingClaimTool,
 )
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
@@ -123,98 +121,6 @@ async def test_coverage_get_tool_returns_five_dimensions(session) -> None:
         await session.execute(delete(OwnerProfileCoverage).where(OwnerProfileCoverage.owner_id == owner))
         await session.execute(delete(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == owner))
         await session.commit()
-
-
-async def test_memory_contribute_tool_lands_contribution(session) -> None:
-    """采访分身经 hasn.owner.memory.contribute 写入观察：contribution 必落库（accepted）。
-
-    doc19 §10：本工具**只入贡献流、不再内联合并**——响应必须如实反映「已记录，将在下次整理时
-    并入」（pending_merge=True + merge_note 非空），且 `owner_memory.version` 一动不动。
-    """
-    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
-    agent_hasn_id = 'a_knowu_interviewer'
-    ctx = AgentContext(
-        hasn_id=agent_hasn_id,
-        owner_id=0,
-        agent_status='active',
-        metadata={},
-        owner_hasn_id=owner,
-    )
-    try:
-        tool = OwnerMemoryContributeTool()
-        result = await tool.execute(
-            ctx,
-            {'content': '主人是后端工程师，主攻 Rust 与分布式系统，近期目标是三个月内通过 PMP 认证。'},
-        )
-        assert result['accepted'] is True
-        assert result.get('contribution_id') is not None
-        # 只收录、不合并：如实告知，且绝不出现「已合并」语义的字段
-        assert result['pending_merge'] is True
-        assert isinstance(result['merge_note'], str) and result['merge_note']
-        assert 'merged' not in result
-        assert 'merge_deferred' not in result
-        # 合并态版本没被这次调用推进（合并在主脑设备上，云端不做）
-        assert result['owner_memory_version'] == 0
-        # 库里确有该 owner 的一条 contribution（身份取自凭证，绝不入参）
-        rows = list(
-            (
-                await session.execute(
-                    select(HasnOwnerMemoryContribution).where(
-                        HasnOwnerMemoryContribution.owner_id == owner
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
-        assert rows[0].agent_hasn_id == agent_hasn_id
-        assert '后端工程师' in rows[0].content
-    finally:
-        await session.execute(
-            delete(HasnOwnerMemoryContribution).where(HasnOwnerMemoryContribution.owner_id == owner)
-        )
-        await session.execute(delete(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == owner))
-        await session.commit()
-
-
-def test_memory_contribute_tool_does_not_merge_inline() -> None:
-    """doc19 §10 退役回归：service 上不再有内联合并入口，工具也不可能悄悄把它调回来。
-
-    退役若只停在「不再调用」，某次改动把 `merge_owner_memory` 加回热路径就会与主脑合并双写
-    同一份 `owner_memory`，谁覆盖谁全看时序。这里直接断言那个方法在 service 上根本不存在。
-    """
-    from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service as svc
-
-    assert not hasattr(svc, 'merge_owner_memory')
-    assert not hasattr(svc, 'sweep_pending_merges')
-
-
-async def test_memory_contribute_tool_rejects_empty_content(session) -> None:
-    """空 content 直接拒绝、不落库（零 fake，不产生假贡献）。"""
-    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
-    tool = OwnerMemoryContributeTool()
-    result = await tool.execute(
-        AgentContext(
-            hasn_id='a_knowu_interviewer',
-            owner_id=0,
-            agent_status='active',
-            metadata={},
-            owner_hasn_id=owner,
-        ),
-        {'content': '   '},
-    )
-    assert result['accepted'] is False
-    assert result['pending_merge'] is False
-    assert result['reason'] == 'empty_content'
-    count = (
-        await session.execute(
-            select(func.count())
-            .select_from(HasnOwnerMemoryContribution)
-            .where(HasnOwnerMemoryContribution.owner_id == owner)
-        )
-    ).scalar_one()
-    assert int(count or 0) == 0
 
 
 async def test_onboarding_and_growth_claim_tools(session) -> None:

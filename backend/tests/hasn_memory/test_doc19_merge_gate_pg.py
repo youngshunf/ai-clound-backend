@@ -42,12 +42,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_core import HasnAgents, HasnHumans
-from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution, MergeRequest, MergeRun
+from backend.app.hasn_memory.model import HasnOwnerMemory, MergeRequest, MergeRun
 from backend.app.hasn_memory.model.peer_portrait import PeerPortrait
 from backend.app.hasn_memory.schema.merge_gate import (
+    MergeAgentSelfPortraitItem,
     MergeApplyRequest,
     MergeApplyResponse,
     MergeDerivedFactItem,
+    MergeFactRevisionItem,
     MergeOwnerMemoryPayload,
     MergePeerPortraitItem,
     MergeRequestBody,
@@ -55,12 +57,12 @@ from backend.app.hasn_memory.schema.merge_gate import (
     MergeVerdictItem,
 )
 from backend.app.hasn_memory.service.merge_gate_service import (
+    REJECT_FACT_SNAPSHOT_CONFLICT,
     REJECT_NOT_MASTER_BRAIN,
     REJECT_VERSION_CONFLICT,
     MergeGateRejectedError,
     merge_gate_service,
 )
-from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 from backend.database.schema_names import SCHEMA_NAMES
 from backend.tests.hasn_memory.local_rust_source import find_local_rust_source
@@ -148,7 +150,6 @@ async def env() -> AsyncIterator[tuple[AsyncSession, Fixture]]:
                 sa.text('DELETE FROM hasn_memory.merge_run WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_memory.merge_request WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_memory.owner_memory WHERE owner_id = :o'),
-                sa.text('DELETE FROM hasn_memory.owner_memory_contribution WHERE owner_id = :o'),
                 sa.text(f'DELETE FROM {_SYNC_EVENTS} WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_agents WHERE owner_id = :o'),
                 sa.text('DELETE FROM hasn_humans WHERE hasn_id = :o'),
@@ -217,15 +218,23 @@ def _request(fx: Fixture, **overrides: Any) -> MergeApplyRequest:
         'run_id': f'mrun_{uuid.uuid4().hex[:24]}',
         'node_id': fx.node_a,
         'base_owner_memory_version': 0,
+        'base_owner_memory_edited': False,
+        'fact_snapshot': [],
         'verdicts': [],
         'derived_facts': [],
         'owner_memory': None,
+        'agent_self_portraits': [],
         'peer_portraits': [],
         'summary': '本轮把两条重复的咖啡偏好合成了一条',
         'stats': MergeStats(facts_judged=2, facts_merged=1, facts_disputed=0),
     }
     payload.update(overrides)
     return MergeApplyRequest(**payload)
+
+
+def _fact_snapshot(*items: tuple[str, int]) -> list[MergeFactRevisionItem]:
+    """构造主脑计算时读取的完整 active 事实版本快照。"""
+    return [MergeFactRevisionItem(fact_id=fact_id, revision=revision) for fact_id, revision in items]
 
 
 # --------------------------------------------------------------------------------------
@@ -239,9 +248,15 @@ async def test_master_brain_apply_writes_overlay_derived_memory_and_portrait(env
     fact_id = await _seed_fact(db, owner_id=fx.owner_id, node_id=fx.node_a, agent_id=fx.master_agent_id)
     derived_id = uuid.uuid4().hex
     peer_id = f'h_peer{uuid.uuid4().hex[:16]}'
+    before_agent_revision = (
+        await db.execute(
+            select(HasnAgents.profile_revision).where(HasnAgents.hasn_id == fx.other_agent_id)
+        )
+    ).scalar_one()
 
     body = _request(
         fx,
+        fact_snapshot=_fact_snapshot((fact_id, 1)),
         verdicts=[MergeVerdictItem(fact_id=fact_id, verdict='merged_into', judged_revision=1)],
         derived_facts=[
             MergeDerivedFactItem(
@@ -257,6 +272,12 @@ async def test_master_brain_apply_writes_overlay_derived_memory_and_portrait(env
             )
         ],
         owner_memory=MergeOwnerMemoryPayload(content='健康: 主人注重抗衰老'),
+        agent_self_portraits=[
+            MergeAgentSelfPortraitItem(
+                agent_id=fx.other_agent_id,
+                portrait_text='我负责界面验收，并会主动记录测试结论',
+            )
+        ],
         peer_portraits=[MergePeerPortraitItem(peer_hasn_id=peer_id, portrait_text='沟通直接，偏好要点式汇报')],
     )
     result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
@@ -266,7 +287,7 @@ async def test_master_brain_apply_writes_overlay_derived_memory_and_portrait(env
     assert result.new_owner_memory_version == 1
     assert result.skipped_verdicts == []
     assert result.derived_created == 1
-    assert result.portraits_updated == 1
+    assert result.portraits_updated == 2
 
     verdict, run, judged = await _overlay(db, fact_id)
     assert (verdict, run, judged) == ('merged_into', body.run_id, 1)
@@ -308,6 +329,16 @@ async def test_master_brain_apply_writes_overlay_derived_memory_and_portrait(env
     assert portrait.peer_hasn_id == peer_id
     assert portrait.version == 1
     assert portrait.revised_by == fx.master_agent_id
+
+    agent_snapshot = (
+        await db.execute(
+            select(HasnAgents.memory_md, HasnAgents.profile_revision).where(
+                HasnAgents.hasn_id == fx.other_agent_id
+            )
+        )
+    ).one()
+    assert agent_snapshot.memory_md == '我负责界面验收，并会主动记录测试结论'
+    assert agent_snapshot.profile_revision == before_agent_revision + 2
 
     run_row = (await db.execute(select(MergeRun).where(MergeRun.run_id == body.run_id))).scalar_one()
     assert run_row.status == 'applied'
@@ -378,7 +409,11 @@ async def test_version_conflict_rejected_with_zero_side_effect(env: tuple[AsyncS
     fact_id = await _seed_fact(db, owner_id=fx.owner_id, node_id=fx.node_a, agent_id=fx.master_agent_id)
     derived_id = uuid.uuid4().hex
     # 先成功跑一轮，把 version 推到 1
-    first = _request(fx, owner_memory=MergeOwnerMemoryPayload(content='基线一轮'))
+    first = _request(
+        fx,
+        fact_snapshot=_fact_snapshot((fact_id, 1)),
+        owner_memory=MergeOwnerMemoryPayload(content='基线一轮'),
+    )
     await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=first)
     await db.commit()
 
@@ -417,6 +452,134 @@ async def test_version_conflict_rejected_with_zero_side_effect(env: tuple[AsyncS
     assert '不该落库' not in (memory.content or '')
 
 
+async def test_fact_snapshot_change_rejects_stale_portraits_without_side_effect(
+    env: tuple[AsyncSession, Fixture],
+) -> None:
+    """事实撤回发生在本地计算之后时，旧 USER.md/MEMORY.md 必须整轮拒绝。"""
+    db, fx = env
+    fact_id = await _seed_fact(
+        db,
+        owner_id=fx.owner_id,
+        node_id=fx.node_a,
+        agent_id=fx.master_agent_id,
+    )
+    body = _request(
+        fx,
+        fact_snapshot=_fact_snapshot((fact_id, 1)),
+        owner_memory=MergeOwnerMemoryPayload(content='已经撤回的敏感事实'),
+        agent_self_portraits=[
+            MergeAgentSelfPortraitItem(
+                agent_id=fx.other_agent_id,
+                portrait_text='已经撤回的敏感事实',
+            )
+        ],
+    )
+    await db.execute(
+        sa.text(
+            "UPDATE hasn_memory.semantic_fact SET status = 'withdrawn', revision = 2 "
+            'WHERE fact_id = :fact_id'
+        ),
+        {'fact_id': fact_id},
+    )
+    await db.commit()
+
+    with pytest.raises(MergeGateRejectedError) as excinfo:
+        await merge_gate_service.apply(
+            db,
+            owner_id=fx.owner_id,
+            agent_id=fx.master_agent_id,
+            body=body,
+        )
+    assert excinfo.value.reason == REJECT_FACT_SNAPSHOT_CONFLICT
+    await db.rollback()
+
+    assert (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one_or_none() is None
+    memory_md = (
+        await db.execute(
+            select(HasnAgents.memory_md).where(HasnAgents.hasn_id == fx.other_agent_id)
+        )
+    ).scalar_one_or_none()
+    assert memory_md != '已经撤回的敏感事实'
+
+
+async def test_explicit_clear_removes_owner_and_agent_rendered_snapshots(
+    env: tuple[AsyncSession, Fixture],
+) -> None:
+    """最后一条事实消失后，明确 clear 必须清掉云端合并态与 Runtime 文件源。"""
+    db, fx = env
+    peer_id = f'h_peer{uuid.uuid4().hex[:16]}'
+    seeded = _request(
+        fx,
+        owner_memory=MergeOwnerMemoryPayload(content='旧主人画像'),
+        agent_self_portraits=[
+            MergeAgentSelfPortraitItem(agent_id=fx.other_agent_id, portrait_text='旧分身画像')
+        ],
+        peer_portraits=[
+            MergePeerPortraitItem(peer_hasn_id=peer_id, portrait_text='旧的敏感联系人画像')
+        ],
+    )
+    await merge_gate_service.apply(
+        db,
+        owner_id=fx.owner_id,
+        agent_id=fx.master_agent_id,
+        body=seeded,
+    )
+    await db.commit()
+
+    cleared = _request(
+        fx,
+        base_owner_memory_version=1,
+        owner_memory=MergeOwnerMemoryPayload(clear=True),
+        agent_self_portraits=[
+            MergeAgentSelfPortraitItem(agent_id=fx.other_agent_id, clear=True)
+        ],
+        peer_portraits=[MergePeerPortraitItem(peer_hasn_id=peer_id, clear=True)],
+    )
+    result = await merge_gate_service.apply(
+        db,
+        owner_id=fx.owner_id,
+        agent_id=fx.master_agent_id,
+        body=cleared,
+    )
+    assert result.new_owner_memory_version == 2
+
+    db.expire_all()
+    owner_memory = (
+        await db.execute(select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == fx.owner_id))
+    ).scalar_one()
+    agent_memory = (
+        await db.execute(
+            select(HasnAgents.user_md, HasnAgents.memory_md).where(
+                HasnAgents.hasn_id == fx.other_agent_id
+            )
+        )
+    ).one()
+    assert owner_memory.content is None
+    assert agent_memory.user_md == ''
+    assert agent_memory.memory_md == ''
+    assert (
+        await db.execute(
+            select(PeerPortrait).where(
+                PeerPortrait.owner_id == fx.owner_id,
+                PeerPortrait.peer_hasn_id == peer_id,
+            )
+        )
+    ).scalar_one_or_none() is None
+    delete_event = (
+        await db.execute(
+            sa.text(
+                f'SELECT payload FROM {_SYNC_EVENTS} '
+                "WHERE owner_id = :owner_id AND event_type = 'memory.peer_portrait.deleted' "
+                'AND aggregate_id = :peer_id ORDER BY revision DESC LIMIT 1'
+            ),
+            {'owner_id': fx.owner_id, 'peer_id': peer_id},
+        )
+    ).scalar_one_or_none()
+    assert delete_event is not None
+
+
 async def test_rejection_records_merge_run(env: tuple[AsyncSession, Fixture]) -> None:
     """§5.5 拒绝必须留痕：请求事务回滚了，`merge_run(status='rejected')` 仍在（独立事务）。"""
     db, fx = env
@@ -444,6 +607,7 @@ async def test_duplicate_run_id_replays_without_reapplying(env: tuple[AsyncSessi
     derived_id = uuid.uuid4().hex
     body = _request(
         fx,
+        fact_snapshot=_fact_snapshot((fact_id, 1)),
         verdicts=[MergeVerdictItem(fact_id=fact_id, verdict='merged_into', judged_revision=1)],
         derived_facts=[
             MergeDerivedFactItem(
@@ -496,6 +660,7 @@ async def test_stale_verdict_skipped_others_applied(env: tuple[AsyncSession, Fix
 
     body = _request(
         fx,
+        fact_snapshot=_fact_snapshot((fresh, 1), (moved, 3)),
         verdicts=[
             MergeVerdictItem(fact_id=fresh, verdict='merged_into', judged_revision=1),
             MergeVerdictItem(fact_id=moved, verdict='disputed', judged_revision=2),
@@ -533,7 +698,12 @@ async def test_second_run_replaces_previous_overlay(env: tuple[AsyncSession, Fix
         db, owner_id=fx.owner_id, node_id=fx.node_a, agent_id=fx.master_agent_id, predicate='作息'
     )
 
-    run1 = _request(fx, verdicts=[MergeVerdictItem(fact_id=old, verdict='merged_into', judged_revision=1)])
+    snapshot = _fact_snapshot((old, 1), (new, 1))
+    run1 = _request(
+        fx,
+        fact_snapshot=snapshot,
+        verdicts=[MergeVerdictItem(fact_id=old, verdict='merged_into', judged_revision=1)],
+    )
     await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=run1)
     await db.commit()
     assert (await _overlay(db, old))[0] == 'merged_into'
@@ -541,6 +711,7 @@ async def test_second_run_replaces_previous_overlay(env: tuple[AsyncSession, Fix
     run2 = _request(
         fx,
         base_owner_memory_version=1,
+        fact_snapshot=snapshot,
         verdicts=[MergeVerdictItem(fact_id=new, verdict='disputed', judged_revision=1)],
     )
     await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=run2)
@@ -623,36 +794,13 @@ async def test_merge_status_surfaces_rejection_reason(env: tuple[AsyncSession, F
 # --------------------------------------------------------------------------------------
 
 
-async def test_contribute_no_longer_merges_inline(env: tuple[AsyncSession, Fixture]) -> None:
-    """doc19 §10：contribute 只落贡献流，`owner_memory.version` 一动不动（不假装已合并）。"""
-    db, fx = env
-    accepted = await owner_memory_service.contribute(
-        db, owner_id=fx.owner_id, agent_hasn_id=fx.master_agent_id, content='主人常驻昆明，注重健康'
-    )
-    await db.flush()
-    assert accepted['accepted'] is True
-
-    rows = (
-        await db.execute(
-            select(HasnOwnerMemoryContribution).where(HasnOwnerMemoryContribution.owner_id == fx.owner_id)
-        )
-    ).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].status == 'pending'
-    assert rows[0].merged_into_version is None
-
-    memory = await owner_memory_service.get_owner_memory(db, owner_id=fx.owner_id)
-    assert memory['version'] == 0
-    assert memory['content'] is None
-
-
 async def test_cloud_memory_semantic_processing_retired(env: tuple[AsyncSession, Fixture]) -> None:
     """§8.5：云端不再有任何记忆语义处理——退役必须真删代码，不许留死函数。
 
     留着死函数的代价不是洁癖问题：`merge_owner_memory` 只要还在 service 上，任何一次改动把它
     加回热路径就会与主脑合并双写同一份 `owner_memory`，而 CAS 只拦得住走合并闸的那一路。
 
-    同时钉住**表不删、写者换人**（§10）：`owner_memory` / `peer_portrait` 继续是合并态存储与
+    同时钉住**合并态表不删、写者换人**（§10）：`owner_memory` / `peer_portrait` 继续是存储与
     MEMPUSH 下发源，退役退的是语义处理，不是存储。
     """
     import importlib
@@ -665,6 +813,9 @@ async def test_cloud_memory_semantic_processing_retired(env: tuple[AsyncSession,
         assert not hasattr(om.owner_memory_service, name), f'{name} 未真正删除'
     for name in ('synthesize_peer_portrait', 'sweep_peer_portraits'):
         assert not hasattr(pp.peer_portrait_service, name), f'{name} 未真正删除'
+    assert 'bump_owner' not in pp.peer_portrait_service.emit_portrait_downlink.__code__.co_names, (
+        '画像 service 不得在合并事务提交前推送失效；统一由 merge/apply 在 commit 后发布'
+    )
     # 云端记忆语义处理的 LLM 入口一并消失（提示词构造函数也不留）
     for module, attr in ((om, '_merge_messages'), (om, '_default_llm_complete'),
                          (pp, '_synthesize_messages'), (pp, '_default_llm_complete')):
@@ -768,6 +919,7 @@ async def test_missing_owner_memory_key_does_not_reset_owner_edited(
         'run_id': f'mrun_{uuid.uuid4().hex[:24]}',
         'node_id': fx.node_a,
         'base_owner_memory_version': 3,
+        'base_owner_memory_edited': True,
     })
     result = await merge_gate_service.apply(db, owner_id=fx.owner_id, agent_id=fx.master_agent_id, body=body)
     assert result.new_owner_memory_version == 4
@@ -911,18 +1063,20 @@ def _json_keys(block: str) -> set[str]:
 #: 云端提交体涉及的全部 DTO（合并提交体是嵌套结构，字段名要按并集比）。
 _MERGE_REQUEST_SCHEMAS = (
     MergeApplyRequest,
+    MergeFactRevisionItem,
     MergeVerdictItem,
     MergeDerivedFactItem,
+    MergeAgentSelfPortraitItem,
     MergeOwnerMemoryPayload,
     MergePeerPortraitItem,
     MergeStats,
 )
 
 
-async def test_merge_request_body_field_names_match_local_rust_builder() -> None:  # noqa: RUF029 纯契约钉子无需 await
+async def test_merge_request_body_field_names_match_local_rust_builder() -> None:  # ruff: ignore[unused-async] 纯契约钉子无需 await
     """合并提交体字段名两侧必须**完全一致**（多一个少一个都要显式改这条）。
 
-    对照点：``hasn-mcp/src/memory.rs::merge_apply_request`` + ``stats_json``（本地唯一构造点，
+    对照点：``hasn-mcp/src/memory.rs::merge_apply_request`` + ``gate_stats_json``（本地唯一构造点，
     注释原文就写着「字段名与云端切片同一份，不得擅改」）↔ ``schema/merge_gate.py`` 的六个 DTO。
     """
     source_path = find_local_rust_source(_LOCAL_MERGE_TOOL_RS)
@@ -933,7 +1087,7 @@ async def test_merge_request_body_field_names_match_local_rust_builder() -> None
         )
     source = source_path.read_text(encoding='utf-8')
     local_keys = _json_keys(_rust_fn_body(source, 'merge_apply_request')) | _json_keys(
-        _rust_fn_body(source, 'stats_json')
+        _rust_fn_body(source, 'gate_stats_json')
     )
     cloud_fields = {field for schema in _MERGE_REQUEST_SCHEMAS for field in schema.model_fields}
 
@@ -944,7 +1098,7 @@ async def test_merge_request_body_field_names_match_local_rust_builder() -> None
     )
 
 
-async def test_merge_response_field_names_are_a_subset_of_cloud_schema() -> None:  # noqa: RUF029 纯契约钉子无需 await
+async def test_merge_response_field_names_are_a_subset_of_cloud_schema() -> None:  # ruff: ignore[unused-async] 纯契约钉子无需 await
     """本地应答结构体的字段名必须是云端应答 DTO 的子集（本地少读几个字段是允许的）。
 
     对照点：``huanxing_agent/memory.rs::MergeApplyResponse`` ↔ ``schema/merge_gate.py`` 同名 DTO。

@@ -44,6 +44,7 @@ from backend.app.hasn_task.service.builtin_seeding_service import (
     seed_builtin_tasks,
     update_builtin_task_from_catalog,
 )
+from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 if TYPE_CHECKING:
@@ -249,6 +250,86 @@ async def test_sync_event_payload_carries_target_scope(session) -> None:
     )
     # 非广播条目也必须显式带值，避免本地把「缺字段」当成未知语义
     assert by_key['daily_briefing'].get('target_scope') == 'master_brain'
+
+
+async def test_all_agents_run_summary_accepts_each_executing_agent(session) -> None:
+    """广播任务的每条本地 run 都由实际执行分身上报，不能只允许云端任务行绑定的主脑。"""
+    owner = await _make_owner(session)
+    await _bootstrap_owner_agents(session, owner)
+    await seed_builtin_tasks(session, owner_id=owner)
+    task = (
+        await session.execute(
+            select(HasnTask).where(HasnTask.owner_id == owner, HasnTask.builtin_key == MEMORY_REVIEW)
+        )
+    ).scalar_one()
+    peer_agent = (
+        await session.execute(
+            select(HasnAgents.hasn_id)
+            .where(HasnAgents.owner_id == owner, HasnAgents.hasn_id != task.agent_id)
+            .order_by(HasnAgents.hasn_id)
+            .limit(1)
+        )
+    ).scalar_one()
+    run_uuid = f'run_{uuid.uuid4().hex}'
+
+    stored = await hasn_sync_service.gateway.save_task_run_summary(
+        session,
+        owner_id=owner,
+        agent_hasn_id=peer_agent,
+        summary={
+            'run_uuid': run_uuid,
+            'task_uuid': task.task_uuid,
+            'owner_id': owner,
+            'agent_id': peer_agent,
+            'executor_node_id': 'n_doc19_broadcast',
+            'session_id': f'sess_{uuid.uuid4().hex}',
+            'scheduled_fire_at': None,
+            'dedupe_key': f'doc19-broadcast:{run_uuid}',
+            'status': 'success',
+            'output_summary': '本分身已完成本机记忆复盘',
+            'error': None,
+            'deep_link': None,
+            'model': None,
+            'token_usage': None,
+            'duration_ms': 10,
+            'started_at': None,
+            'finished_at': None,
+        },
+    )
+
+    assert stored['agent_id'] == peer_agent
+    assert stored['task_uuid'] == task.task_uuid
+
+
+async def test_master_brain_run_summary_still_rejects_other_agent(session) -> None:
+    """非广播任务继续只认任务绑定分身，不能因广播修复而扩大普通任务权限。"""
+    owner = await _make_owner(session)
+    await _bootstrap_owner_agents(session, owner)
+    await seed_builtin_tasks(session, owner_id=owner)
+    task = (
+        await session.execute(
+            select(HasnTask).where(HasnTask.owner_id == owner, HasnTask.builtin_key == 'daily_briefing')
+        )
+    ).scalar_one()
+    peer_agent = (
+        await session.execute(
+            select(HasnAgents.hasn_id)
+            .where(HasnAgents.owner_id == owner, HasnAgents.hasn_id != task.agent_id)
+            .order_by(HasnAgents.hasn_id)
+            .limit(1)
+        )
+    ).scalar_one()
+
+    with pytest.raises(errors.ForbiddenError):
+        await hasn_sync_service.gateway.save_task_run_summary(
+            session,
+            owner_id=owner,
+            agent_hasn_id=peer_agent,
+            summary={
+                'run_uuid': f'run_{uuid.uuid4().hex}',
+                'task_uuid': task.task_uuid,
+            },
+        )
 
 
 async def test_refresh_builtin_keeps_target_scope(session) -> None:

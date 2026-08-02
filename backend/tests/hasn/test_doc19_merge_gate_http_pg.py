@@ -284,7 +284,6 @@ async def test_owner_jwt_cannot_call_agent_scope_endpoints(gate: SimpleNamespace
 _APP_SCOPE_ENDPOINTS = (
     ('GET', '/api/v1/hasn/app/memory/merge/status'),
     ('GET', '/api/v1/hasn/app/owner/memory'),
-    ('GET', '/api/v1/hasn/app/owner/memory/contributions'),
     ('GET', '/api/v1/hasn/app/owner/profile-coverage'),
     ('POST', '/api/v1/hasn/app/owner/proactive-planning/claim'),
 )

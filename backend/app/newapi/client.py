@@ -9,9 +9,9 @@
   access_token 持有者 id（无跨用户冒充），故管理类操作以 root 身份 + 显式目标定位，
   **不用 `/self` 冒充他人**。
 - **代用户建 relay token**：new-api 无 admin 建 token 接口；建 token 必须以用户身份
-  （`POST /api/token/`，UserAuth=调用方）。流程：admin 设密码 → 用户 login（独立 cookie
-  jar）→ `GET /api/user/token` 铸用户 access_token → 用该 token（cookieless）AddToken →
-  admin `admin_token` 取明文 key。用户 access_token 由 service 加密存映射表复用。
+  （`POST /api/token/`，UserAuth=调用方）。流程：admin 设密码 → 用户 login 取得短期会话
+  access token → 携带该 token 调 `GET /api/user/token` 铸用户 PAT → 用 PAT（cookieless）
+  AddToken → admin `admin_token` 取明文 key。用户 PAT 由 service 加密存映射表复用。
 - **trust_env=False**（强制）：本机/生产可能配 HTTP_PROXY/ALL_PROXY，httpx 默认会把
   localhost:3180 也走代理 → 503/ERR。new-api 是内网服务，绝不经外部代理。
 - **不自动重试非幂等 POST**（与项目网关铁律一致）；连接级错误如实抛出。
@@ -92,7 +92,7 @@ class NewApiAdminClient:
         }
 
     def _new_client(self) -> httpx.AsyncClient:
-        """独立短命 client（带 base_url + 独立 cookie jar）——**仅供 login 等需要会话隔离的流程**。
+        """独立短命 client（带 base_url）——**仅供 login 等短期认证流程**。
 
         trust_env=False：绝不经外部代理访问内网 new-api（见类 docstring）。普通 admin 调用走
         进程级连接池（见 :meth:`_request` 默认路径），不用本方法。
@@ -112,7 +112,7 @@ class NewApiAdminClient:
         """发请求并解包信封，返回 `data` 字段；失败抛 NewApiError（如实记录）。
 
         两条路径：
-        - **caller 传入 client**（login cookie jar 隔离流）：用它 + relative path（client 自带
+        - **caller 传入 client**（login 短期认证流）：用它 + relative path（client 自带
           base_url），**由 caller 负责关闭**（其 ``async with`` 收尾），本方法不关。
         - **默认**（无 caller client）：走进程级连接池单例 ``get_service_client('newapi')``——
           **绝不 aclose**（lifespan 统一关），且池单例无 base_url，须用**绝对 URL**
@@ -316,18 +316,31 @@ class NewApiAdminClient:
     async def bootstrap_user_access_token(self, *, newapi_user_id: int, username: str) -> str:
         """为用户铸 new-api access_token（管理面身份令牌，配 New-Api-User 用）。
 
-        admin 设临时密码 → 用户 login（独立 cookie jar）→ GET /user/token。
+        admin 设临时密码 → 用户 login 取得短期会话 access token → 以该会话调用
+        GET /user/token。
         返回明文 access_token（service 负责加密落库复用）。
         """
         password = _gen_password()
         await self.set_user_password(newapi_user_id=newapi_user_id, username=username, password=password)
-        # 独立 client 持 login 会话（cookie jar 不污染 admin 调用）
+        # 新版 new-api 登录显式返回短期会话 access token；刷新 cookie 不能单独证明当前请求身份。
+        # 必须把该 token 带给 /user/token，才能铸出供后续无 cookie 调用复用的长期 PAT。
         async with self._new_client() as login_c:
-            await self._request(
+            login_data = await self._request(
                 'POST', '/user/login', json={'username': username, 'password': password}, client=login_c
             )
+            session_access_token = (
+                login_data.get('access_token', '').strip() if isinstance(login_data, dict) else ''
+            )
+            if not session_access_token:
+                raise NewApiError(f'登录未返回会话 access_token user={username}', endpoint='/user/login')
             token = await self._request(
-                'GET', '/user/token', headers={'New-Api-User': str(newapi_user_id)}, client=login_c
+                'GET',
+                '/user/token',
+                headers={
+                    'Authorization': f'Bearer {session_access_token}',
+                    'New-Api-User': str(newapi_user_id),
+                },
+                client=login_c,
             )
         if not token or not isinstance(token, str):
             raise NewApiError(f'铸 access_token 失败 user={username}', endpoint='/user/token')

@@ -139,6 +139,57 @@ class PeerPortraitService:
         await self.emit_portrait_downlink(db, owner_id=owner_id, portrait=portrait)
         return portrait
 
+    async def delete_merged_portrait(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        peer_hasn_id: str,
+    ) -> bool:
+        """删除失去事实依据的合并态画像，并发出跨节点删除事件。"""
+        owner_id = (owner_id or '').strip()
+        peer_hasn_id = (peer_hasn_id or '').strip()
+        if not owner_id or not peer_hasn_id:
+            raise ValueError('owner_id 与 peer_hasn_id 必填')
+        deleted = (
+            await db.execute(
+                sa.delete(PeerPortrait)
+                .where(
+                    PeerPortrait.owner_id == owner_id,
+                    PeerPortrait.peer_hasn_id == peer_hasn_id,
+                )
+                .returning(PeerPortrait.peer_hasn_id)
+            )
+        ).scalar_one_or_none()
+        await db.flush()
+        # 即使云端已无该行也必须发删除事件：离线节点可能仍持有旧画像，clear 的语义是
+        # 把所有镜像收敛到“不存在”，而不是仅报告本次 DELETE 是否命中。
+        await self.emit_portrait_deleted_downlink(
+            db,
+            owner_id=owner_id,
+            peer_hasn_id=peer_hasn_id,
+        )
+        return deleted is not None
+
+    async def emit_portrait_deleted_downlink(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        peer_hasn_id: str,
+    ) -> None:
+        """发 `memory.peer_portrait.deleted`，让所有设备物理删除本地镜像。"""
+        from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+
+        await hasn_sync_service.gateway.emit_memory_event(
+            db,
+            owner_id=owner_id,
+            event_type='memory.peer_portrait.deleted',
+            namespace='portraits',
+            aggregate_id=peer_hasn_id,
+            payload={'peer_hasn_id': peer_hasn_id, 'deleted_at': _now_ms()},
+        )
+
     async def emit_portrait_downlink(self, db: AsyncSession, *, owner_id: str, portrait: dict[str, Any]) -> None:
         """发 `memory.peer_portrait.upserted` 下行事件（doc17 P3 · G4，doc19 §5.3 回灌）。
 
@@ -169,15 +220,6 @@ class PeerPortraitService:
             aggregate_id=peer_hasn_id,
             payload=body,
         )
-        # G6 即时下发：push 该 owner 在线节点「memory 维度变了」→ daemon 触发 memory sync_pull
-        # 拉取本 portraits 事件落本地镜像（离线设备靠登录/重连 pull_once 兜底）。best-effort：
-        # 推送失败不拖垮已发射的事件（事件已在 hasn_sync_events，下次 pull 仍能拉到）。
-        try:
-            from backend.app.hasn.service.sync_invalidate_service import KIND_MEMORY, bump_owner
-
-            await bump_owner(KIND_MEMORY, db, owner_id)
-        except Exception as exc:
-            log.warning(f'peer portrait WSPUSH memory invalidate failed owner={owner_id}: {exc}')
 
 
 def _serialize(row: PeerPortrait) -> dict[str, Any]:

@@ -4,12 +4,9 @@
 （如 `app/hasn/api/v1/agent/hasn_agent_profile.py`）兼容；新代码请直接从 `app/hasn_memory`
 导入。
 
-doc19 §10：`LlmComplete` 随云端 LLM 内联合并一并退役，不再 re-export。
+doc19 §10 / doc100：`LlmComplete` 与 contribution 常量随云端写面整体退役，不再 re-export。
 """
 
-from backend.app.hasn_memory.service.owner_memory_service import (
-    MEMORY_CONTRIBUTE_PENDING_NOTE as MEMORY_CONTRIBUTE_PENDING_NOTE,
-)
 from backend.app.hasn_memory.service.owner_memory_service import (
     OwnerMemoryService as OwnerMemoryService,
 )

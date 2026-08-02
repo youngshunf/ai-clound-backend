@@ -69,15 +69,14 @@ class AgentContext:
         # Hermes 面经保留参数 `_hasn_work_session_id` 由 server.call_tool 剥离采信。register-on-write
         # 的工作会话 ContextVar 优先取本字段，缺省才对 `session_id` 做「在册 task」收窄（兼容旧节点）。
         self.work_session_id: str | None = None
-        # 项目语境（doc19 §6.2 项目记忆 · doc38 §3.3 联邦挂靠）：本次调用所属的**云端权威平台项目
+        # 项目语境（doc38 §3.3 联邦挂靠）：本次调用所属的**云端权威平台项目
         # UUID**。两条来源，都由系统注入、分身不可伪造：① CLI 直连面 streamable 从 daemon 组装的
         # `X-Hasn-Project-Id` header 直取；② 缺 header 时由 `work_session_id`/`session_id` 反查
         # `hasn_sessions.project_id`（该列只由已验证派发项目透传）。
-        # 消费方：`hasn.memory.save` 未显式给 scope 时自动落 `scope_kind='project'` + 本 UUID；
-        # `search`/`recall`/`list` 据它做「当前项目 ∪ 非项目作用域」并集检索（读不收窄，§6.2）。
+        # 云端应用工具与产物登记据它确定项目归属。
         # ⚠️ 铁律「跨端 {id} 必须是云端权威 server_id」：此处只放云端项目 UUID，禁止本地 ID。
         # ⚠️ 它是**运行期上下文，不是凭证声明**——不进 to_token_payload / from_token_payload。
-        # None = 不在项目中工作（记忆照常落既有兜底作用域，检索不做项目并集收敛）。
+        # None = 不在项目中工作。
         self.project_id: str | None = None
         # P7 第三方 MCP 网关：本请求该 Agent 可发现/可调的 external 工具 canonical 名集合
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。

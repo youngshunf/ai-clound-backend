@@ -34,6 +34,7 @@ from backend.app.hasn_memory.service.merge_request_service import merge_request_
 from backend.app.hasn_memory.service.merge_run_service import merge_run_service
 from backend.app.hasn_memory.service.semantic_fact_service import semantic_fact_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
+from backend.tests.hasn_memory.fact_uplink_seed import seed_local_fact_uplink
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -80,8 +81,8 @@ async def _save_agent_fact(
     obj: str = '喜欢冰美式',
     **kwargs: object,
 ) -> dict:
-    """落一条 agent_self 事实并提交。"""
-    out = await semantic_fact_service.save_fact(
+    """从本地事实上行入口落一条 agent_self 云端镜像。"""
+    return await seed_local_fact_uplink(
         session,
         owner_id=owner_id,
         agent_id=agent_id,
@@ -90,8 +91,6 @@ async def _save_agent_fact(
         object_value=obj,
         **kwargs,  # type: ignore[arg-type]
     )
-    await session.commit()
-    return out
 
 
 async def _visible_fact_ids(session: AsyncSession, owner_id: str, agent_id: str, query: str) -> tuple[set, set, set]:
@@ -111,8 +110,8 @@ async def _visible_fact_ids(session: AsyncSession, owner_id: str, agent_id: str,
 # --------------------------------------------------------------------------------------
 
 
-async def test_save_fact_defaults_to_node_origin_revision_one(session: AsyncSession) -> None:
-    """save 落的事实一律是节点自产：origin_kind='node'、revision=1、overlay 三列全空。"""
+async def test_fact_uplink_preserves_node_origin_revision_one(session: AsyncSession) -> None:
+    """节点上行的事实保留 node origin、revision=1，overlay 三列全空。"""
     owner = f'h_d19_{uuid.uuid4().hex[:8]}'
     agent = f'a_d19_{uuid.uuid4().hex[:8]}'
     try:
@@ -123,9 +122,8 @@ async def test_save_fact_defaults_to_node_origin_revision_one(session: AsyncSess
         assert out['merge_verdict_run'] is None
         assert out['merge_judged_revision'] is None
         assert out['valid_until'] is None
-        # 未指定产生节点 → 留空「产自未知节点」，本地判自产片时不会误判成自己的
-        assert out['origin_node_id'] is None
-        assert out['origin_agent_id'] is None
+        assert out['origin_node_id'].startswith('node_')
+        assert out['origin_agent_id'] == agent
 
         row = (
             await session.execute(select(SemanticFact).where(SemanticFact.fact_id == out['fact_id']))
