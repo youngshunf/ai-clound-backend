@@ -98,7 +98,7 @@ class CloudNodeService:
     # 云端节点的名额有**两个来源**：
     #   来源 A｜LLM 订阅档附赠：五档 free/lite/pro/max/ultra 中**只有 pro 及以上各附赠 1 个**，
     #           free 与 lite 都是 0（不给试用）；未定档的档位一律按 0（`_tier_grant` fail-closed）；
-    #   来源 B｜`cloud:node` 独立商品加购：¥128/月 · ¥1228/年，买几份加几个。
+    #   来源 B｜`cloud:node` 独立商品加购：¥99/月 · ¥950/年（与 `pro` 同价同折扣），买几份加几个。
     #
     # 两条来源必须**取并集判准入、求和算上限**：
     #   允许创建 ⟺ （档位附赠数 > 0） 或 （持有有效 cloud_node 权益）

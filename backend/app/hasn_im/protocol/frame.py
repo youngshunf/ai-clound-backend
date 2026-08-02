@@ -36,6 +36,7 @@ KNOWN_METHODS: frozenset[str] = frozenset({
     'hasn.message.send',
     'hasn.message.read',
     'hasn.typing',
+    'hasn.agent.progress',
     'hasn.ping',
 })
 

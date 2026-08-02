@@ -122,6 +122,14 @@ _POLICIES = (
         durable_source='无；输入中状态不是业务事实',
         recovery_path='不恢复、不写离线队列',
     ),
+    OfflineFramePolicy(
+        method='hasn.agent.progress',
+        category=OfflineFrameCategory.TRANSIENT,
+        identity_fields=(),
+        durable_source='无；分身本轮回复的在途状态（阶段 + 工具计数）不是业务事实',
+        recovery_path='不恢复、不写离线队列——离线期间的进度补投毫无意义，'
+        '最终回复本身经 hasn.message.new 的 durable 链恢复',
+    ),
 )
 
 OFFLINE_FRAME_POLICIES: Mapping[str, OfflineFramePolicy] = MappingProxyType({

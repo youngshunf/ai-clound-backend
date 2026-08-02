@@ -14,8 +14,10 @@ from backend.app.billing.core.config import (
 )
 from backend.app.billing.core.fulfillment import (
     KIND_CREDIT_PACK,
+    ORDER_TYPE_OFFERING,
     build_offering_ref,
     dispatch_fulfillment,
+    get_registered_kinds,
     reverse_fulfillment,
 )
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
@@ -103,6 +105,61 @@ def clear_client_cache(channel_id: int | None = None) -> None:
         _client_cache.pop(channel_id, None)
     else:
         _client_cache.clear()
+
+
+# ── 通用商品下单的目录校验（G2 · 实施/95）──
+
+
+async def _resolve_purchasable_offering(db: AsyncSession, offering_key: str) -> Any:
+    """取「此刻真的可以卖」的商品行；任一条件不满足给明确 4xx，绝不静默下单。
+
+    三道闸各自防一种事故：
+    - **已下架**：下架即不可新购（已付款订单的履约另有口径，那里刻意不校验 status）；
+    - **feature_key 未注册**：付费墙那侧认不出它，用户会拿到「永远判不出准入」的幽灵权益；
+    - **kind 无履约处理器**：付了钱直接进 `fulfillment_status=dead`——与其让用户先付款再死信，
+      不如在下单口就拒（G3 守卫已让这种缺口在 CI 就红）。
+    """
+    from backend.app.billing.core import feature_registry
+    from backend.app.billing.service import offering_pricing
+
+    offering = await offering_pricing.get_offering(db, offering_key)
+    if offering is None:
+        raise errors.RequestError(msg=f'商品不存在: {offering_key}')
+    if offering.status != offering_pricing.STATUS_ACTIVE:
+        raise errors.RequestError(msg=f'商品 {offering_key} 已下架，无法购买')
+    if not feature_registry.is_registered(offering.feature_key):
+        log.warning(
+            f'[Offering] 拒绝下单：商品 {offering_key} 的 feature_key '
+            f'{offering.feature_key!r} 未在 feature_registry 注册'
+        )
+        raise errors.RequestError(msg=f'商品 {offering_key} 的特征键 {offering.feature_key} 未注册，暂不可购买')
+    if offering.kind not in get_registered_kinds():
+        log.warning(f'[Offering] 拒绝下单：商品种类 {offering.kind!r} 未注册履约处理器（{offering_key}）')
+        raise errors.RequestError(msg=f'商品种类 {offering.kind} 暂不支持购买（缺履约处理器）')
+    return offering
+
+
+async def _resolve_priced_plan(db: AsyncSession, offering_key: str, plan_key: str) -> tuple[Any, int]:
+    """取 active 档位并算出**单份价（分）**；这是订单金额的唯一来源，客户端出价不参与。
+
+    :returns: `(档位行, 单份价格分数)`
+    :raises RequestError: 档位不存在/已下架、未配置价格、非现金计价、免费档。
+    """
+    from backend.app.billing.service import offering_pricing
+
+    plan = await offering_pricing.get_active_plan(db, offering_key, plan_key)
+    if plan is None:
+        raise errors.RequestError(msg=f'档位不存在或已下架: {offering_key}/{plan_key}')
+    if plan.price_amount is None:
+        raise errors.RequestError(msg=f'档位 {offering_key}/{plan_key} 未配置价格')
+    price_unit = (plan.price_unit or 'cny').lower()
+    if price_unit != 'cny':
+        # 以积分计价的档位不能走现金渠道：`int(price × 100)` 这个换算只对「元」成立。
+        raise errors.RequestError(msg=f'档位 {offering_key}/{plan_key} 以 {price_unit} 计价，不支持现金支付下单')
+    unit_fen = int(float(plan.price_amount) * 100)
+    if unit_fen <= 0:
+        raise errors.RequestError(msg=f'档位 {offering_key}/{plan_key} 为免费档，无需支付')
+    return plan, unit_fen
 
 
 class PayOrderService:
@@ -195,7 +252,15 @@ class PayOrderService:
         user_ip: str | None = None,
         app_code: str = 'huanxing',
     ) -> CreatePayOrderResponse:
-        """创建支付订单。据 `order_type` 分支：订阅 / 积分包 / 应用购买（真实支付，零 mock）。"""
+        """创建支付订单。据 `order_type` 分支（真实支付，零 mock）。
+
+        `order_type='offering'` 是**通用路**（G2 · 实施/95）：新商品只加目录行即可下单，
+        不再往下面这串分支里加特例。其余五个分支是历史存量，保持不动。
+        """
+        if obj.order_type == ORDER_TYPE_OFFERING:
+            return await PayOrderService._create_offering_order(
+                db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
+            )
         if obj.order_type == 'credit_pack':
             return await PayOrderService._create_credit_pack_order(
                 db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
@@ -214,6 +279,123 @@ class PayOrderService:
             )
         return await PayOrderService._create_subscribe_order(
             db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
+        )
+
+    @staticmethod
+    async def prepare_offering_order(
+        *,
+        db: AsyncSession,
+        user_id: int,
+        obj: CreatePayOrderParam,
+        user_ip: str | None = None,
+        app_code: str = 'huanxing',
+    ) -> tuple[PayOrder, Any, dict | None]:
+        """通用商品下单的**目录读 → 定价 → 落单**（不含支付渠道 SDK 调用）。
+
+        与 `_create_offering_order` 拆开是为了让「目录 → 下单 → 回调 → 权益」这条链路能被
+        真实跑完验收：渠道 SDK 是外部网络边界（微信/支付宝线上接口），验收不该也不能打它，
+        而这里的每一步都必须是真实生产代码。
+
+        **金额、周期、配额一律从目录读，客户端连传价格的字段都没有**——`CreatePayOrderParam`
+        里不存在任何价格入参，因此篡改无从下手（V7）。
+
+        :returns: `(已落库的订单行, 支付渠道行, 商户密钥配置)`
+        :raises RequestError: 商品/档位不存在、已下架、feature_key 未注册、无价、计价单位非现金、
+            商品种类无履约处理器 —— 一律 4xx 明确拒绝，绝不静默下单。
+        """
+        offering_key = obj.offering_key
+        plan_key = obj.plan_key
+        if not offering_key or not plan_key:
+            # schema 的跨字段校验已挡住，这里是**服务层自持**：service 也可能被别的入口直接调用。
+            raise errors.RequestError(msg='通用商品下单必须同时提供 offering_key 与 plan_key')
+        quantity = int(obj.quantity)
+        if quantity <= 0:
+            raise errors.RequestError(msg=f'购买份数必须为正整数（收到 {quantity}）')
+
+        offering = await _resolve_purchasable_offering(db, offering_key)
+        plan, unit_fen = await _resolve_priced_plan(db, offering_key, plan_key)
+        pay_amount = unit_fen * quantity
+
+        plan_display = str((plan.display_json or {}).get('display_name') or plan.plan_key)
+        suffix = f'×{quantity}' if quantity > 1 else ''
+        subject = f'唤星AI-{offering.display_name}{suffix}'[:128]
+        body = f'{offering.display_name}（{plan_display}）{suffix or "×1"}'[:256]
+
+        channel, merchant_config = await PayOrderService._resolve_channel(db, obj.channel_code)
+
+        order_no = _generate_order_no()
+        expire_time = timezone.now() + timedelta(minutes=ORDER_EXPIRE_MINUTES)
+        order = await pay_order_dao.create(
+            db,
+            {
+                'order_no': order_no,
+                'user_id': user_id,
+                'channel_id': channel.id,
+                'channel_code': channel.code,
+                'order_type': ORDER_TYPE_OFFERING,
+                'subject': subject,
+                'body': body,
+                'target_tier': None,
+                # 目录周期（once/month/year）原样落库，履约按它推到期时刻。
+                'billing_cycle': plan.cycle,
+                'amount': pay_amount,
+                'pay_amount': pay_amount,
+                'expire_time': expire_time,
+                'user_ip': user_ip,
+                # `quantity` 是履约侧「买 N 份就按 N 倍累加配额」的唯一依据。
+                'extra_data': {
+                    'app_code': app_code,
+                    'offering_key': offering_key,
+                    'plan_key': plan_key,
+                    'quantity': quantity,
+                    'unit_price_fen': unit_fen,
+                },
+                # kind 取自**目录实际的 offering.kind**，不由 order_type 钉死——
+                # 同一条通用路因此能承载 feature_plan / app / seat 等任意种类。
+                'offering_ref': build_offering_ref(
+                    ORDER_TYPE_OFFERING,
+                    offering_key=offering_key,
+                    plan_key=plan_key,
+                    kind=offering.kind,
+                ),
+            },
+        )
+        log.info(
+            f'[Offering] 通用商品下单: user_id={user_id}, {offering_key}/{plan_key} ×{quantity}, '
+            f'kind={offering.kind}, 单价={unit_fen}分, 实付={pay_amount}分, order_no={order_no}'
+        )
+        return order, channel, merchant_config
+
+    @staticmethod
+    async def _create_offering_order(
+        *,
+        db: AsyncSession,
+        user_id: int,
+        obj: CreatePayOrderParam,
+        user_ip: str | None,
+        app_code: str,
+    ) -> CreatePayOrderResponse:
+        """通用商品真实下单（G2 · 实施/95）——新增加购/买断型商品**只加库行，不改本方法**。"""
+        order, channel, merchant_config = await PayOrderService.prepare_offering_order(
+            db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
+        )
+        qr_code_url, pay_url = PayOrderService._invoke_channel_create(
+            channel,
+            merchant_config,
+            order_no=order.order_no,
+            amount=order.pay_amount,
+            subject=order.subject,
+            body=order.body or order.subject,
+            user_ip=user_ip,
+        )
+        return CreatePayOrderResponse(
+            order_no=order.order_no,
+            pay_amount=order.pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
+            expire_time=order.expire_time,
         )
 
     @staticmethod

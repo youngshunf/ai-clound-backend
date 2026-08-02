@@ -238,8 +238,17 @@ async def test_factory_default_when_no_row() -> None:
         )
         # agnes-image-2.1-flash 只承载 /images/generations，打 /images/edits 上游 404。
         assert 'agnes-image-2.1-flash' not in cfg.node.media.image_edit_models
-        # 视频默认空：视频渠道需运营在 new-api 开通后再经 Admin 下发（PV4）。
-        assert cfg.node.media.video_models == DEFAULT_PLATFORM_CONFIG['node']['media']['video_models'] == []
+        # 视频出厂默认 = 网关上实测真出片的模型，且**每项都带模态与方言**：
+        # 模态缺失会让 t2v 请求打到 i2v 模型（必失败且仍预扣配额），方言缺失会让阿里系收到
+        # `1280x720` 而不是 `720P` 档位（上游直接 InvalidParameter）。
+        # 出参已由 pydantic 解析成 VideoModelSpec，与常量里的 dict 逐字段比。
+        assert [spec.model_dump() for spec in cfg.node.media.video_models] == DEFAULT_PLATFORM_CONFIG[
+            'node'
+        ]['media']['video_models']
+        assert cfg.node.media.video_models, '视频渠道已开通，出厂默认不应再为空'
+        for spec in cfg.node.media.video_models:
+            assert not isinstance(spec, str), f'视频模型必须显式声明模态与方言：{spec}'
+            assert spec.name and spec.modality and spec.dialect
         _cfg2, rev2 = await svc.get_effective_config(db)
         assert rev == rev2 and rev
 

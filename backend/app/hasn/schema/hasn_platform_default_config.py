@@ -16,6 +16,37 @@ from backend.app.hasn.schema.hasn_agents import AgentRuntimeModels
 from backend.common.schema import SchemaBase
 
 
+class VideoModelSpec(SchemaBase):
+    """视频模型声明（对象写法）。
+
+    视频渠道之间的入参差异远大于图像/语音，必须显式声明两件事，daemon 据此构造请求体：
+
+    - ``modality``：该模型接哪种输入。多数上游把文生视频与图生视频做成不同模型，把 t2v
+      请求发给 i2v 模型必然失败**且仍会预扣配额**，声明后 daemon 直接跳过不提交。
+    - ``dialect``：入参方言。阿里通义万相系（``wan*`` / ``happyhorse*``）图生视频只认
+      ``480P/720P/1080P`` 档位，发 ``1280x720`` 会被上游拒绝；OpenAI 兼容渠道反过来要
+      ``宽x高``。方言靠模型名猜不可靠（``happyhorse-1.1-i2v`` 看不出是阿里），故要显式写。
+    """
+
+    name: str = Field(description='new-api 上的模型名')
+    modality: Literal['any', 'text_to_video', 'image_to_video'] = Field(
+        default='any', description='能承接的输入形态：任意 / 仅文生视频 / 仅图生视频'
+    )
+    dialect: Literal['openai', 'ali'] = Field(
+        default='openai', description='入参方言：OpenAI 兼容 / 阿里通义万相系'
+    )
+    quality: Literal['draft', 'standard', 'high'] | None = Field(
+        default=None,
+        description=(
+            '质量档（运营人工标注，new-api 注册表没有这项）。留空即未标注——'
+            '分身只按相对成本与模态取舍，不编造质量结论'
+        ),
+    )
+    notes: str | None = Field(
+        default=None, description='适用场景一句话（给分身选型看，如「速度快、成本低，适合草稿与批量」）'
+    )
+
+
 class PlatformMediaDefaults(SchemaBase):
     """节点级媒体模型默认（failover 列表，首个优先；空=daemon 退回本地 file/struct 默认）。"""
 
@@ -26,9 +57,13 @@ class PlatformMediaDefaults(SchemaBase):
     )
     tts_models: list[str] = Field(default_factory=list, description='语音合成模型 failover 顺序')
     stt_models: list[str] = Field(default_factory=list, description='语音识别模型 failover 顺序')
-    video_models: list[str] = Field(
+    video_models: list[str | VideoModelSpec] = Field(
         default_factory=list,
-        description='视频生成模型 failover 顺序（task 式异步）。默认空——视频渠道需运营先在 new-api 开通后再下发',
+        description=(
+            '视频生成模型 failover 顺序（task 式异步）。默认空——视频渠道需运营先在 new-api 开通后再下发。'
+            '每项可写模型名字符串（等价 modality=any + dialect=openai），也可写 VideoModelSpec 对象'
+            '显式声明模态与方言；视频渠道入参差异大，建议一律用对象写法'
+        ),
     )
 
 

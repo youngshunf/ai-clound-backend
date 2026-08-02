@@ -52,9 +52,17 @@ DEFAULT_PLATFORM_CONFIG: dict = {
             'image_edit_models': ['qwen-image-2.0', 'wan2.7-image', 'qwen-image-2.0-pro'],
             'tts_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
             'stt_models': ['qwen3-asr-flash'],
-            # 视频默认空：视频渠道尚需运营在 new-api 开通后，经 Admin 平台默认配置下发，
-            # 否则填非空模型名会让分身 hasn.video.generate 直接撞 503 无渠道。
-            'video_models': [],
+            # 2026-08-02 实测：下列三个在 llm.dcfuture.cn 逐个提交并轮询到真出片。
+            # modality 必须声明——happyhorse / wan2.6 都是图生视频专用，把文生视频请求发给
+            # 它们必然失败**且仍预扣配额**；dialect 必须声明——阿里系 i2v 只认 480P/720P/1080P
+            # 档位，发 1280x720 会被上游拒绝（Input should be '1080P','720P' or '480P'），
+            # 而 agnes 这类 OpenAI 兼容渠道反过来要 宽x高。方言靠模型名猜不出来（happyhorse
+            # 看不出是阿里通义万相），所以一律显式写。
+            'video_models': [
+                {'name': 'happyhorse-1.1-i2v', 'modality': 'image_to_video', 'dialect': 'ali'},
+                {'name': 'wan2.6-i2v-flash', 'modality': 'image_to_video', 'dialect': 'ali'},
+                {'name': 'agnes-video-v2.0', 'modality': 'text_to_video', 'dialect': 'openai'},
+            ],
         },
         # 应用专属配置（如 film 视频引擎 5 类模型 + 引擎包 manifest）已迁出 PDC，改由
         # hasn_app_catalog.config_json 权威承载、本服务 get_effective_config 聚合成

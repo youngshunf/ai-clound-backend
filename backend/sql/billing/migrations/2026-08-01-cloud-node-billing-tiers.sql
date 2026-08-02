@@ -4,7 +4,7 @@
 -- 主人 2026-08-01 拍板的**混合结构**：
 --   1. `llm:tier` 五档 free/lite/pro/max/ultra 中 **pro 及以上各档各附赠 1 个**云端节点；
 --      `free` 与 `lite` 都是 0 个、不给试用；
---   2. 超出附赠的部分走独立商品 `cloud:node` **按需加购**，¥128/月 · ¥1228/年
+--   2. 超出附赠的部分走独立商品 `cloud:node` **按需加购**，¥99/月 · ¥950/年（与 `pro` 同价同折扣）
 --      （与 `llm:tier` 的 pro 同价同折扣）。
 --   最终配额 = LLM 档附赠数 ＋ cloud_node 权益里的加购数。
 --
@@ -64,7 +64,7 @@ INSERT INTO "hasn_billing"."billing_offering"
 VALUES ('cloud:node', 'feature_plan', 'cloud_node', '云端常驻节点', 'active', 'platform', 40)
 ON CONFLICT ("key") DO NOTHING;
 
--- 两个档：月付 ¥128 / 年付 ¥1228，与 llm:tier 的 pro 完全同价同折扣（yearly_discount 0.8）。
+-- 两个档：月付 ¥99 / 年付 ¥950，与 llm:tier 的 pro 完全同价同折扣（yearly_discount 0.8）。
 -- trial_json.enabled=false：主人拍板「不给试用」。
 -- grace_json 对齐 llm:tier 现有档位的实测值（库里全是 '{}'），不自造宽限期。
 -- quota_json.max_cloud_nodes=1：一份加购 = 1 个节点；买 N 份则累加进权益快照。
@@ -72,7 +72,7 @@ INSERT INTO "hasn_billing"."billing_plan"
   ("offering_key", "plan_key", "price_amount", "price_unit", "cycle",
    "quota_json", "trial_json", "grace_json", "display_json", "status", "sort_order")
 VALUES
-  ('cloud:node', 'monthly', 128.00, 'cny', 'month',
+  ('cloud:node', 'monthly', 99.00, 'cny', 'month',
    '{"max_cloud_nodes": 1}'::jsonb,
    '{"enabled": false}'::jsonb,
    '{}'::jsonb,
@@ -88,7 +88,7 @@ VALUES
      )
    ),
    'active', 1),
-  ('cloud:node', 'yearly', 1228.00, 'cny', 'year',
+  ('cloud:node', 'yearly', 950.00, 'cny', 'year',
    '{"max_cloud_nodes": 1}'::jsonb,
    '{"enabled": false}'::jsonb,
    '{}'::jsonb,
