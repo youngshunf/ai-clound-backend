@@ -52,6 +52,10 @@ KIND_PLATFORM_CONFIG = 'platform_config'
 KIND_DESIGNSYSTEM = 'designsystem'
 # 通用语音模型签名目录（SPCAT-4）：全局单行 catalog，发布即 bump，daemon 比对重拉验签写盘。
 KIND_SPEECH_CATALOG = 'speech_catalog'
+# 模型注册表（doc02 P2）：全局模型清单 + 能力语义，同步/标注即 bump，daemon 比对重拉写本地镜像。
+# **不能并进 platform_config**：PDC 的 revision 由 config_json 算，注册表内容不在其中——
+# 并进去会「内容变了 revision 没变」，daemon 缓存永远刷不新（设计 §5.1）。
+KIND_MODEL_REGISTRY = 'model_registry'
 # 全局 kind：单一全局 revision，进 get_all_revisions 握手快照，bump(owner_id=None) 全局广播。
 KINDS = (
     KIND_BUILTIN_CATALOG,
@@ -59,6 +63,7 @@ KINDS = (
     KIND_PLATFORM_CONFIG,
     KIND_DESIGNSYSTEM,
     KIND_SPEECH_CATALOG,
+    KIND_MODEL_REGISTRY,
 )
 
 # owner 定向 kind（doc02-07 LF-P3）：revision 是「某 owner 维度」的指纹，对全局握手无意义，
@@ -637,6 +642,13 @@ async def _compute_revision(kind: str, db: AsyncSession) -> str:
         from backend.app.hasn.service.speech_catalog_service import speech_catalog_service
 
         return await speech_catalog_service.get_revision(db)
+    if kind == KIND_MODEL_REGISTRY:
+        from backend.app.hasn.service.model_registry_downlink_service import (
+            model_registry_downlink_service,
+        )
+
+        payload = await model_registry_downlink_service.list_downlink(db)
+        return str(payload['registry_revision'])
     raise ValueError(f'unknown sync kind: {kind}')
 
 
