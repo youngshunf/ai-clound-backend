@@ -28,6 +28,7 @@ daemon 缓存永远刷不新。故注册表自带 `registry_revision`，daemon �
 from __future__ import annotations
 
 import hashlib
+import json
 
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
@@ -38,22 +39,23 @@ from backend.app.hasn.model.hasn_model_registry import HasnModelRegistry
 from backend.app.hasn.service.model_registry_catalog_service import cost_tier_map, effective_cost_tier
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def compute_registry_revision(rows: Sequence[HasnModelRegistry]) -> str:
-    """注册表内容指纹：`max(updated_time)` + 行数 + 参与下发的模型名集合。
+def compute_registry_revision(grouped: dict[str, list[dict[str, Any]]]) -> str:
+    """下发内容指纹：**对 daemon 真正收到的那份 payload 取哈希**。
 
-    为什么不只用 `max(updated_time)`：删行 / 改可见性时最大更新时间**可能不变**（比如把最新那行
-    改回旧值，或另一行被标 missing 而它本就更早），daemon 就永远刷不新。加上行数与模型名集合
-    的哈希后，任何影响下发结果的变化都会改指纹。
+    这样「revision 变了」与「下发内容变了」是同一件事，不多也不少：
+
+    - 不能只看 `max(updated_time)`——同步器每轮都要刷 `last_synced_time`（记录「这轮还在网关上」），
+      那是一次真实 UPDATE，`updated_time` 的 `onupdate` 随之顶新。指纹若含它，**每天 04:40
+      定时同步都会让全网 daemon 被 WSPUSH 打醒重拉整张注册表**，哪怕一个字段都没变；
+    - 也不能只看行数 + 模型名集合——改标注（能力、`inputs`、档位覆盖、排序）时名字和行数都没动，
+      daemon 就永远刷不新。
+
+    对 payload 本身取指纹两头都覆盖：任何影响分身选型的改动必然改指纹，任何不影响的写入必然不改。
     """
-    stamps = [row.updated_time or row.created_time for row in rows]
-    latest = max((stamp for stamp in stamps if stamp is not None), default=None)
-    names = ','.join(sorted(row.model_name for row in rows))
-    seed = f'{latest.isoformat() if latest else "-"}|{len(rows)}|{names}'
+    seed = json.dumps(grouped, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
     return hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]
 
 
@@ -101,8 +103,6 @@ class ModelRegistryDownlinkService:
                 )
             ).scalars()
         )
-        revision = compute_registry_revision(rows)
-
         visible = [
             row
             for row in rows
@@ -115,9 +115,10 @@ class ModelRegistryDownlinkService:
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in visible:
             grouped[row.capability].append(_to_downlink(row, tiers))
+        models = dict(grouped)
         return {
-            'models': dict(grouped),
-            'registry_revision': revision,
+            'models': models,
+            'registry_revision': compute_registry_revision(models),
             'total': len(visible),
         }
 

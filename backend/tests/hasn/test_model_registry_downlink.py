@@ -35,6 +35,7 @@ from backend.app.hasn.service.model_registry_downlink_service import (
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db
+from backend.utils.timezone import timezone
 
 pytestmark = pytest.mark.asyncio
 
@@ -216,9 +217,30 @@ async def test_registry_revision_内容变则变内容不变则稳定(env) -> No
         'registry_revision'
     ] != first, '内容变了 revision 必须变，否则 daemon 缓存永远刷不新'
 
-    # 行数变化也必须改指纹（只看 max(updated_time) 会漏掉删行/加行）。
-    rows = list((await env.session.execute(sa.select(HasnModelRegistry))).scalars())
-    assert compute_registry_revision(rows) != compute_registry_revision(rows[:-1])
+    # 条数变化也必须改指纹（只看 max(updated_time) 会漏掉删行/加行）。
+    payload = await model_registry_downlink_service.list_downlink(env.session)
+    fewer = {cap: entries[:-1] for cap, entries in payload['models'].items()}
+    assert compute_registry_revision(payload['models']) != compute_registry_revision(fewer)
+
+
+async def test_registry_revision_不被last_synced_time刷新惊动(env) -> None:
+    """同步器每轮都刷 `last_synced_time`，那是一次真实 UPDATE，`updated_time` 随之顶新。
+
+    指纹若含 `updated_time`，每天 04:40 的定时同步都会把全网 daemon 打醒重拉整张注册表——
+    一个字段都没变也照打。指纹必须只认下发内容本身。
+    """
+    name = _name('dl-touch')
+    row = await env.add(name, capability='video', agent_visible=True)
+    await env.session.commit()
+    before = (await model_registry_downlink_service.list_downlink(env.session))['registry_revision']
+
+    # 模拟同步器那一下：只更新「这轮还在网关上」的时间戳，下发内容一个字节没变。
+    row.last_synced_time = timezone.now()
+    await env.session.commit()
+    await env.session.refresh(row)
+
+    after = (await model_registry_downlink_service.list_downlink(env.session))['registry_revision']
+    assert after == before, f'只刷同步时间不该改指纹：{before} → {after}'
 
 
 async def test_下发端点HTTP_E2E_按能力分组且带revision(env) -> None:
