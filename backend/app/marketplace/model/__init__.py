@@ -12,3 +12,6 @@ from backend.app.marketplace.model.marketplace_template import MarketplaceTempla
 from backend.app.marketplace.model.marketplace_template_version import (
     MarketplaceTemplateVersion as MarketplaceTemplateVersion,
 )
+from backend.app.marketplace.model.marketplace_agent_publish_request import (
+    MarketplaceAgentPublishRequest as MarketplaceAgentPublishRequest,
+)

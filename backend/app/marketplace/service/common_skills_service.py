@@ -54,6 +54,8 @@ def _latest_skill_version_subquery(skill_ids: list[str] | None = None) -> sa.Sub
                 MarketplaceSkillVersion.file_hash,
                 MarketplaceSkillVersion.version,
             ).label('fingerprint'),
+            MarketplaceSkillVersion.file_hash.label('file_hash'),
+            MarketplaceSkillVersion.version.label('version'),
         )
         .where(MarketplaceSkillVersion.is_latest.is_(True))
         .distinct(MarketplaceSkillVersion.skill_id)
@@ -102,16 +104,23 @@ async def _common_bundle_fingerprints(db: AsyncSession) -> list[str]:
     return [f'bundle:{tid}@{by_id[tid]}' for tid in sorted(by_id)]
 
 
-async def get_common_skill_snapshot(db: AsyncSession) -> tuple[list[str], str]:
-    """返回 (公共技能 skill_id 排序清单, common_skills_revision)。
+async def get_common_skill_manifest_snapshot(
+    db: AsyncSession,
+) -> tuple[dict[str, dict[str, str]], str]:
+    """以单次技能查询返回清单元数据及其集合修订号。
 
-    - skill_id 升序排列，保证清单稳定可比较（清单本身只含技能，供并入 profile.skills）。
+    - 元数据中的 fingerprint/file_hash/version 来自同一条确定性版本行，避免并发发布时混搭。
     - revision = sha256(sorted 技能 "id@指纹" 行 + sorted 公共包 "bundle:id@指纹" 行)[:16]；
       指纹取最新版本 ``COALESCE(content_hash, file_hash, version)``（doc14 §B3，缺全部记 ''）。
     """
     latest_version = _latest_skill_version_subquery()
     stmt = (
-        sa.select(MarketplaceSkill.skill_id, latest_version.c.fingerprint)
+        sa.select(
+            MarketplaceSkill.skill_id,
+            latest_version.c.fingerprint,
+            latest_version.c.file_hash,
+            latest_version.c.version,
+        )
         .select_from(MarketplaceSkill)
         .join(
             latest_version,
@@ -126,25 +135,35 @@ async def get_common_skill_snapshot(db: AsyncSession) -> tuple[list[str], str]:
     rows = (await db.execute(stmt)).all()
 
     # 去重防御（子查询已保证每 skill 恰一行且确定，这里保第一条只作兜底），按 skill_id 排序。
-    by_id: dict[str, str] = {}
-    for skill_id, fingerprint in rows:
+    by_id: dict[str, dict[str, str]] = {}
+    for skill_id, fingerprint, file_hash, version in rows:
         if not skill_id:
             continue
         key = str(skill_id)
         if key not in by_id:
-            by_id[key] = str(fingerprint or '')
+            by_id[key] = {
+                'fingerprint': str(fingerprint or ''),
+                'file_hash': str(file_hash or '').strip(),
+                'version': str(version or ''),
+            }
 
     skill_ids = sorted(by_id)
     bundle_lines = await _common_bundle_fingerprints(db)
 
     # 技能与公共包都没有 → 稳定空修订号。
     if not skill_ids and not bundle_lines:
-        return [], EMPTY_COMMON_SKILLS_REVISION
+        return {}, EMPTY_COMMON_SKILLS_REVISION
 
-    skill_lines = [f'{sid}@{by_id[sid]}' for sid in skill_ids]
+    skill_lines = [f'{sid}@{by_id[sid]["fingerprint"]}' for sid in skill_ids]
     signature = '\n'.join([*skill_lines, *bundle_lines])
     revision = hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16]
-    return skill_ids, revision
+    return by_id, revision
+
+
+async def get_common_skill_snapshot(db: AsyncSession) -> tuple[list[str], str]:
+    """返回公共技能 ID 排序清单与集合修订号。"""
+    metadata, revision = await get_common_skill_manifest_snapshot(db)
+    return sorted(metadata), revision
 
 
 async def get_common_skill_ids(db: AsyncSession) -> list[str]:
@@ -153,7 +172,12 @@ async def get_common_skill_ids(db: AsyncSession) -> list[str]:
     return skill_ids
 
 
-async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) -> str:
+async def get_installed_skills_revision(
+    db: AsyncSession,
+    skill_ids: list[str],
+    *,
+    extra_fingerprints: dict[str, str] | None = None,
+) -> str:
     """Agent 自装技能的内容修订号（doc14 §B4）。
 
     = sha256(sorted "id@指纹" 行)[:16]，指纹取 ``COALESCE(content_hash, file_hash, version)``。
@@ -166,7 +190,7 @@ async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) 
         return EMPTY_COMMON_SKILLS_REVISION
     latest_version = _latest_skill_version_subquery(ids)
     rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.fingerprint))).all()
-    by_id: dict[str, str] = {}
+    by_id: dict[str, str] = dict(extra_fingerprints or {})
     for skill_id, fingerprint in rows:
         key = str(skill_id)
         if key not in by_id:
@@ -202,6 +226,22 @@ async def get_skills_content_fingerprints(
         if key not in fingerprints and fp:
             fingerprints[key] = fp
     return fingerprints
+
+
+async def get_skills_file_hashes(db: AsyncSession, skill_ids: list[str]) -> dict[str, str]:
+    """返回最新版本的 ZIP 字节 SHA256；缺失值不伪造。"""
+    ids = sorted({sid for sid in (skill_ids or []) if sid})
+    if not ids:
+        return {}
+    latest_version = _latest_skill_version_subquery(ids)
+    rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.file_hash))).all()
+    file_hashes: dict[str, str] = {}
+    for skill_id, file_hash in rows:
+        key = str(skill_id or '')
+        digest = str(file_hash or '').strip()
+        if key and digest and key not in file_hashes:
+            file_hashes[key] = digest
+    return file_hashes
 
 
 async def get_skills_immutable_snapshots(

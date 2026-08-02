@@ -185,6 +185,8 @@ class MarketplaceTemplateService:
         filename: str | None = None,
         slug: str | None = None,
         changelog: str | None = None,
+        requested_visibility: str = 'private',
+        commit: bool = True,
     ) -> MarketplaceTemplate:
         if not hasn_id:
             raise errors.AuthorizationError(msg='用户未注册 HASN 身份')
@@ -238,8 +240,12 @@ class MarketplaceTemplateService:
             template.sop_dependencies = sop_deps_str
             template.status = 'draft'
             template.visibility = 'private'
+            template.requested_visibility = requested_visibility
             template.is_private = True
             template.source_type = 'user'
+            template.soul_md = package.soul_md
+            template.user_md = package.user_md
+            template.memory_md = package.memory_md
         else:
             template = MarketplaceTemplate(
                 template_id=template_id,
@@ -249,6 +255,7 @@ class MarketplaceTemplateService:
                 hasn_id=hasn_id,
                 status='draft',
                 visibility='private',
+                requested_visibility=requested_visibility,
                 template_type=metadata.get('template_type') or 'agent_template',
                 name=str(metadata.get('display_name') or metadata.get('name')),
                 name_en=str(metadata.get('display_name') or metadata.get('name')),
@@ -270,6 +277,9 @@ class MarketplaceTemplateService:
                 tags=tags,
                 source_type='user',
                 skill_dependencies=skill_deps_str,
+                soul_md=package.soul_md,
+                user_md=package.user_md,
+                memory_md=package.memory_md,
                 sop_dependencies=sop_deps_str,
             )
             db.add(template)
@@ -287,6 +297,7 @@ class MarketplaceTemplateService:
             existing_version.skill_dependencies_versioned = skill_deps_versioned
             existing_version.package_url = package_url
             existing_version.file_hash = file_hash
+            existing_version.content_hash = package.content_hash
             existing_version.file_size = file_size
             existing_version.is_latest = True
         else:
@@ -297,11 +308,15 @@ class MarketplaceTemplateService:
                 skill_dependencies_versioned=skill_deps_versioned,
                 package_url=package_url,
                 file_hash=file_hash,
+                content_hash=package.content_hash,
                 file_size=file_size,
                 is_latest=True,
             ))
-        await db.commit()
-        await db.refresh(template)
+        if commit:
+            await db.commit()
+            await db.refresh(template)
+        else:
+            await db.flush()
         return template
 
     @staticmethod

@@ -14,6 +14,7 @@ import operator
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlencode
@@ -174,6 +175,18 @@ class ClawHubSyncService:
 
     def __init__(self) -> None:
         self.clawhub_api_url = getattr(settings, 'CLAWHUB_API_URL', 'https://clawhub.ai/api/v1')
+        self.catalog_concurrency = max(
+            1,
+            int(settings.MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY or 4),
+        )
+        self.overall_timeout_seconds = max(
+            1.0,
+            float(settings.MARKETPLACE_CLAWHUB_SYNC_TIMEOUT_SECONDS or 3600),
+        )
+        self.transient_max_delay_seconds = max(
+            0.0,
+            float(settings.MARKETPLACE_CLAWHUB_TRANSIENT_MAX_DELAY_SECONDS or 60),
+        )
         self.sync_filters = {
             'official_only': False,
             'limit': getattr(settings, 'MARKETPLACE_CLAWHUB_SYNC_LIMIT', 100),
@@ -191,6 +204,7 @@ class ClawHubSyncService:
         translate_body: bool = True,
         batch_commit_size: int = 50,
         resume: bool = False,
+        restart: bool = False,
         require_engagement: bool = False,
     ) -> dict[str, Any]:
         """同步 ClawHub 元数据。
@@ -222,11 +236,17 @@ class ClawHubSyncService:
                 limit=effective_limit,
             )
 
+        start_cursor = (
+            None
+            if skill_ids or restart
+            else await self._latest_resume_cursor(db)
+        )
         sync_log = await marketplace_sync_log_dao.create(
             db,
             CreateMarketplaceSyncLogParam(
                 sync_type='clawhub',
                 status='in_progress',
+                resume_cursor=start_cursor,
                 started_at=timezone.now(),
             ),
         )
@@ -244,25 +264,39 @@ class ClawHubSyncService:
         await db.commit()
 
         try:
-            skills_data = (
-                await self._fetch_specific_skills(skill_ids)
-                if skill_ids
-                else await self._fetch_all_skills(limit=effective_limit)
+            if skill_ids:
+                skills_data = await self._fetch_specific_skills(skill_ids)
+                filtered_skills = self._filter_skills(
+                    skills_data,
+                    effective_limit,
+                    effective_min_downloads,
+                    require_engagement=require_engagement,
+                )
+                outcome = await self._sync_filtered_skills(
+                    db,
+                    filtered_skills,
+                    force=force,
+                    batch_commit_size=batch_commit_size,
+                    resume=resume,
+                )
+                outcome.update({'timed_out': False, 'resume_cursor': None})
+            else:
+                outcome = await self._sync_catalog_pages(
+                    db,
+                    sync_log_id=sync_log_id,
+                    start_cursor=start_cursor,
+                    force=force,
+                    limit=effective_limit,
+                    min_downloads=effective_min_downloads,
+                    batch_commit_size=batch_commit_size,
+                    resume=resume,
+                    require_engagement=require_engagement,
+                )
+            status = (
+                'success'
+                if outcome['failed'] == 0 and not outcome['timed_out']
+                else 'partial'
             )
-            filtered_skills = self._filter_skills(
-                skills_data,
-                effective_limit,
-                effective_min_downloads,
-                require_engagement=require_engagement,
-            )
-            outcome = await self._sync_filtered_skills(
-                db,
-                filtered_skills,
-                force=force,
-                batch_commit_size=batch_commit_size,
-                resume=resume,
-            )
-            status = 'success' if outcome['failed'] == 0 else 'partial'
             await marketplace_sync_log_dao.update(
                 db,
                 sync_log_id,
@@ -271,6 +305,7 @@ class ClawHubSyncService:
                     items_synced=outcome['synced'],
                     items_failed=outcome['failed'],
                     error_message='\n'.join(outcome['errors']) if outcome['errors'] else None,
+                    resume_cursor=outcome['resume_cursor'],
                     completed_at=timezone.now(),
                 ),
             )
@@ -278,10 +313,13 @@ class ClawHubSyncService:
             return {
                 'success': True,
                 'mode': 'metadata_only',
+                'sync_log_id': sync_log_id,
                 'synced': outcome['synced'],
                 'failed': outcome['failed'],
                 'skipped_existing': outcome['skipped_existing'],
                 'skipped_unchanged': outcome['skipped_unchanged'],
+                'resume_cursor': outcome['resume_cursor'],
+                'timed_out': outcome['timed_out'],
                 'errors': outcome['errors'],
             }
         except Exception as exc:
@@ -301,6 +339,150 @@ class ClawHubSyncService:
                 await db.rollback()
                 log.error(f'ClawHub 同步失败且同步日志回写失败: {log_exc}')
             raise
+
+    async def _latest_resume_cursor(self, db: AsyncSession) -> str | None:
+        """读取最近一次未完成 ClawHub 同步的已提交分页断点。"""
+        stmt = (
+            select(MarketplaceSyncLog.resume_cursor)
+            .where(
+                MarketplaceSyncLog.sync_type == 'clawhub',
+                MarketplaceSyncLog.status.in_(['in_progress', 'partial', 'failed']),
+                MarketplaceSyncLog.resume_cursor.is_not(None),
+                MarketplaceSyncLog.resume_cursor != '',
+            )
+            .order_by(MarketplaceSyncLog.id.desc())
+            .limit(1)
+        )
+        cursor = (await db.execute(stmt)).scalar_one_or_none()
+        return str(cursor) if cursor else None
+
+    async def _sync_catalog_pages(
+        self,
+        db: AsyncSession,
+        *,
+        sync_log_id: int,
+        start_cursor: str | None,
+        force: bool,
+        limit: int | None,
+        min_downloads: int,
+        batch_commit_size: int,
+        resume: bool,
+        require_engagement: bool,
+    ) -> dict[str, Any]:
+        """逐页拉取并提交目录；只有整页业务批次落库后才推进 cursor。"""
+        aggregate: dict[str, Any] = {
+            'synced': 0,
+            'failed': 0,
+            'skipped_existing': 0,
+            'skipped_unchanged': 0,
+            'errors': [],
+        }
+        current_cursor = start_cursor
+        last_committed_cursor = start_cursor
+        seen_cursors = {start_cursor} if start_cursor else set()
+        processed = 0
+        timed_out = False
+        limits = httpx.Limits(
+            max_connections=self.catalog_concurrency,
+            max_keepalive_connections=self.catalog_concurrency,
+        )
+        timeout = httpx.Timeout(30.0, connect=10.0)
+
+        try:
+            async with asyncio.timeout(self.overall_timeout_seconds):
+                async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+                    for page_index in range(2000):
+                        items, next_cursor = await self._fetch_catalog_page(
+                            client,
+                            cursor=current_cursor,
+                            page_index=page_index,
+                        )
+                        if not items:
+                            last_committed_cursor = None
+                            break
+                        expanded = await self._expand_duplicate_slugs(client, items)
+                        remaining = (
+                            max(limit - processed, 0)
+                            if limit is not None and limit > 0
+                            else None
+                        )
+                        filtered = self._filter_skills(
+                            expanded,
+                            remaining,
+                            min_downloads,
+                            require_engagement=require_engagement,
+                        )
+                        page_outcome = await self._sync_filtered_skills(
+                            db,
+                            filtered,
+                            force=force,
+                            batch_commit_size=batch_commit_size,
+                            resume=resume,
+                        )
+                        for key in (
+                            'synced',
+                            'failed',
+                            'skipped_existing',
+                            'skipped_unchanged',
+                        ):
+                            aggregate[key] += page_outcome[key]
+                        aggregate['errors'].extend(page_outcome['errors'])
+                        processed += len(filtered)
+
+                        page_complete = page_outcome['failed'] == 0
+                        limit_reached = limit is not None and limit > 0 and processed >= limit
+                        if page_complete:
+                            last_committed_cursor = None if limit_reached else next_cursor
+                        await db.execute(
+                            sa.update(MarketplaceSyncLog)
+                            .where(MarketplaceSyncLog.id == sync_log_id)
+                            .values(
+                                resume_cursor=last_committed_cursor,
+                                items_synced=aggregate['synced'],
+                                items_failed=aggregate['failed'],
+                            )
+                        )
+                        await db.commit()
+
+                        if not page_complete:
+                            break
+                        if limit_reached or not next_cursor:
+                            last_committed_cursor = None
+                            break
+                        if next_cursor in seen_cursors:
+                            raise ClawHubUpstreamError(
+                                f'ClawHub 技能列表 cursor 循环: {next_cursor}'
+                            )
+                        seen_cursors.add(next_cursor)
+                        current_cursor = next_cursor
+                    else:
+                        raise ClawHubUpstreamError('ClawHub 技能列表超过安全页数上限 2000')
+        except TimeoutError:
+            timed_out = True
+            aggregate['errors'].append(
+                f'ClawHub 同步超过整体超时 {self.overall_timeout_seconds:g} 秒，已保存续跑断点'
+            )
+            await db.rollback()
+            await db.execute(
+                sa.update(MarketplaceSyncLog)
+                .where(MarketplaceSyncLog.id == sync_log_id)
+                .values(
+                    status='partial',
+                    resume_cursor=last_committed_cursor,
+                    items_synced=aggregate['synced'],
+                    items_failed=aggregate['failed'],
+                    error_message='\n'.join(aggregate['errors']),
+                )
+            )
+            await db.commit()
+
+        aggregate.update(
+            {
+                'timed_out': timed_out,
+                'resume_cursor': last_committed_cursor,
+            }
+        )
+        return aggregate
 
     async def _sync_filtered_skills(
         self,
@@ -418,7 +600,7 @@ class ClawHubSyncService:
             return [], []
         concurrency = max(
             1,
-            int(getattr(settings, 'MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY', 8) or 8),
+            int(settings.MARKETPLACE_CLAWHUB_METADATA_CONCURRENCY or 4),
         )
         semaphore = asyncio.Semaphore(concurrency)
         timeout = httpx.Timeout(30.0, connect=10.0)
@@ -718,69 +900,138 @@ class ClawHubSyncService:
         """按下载量降序分页，达到调用方 top-N 后立即停止枚举。"""
         skills: list[dict[str, Any]] = []
         cursor: str | None = None
-        page_size = 100
         seen_cursors: set[str] = set()
-        max_pages = 2000
-        limits = httpx.Limits(max_keepalive_connections=0)
+        limits = httpx.Limits(
+            max_connections=self.catalog_concurrency,
+            max_keepalive_connections=self.catalog_concurrency,
+        )
         timeout = httpx.Timeout(30.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-            for page_index in range(max_pages):
-                params: dict[str, Any] = {
-                    'limit': page_size,
-                    'nonSuspiciousOnly': 'true',
-                    'sort': 'downloads',
-                }
-                if cursor:
-                    params['cursor'] = cursor
-                data: dict[str, Any] | None = None
-                last_error: Exception | None = None
-                for attempt in range(3):
-                    try:
-                        response = await asyncio.wait_for(
-                            client.get(f'{self.clawhub_api_url}/skills', params=params),
-                            timeout=25.0,
-                        )
-                        response.raise_for_status()
-                        payload = response.json()
-                        if not isinstance(payload, dict):
-                            raise ClawHubUpstreamError('ClawHub 技能列表响应不是对象')
-                        data = payload
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                        log.warning(
-                            f'ClawHub 枚举第 {page_index + 1} 页失败，'
-                            f'第 {attempt + 1}/3 次尝试: {type(exc).__name__}: {exc}'
-                        )
-                        if attempt < 2:
-                            await asyncio.sleep(2.0 * (attempt + 1))
-                if data is None:
-                    raise ClawHubUpstreamError(
-                        f'ClawHub 枚举第 {page_index + 1} 页连续失败: {last_error}'
+        async with asyncio.timeout(self.overall_timeout_seconds):
+            async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+                for page_index in range(2000):
+                    items, next_cursor = await self._fetch_catalog_page(
+                        client,
+                        cursor=cursor,
+                        page_index=page_index,
                     )
-                items = data.get('items')
-                if not isinstance(items, list):
-                    raise ClawHubUpstreamError('ClawHub 技能列表缺少 items 数组')
-                if not items:
-                    break
-                skills.extend(item for item in items if isinstance(item, dict))
-                if limit is not None and limit > 0 and len(skills) >= limit:
-                    skills = skills[:limit]
-                    break
-                cursor = data.get('nextCursor')
-                if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
-                    break
-                seen_cursors.add(cursor)
-            else:
-                raise ClawHubUpstreamError(f'ClawHub 技能列表超过安全页数上限 {max_pages}')
+                    if not items:
+                        break
+                    skills.extend(items)
+                    if limit is not None and limit > 0 and len(skills) >= limit:
+                        skills = skills[:limit]
+                        break
+                    if not next_cursor:
+                        break
+                    if next_cursor in seen_cursors:
+                        raise ClawHubUpstreamError(
+                            f'ClawHub 技能列表 cursor 循环: {next_cursor}'
+                        )
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+                else:
+                    raise ClawHubUpstreamError('ClawHub 技能列表超过安全页数上限 2000')
 
-            expanded = await self._expand_duplicate_slugs(client, skills)
+                expanded = await self._expand_duplicate_slugs(client, skills)
         log.info(
             f'ClawHub 枚举完成：{len(skills)} 条列表记录'
             f'（limit={limit if limit is not None else "all"}），'
             f'{len(expanded)} 个稳定身份'
         )
         return expanded
+
+    async def _fetch_catalog_page(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        cursor: str | None,
+        page_index: int,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """拉取单页；429/5xx 只受整体超时约束，确定性错误连续三次才失败。"""
+        params: dict[str, Any] = {
+            'limit': 100,
+            'nonSuspiciousOnly': 'true',
+            'sort': 'downloads',
+        }
+        if cursor:
+            params['cursor'] = cursor
+        deterministic_failures = 0
+        transient_attempt = 0
+        while True:
+            try:
+                response = await asyncio.wait_for(
+                    client.get(f'{self.clawhub_api_url}/skills', params=params),
+                    timeout=25.0,
+                )
+            except (TimeoutError, httpx.TransportError) as exc:
+                transient_attempt += 1
+                delay = self._transient_retry_delay(None, transient_attempt)
+                log.warning(
+                    f'ClawHub 枚举第 {page_index + 1} 页遇到瞬时网络错误，'
+                    f'不计入三次失败，{delay:g} 秒后重试: {type(exc).__name__}: {exc}'
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            if response.status_code == 429 or response.status_code >= 500:
+                transient_attempt += 1
+                delay = self._transient_retry_delay(response, transient_attempt)
+                log.warning(
+                    f'ClawHub 枚举第 {page_index + 1} 页遇到 HTTP {response.status_code}，'
+                    f'不计入三次失败，{delay:g} 秒后重试'
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            try:
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ClawHubUpstreamError('ClawHub 技能列表响应不是对象')
+                items = payload.get('items')
+                if not isinstance(items, list):
+                    raise ClawHubUpstreamError('ClawHub 技能列表缺少 items 数组')
+                next_cursor = payload.get('nextCursor')
+                if next_cursor is not None and not isinstance(next_cursor, str):
+                    raise ClawHubUpstreamError('ClawHub 技能列表 nextCursor 不是字符串')
+                return (
+                    [item for item in items if isinstance(item, dict)],
+                    next_cursor or None,
+                )
+            except (httpx.HTTPStatusError, ValueError, ClawHubUpstreamError) as exc:
+                deterministic_failures += 1
+                log.warning(
+                    f'ClawHub 枚举第 {page_index + 1} 页确定性失败，'
+                    f'第 {deterministic_failures}/3 次: {type(exc).__name__}: {exc}'
+                )
+                if deterministic_failures >= 3:
+                    raise ClawHubUpstreamError(
+                        f'ClawHub 枚举第 {page_index + 1} 页连续失败: {exc}'
+                    ) from exc
+                await asyncio.sleep(min(float(deterministic_failures), 2.0))
+
+    def _transient_retry_delay(
+        self,
+        response: httpx.Response | None,
+        attempt: int,
+    ) -> float:
+        """优先尊重 Retry-After，否则使用有上限的指数退避。"""
+        if response is not None:
+            value = response.headers.get('Retry-After', '').strip()
+            if value:
+                try:
+                    return min(max(float(value), 0.0), self.transient_max_delay_seconds)
+                except ValueError:
+                    try:
+                        retry_at = parsedate_to_datetime(value)
+                        now = datetime.now(tz=retry_at.tzinfo)
+                        return min(
+                            max((retry_at - now).total_seconds(), 0.0),
+                            self.transient_max_delay_seconds,
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+        exponential = float(2 ** min(max(attempt - 1, 0), 8))
+        return min(exponential, self.transient_max_delay_seconds)
 
     async def _expand_duplicate_slugs(
         self,

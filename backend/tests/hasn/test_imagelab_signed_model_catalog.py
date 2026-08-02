@@ -10,10 +10,13 @@ import io
 import zipfile
 
 from collections.abc import Callable
+from typing import cast
 
 import pytest
 
+from fastapi import UploadFile
 from fastapi.routing import APIRoute
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service import app_catalog_service
 from backend.common.exception import errors
@@ -324,11 +327,11 @@ async def test_stage_rejects_catalog_belonging_to_another_app(monkeypatch: pytes
     upload = _FakeUpload()
     with pytest.raises(errors.RequestError, match='仅接受 imagelab'):
         await app_catalog_service.stage_signed_model_package(
-            _FakeSession(),
+            cast(AsyncSession, _FakeSession()),
             pk=7,
             runtime_name='birefnet-general',
             version='2024.07',
-            upload=upload,
+            upload=cast(UploadFile, upload),
         )
     assert upload.read_calls == 0
 
@@ -338,7 +341,9 @@ async def test_publish_rejects_catalog_belonging_to_another_app(monkeypatch: pyt
     """发布面同样要有归属闸；孪生的 finance 引擎面早就有这道校验。"""
     _patch_catalog_row(monkeypatch, _FakeCatalogRow('film', {}))
     with pytest.raises(errors.RequestError, match='仅接受 imagelab'):
-        await app_catalog_service.publish_signed_model_catalog(_FakeSession(), pk=7, document=_catalog())
+        await app_catalog_service.publish_signed_model_catalog(
+            cast(AsyncSession, _FakeSession()), pk=7, document=_catalog()
+        )
 
 
 # ---- 与 daemon 校验器的逐字段对齐（云端放宽即让整份目录在端上被 TrustRejected）----
@@ -486,11 +491,11 @@ async def test_stage_rejects_dot_runtime_name_before_reading_the_upload(
     upload = _FakeUpload()
     with pytest.raises(errors.RequestError, match='runtime_name'):
         await app_catalog_service.stage_signed_model_package(
-            _FakeSession(),
+            cast(AsyncSession, _FakeSession()),
             pk=7,
             runtime_name=bad_token,
             version='2024.07',
-            upload=upload,
+            upload=cast(UploadFile, upload),
         )
     assert upload.read_calls == 0
 

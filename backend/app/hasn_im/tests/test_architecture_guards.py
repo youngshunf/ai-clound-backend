@@ -73,7 +73,7 @@ def _rel(path: Path) -> str:
     return str(path.relative_to(_BACKEND_ROOT))
 
 
-def _parse(path: Path) -> ast.AST | None:
+def _parse(path: Path) -> ast.Module | None:
     try:
         return ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
     except (SyntaxError, UnicodeDecodeError):

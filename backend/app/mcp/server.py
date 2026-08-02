@@ -30,7 +30,6 @@ from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
 from backend.app.mcp.tools.group import GroupJoinTool, GroupMessageListTool
-from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
     ConversationListTool,
@@ -199,10 +198,6 @@ class HasnCloudMcpServer:
         # upsert 编排 + 整图重排在云端忠实复刻（page_skeleton.py / deck_service.reorder_pages），云端分身可完整创作。
         for deck_tool in DECK_TOOLS:
             self.tool_registry.register(deck_tool)
-
-        # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
-        for tool_cls in MARKETPLACE_TOOLS:
-            self.tool_registry.register(tool_cls())
 
         # 工作台工具（13-工作台/04-doc §5）：主脑发布每日关注简报。
         for tool_cls in WORKBENCH_TOOLS:

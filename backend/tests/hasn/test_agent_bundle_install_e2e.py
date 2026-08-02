@@ -239,10 +239,10 @@ async def _get_profile(client) -> dict:
     return body['data']
 
 
-async def test_install_bundle_expands_members_and_profile_outputs_skill_bundles(e2e) -> None:
+async def test_install_bundle_freezes_reference_and_profile_computes_effective_members(e2e) -> None:
     c = e2e.client
 
-    # 1) 安装技能包：成员并入 skills、记录引用、bump revision、返回 bundle 快照
+    # 1) 安装技能包：只记录冻结引用、bump revision、返回 bundle 快照
     data = await _install(c, e2e.agent_hasn, e2e.package_id)
     bundle = data['bundle']
     assert bundle['template_id'] == e2e.package_id
@@ -250,22 +250,26 @@ async def test_install_bundle_expands_members_and_profile_outputs_skill_bundles(
     assert bundle['bundle_slug'] == e2e.bundle_slug
     assert bundle['command_key'] == e2e.command_key
     assert set(bundle['skill_ids']) == set(e2e.members)
+    assert bundle['content_hash'] == f'sha256:{hashlib.sha256(e2e.hermes_yaml.encode()).hexdigest()}'
     assert data['profile_revision'] == 4  # 3 → 4
 
     agent_skills = data['agent']['skills']
-    assert e2e.preexisting in agent_skills          # 原有技能保留
+    assert e2e.preexisting in agent_skills  # 原有直接技能保留
     for m in e2e.members:
-        assert m in agent_skills                    # 成员技能并入
+        assert m not in agent_skills  # 纯技能包成员不再拍平进窄引用列
 
-    # 2) agent profile 出参 skill_bundles + 成员进 skills
+    # 2) Agent Profile 读取时展开技能包，成员进入有效集合并带来源
     profile = await _get_profile(c)
     assert profile['profile_revision'] == 4
     for m in e2e.members:
         assert m in profile['skills']
+        assert m not in profile['direct_skill_ids']
+        assert profile['origins'][m] == [f'skill_pack:{e2e.package_id}@1.0.0']
     bundles = profile['skill_bundles']
     assert len(bundles) == 1, bundles
     assert bundles[0]['bundle_slug'] == e2e.bundle_slug
     assert bundles[0]['command_key'] == e2e.command_key
+    assert bundles[0]['bundle_drift'] is False
     for member in e2e.members:
         assert member in bundles[0]['hermes_yaml']
     assert bundles[0]['member_skills'] == [

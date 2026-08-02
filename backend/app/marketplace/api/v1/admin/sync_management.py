@@ -24,6 +24,7 @@ class SyncRequest(BaseModel):
     limit: int | None = None  # top-N 上限（None=用配置默认；0=不截断）
     min_downloads: int | None = None  # 下载量阈值：只同步 downloads 严格大于该值（None=用配置默认）
     dry_run: bool = False  # 只评估不落库：返回命中数量+占用预估
+    restart: bool = False  # 丢弃未完成轮次的分页断点，从目录起点开始
 
 
 class RetranslateRequest(BaseModel):
@@ -78,7 +79,8 @@ async def trigger_clawhub_sync(
         skill_ids=request.skill_ids,
         limit=request.limit,
         min_downloads=request.min_downloads,
-        dry_run=request.dry_run
+        dry_run=request.dry_run,
+        restart=request.restart,
     )
     return result
 

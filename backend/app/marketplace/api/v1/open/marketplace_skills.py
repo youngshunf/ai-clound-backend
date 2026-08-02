@@ -12,8 +12,7 @@ from backend.app.marketplace.crud.crud_marketplace_skill_version import marketpl
 from backend.app.marketplace.schema.common_skills import CommonSkillManifestItem, CommonSkillsManifest
 from backend.app.marketplace.schema.marketplace_download import CreateMarketplaceDownloadParam
 from backend.app.marketplace.service.common_skills_service import (
-    get_common_skill_snapshot,
-    get_skills_content_fingerprints,
+    get_common_skill_manifest_snapshot,
 )
 from backend.app.marketplace.service.marketplace_skill_service import marketplace_skill_service
 from backend.app.marketplace.service.package_service import package_service
@@ -94,15 +93,19 @@ async def list_common_skills(db: CurrentSession) -> ResponseSchemaModel[CommonSk
     per-skill fingerprint 变才重下。只读 published 公共技能元数据，无敏感信息，故 open 无鉴权。
     ⚠️ 本路由必须注册在 ``/{resource_id:path}`` 详情 catch-all 之前，否则 'common' 会被吞。
     """
-    skill_ids, revision = await get_common_skill_snapshot(db)
-    fingerprints = await get_skills_content_fingerprints(db, skill_ids)
+    metadata, revision = await get_common_skill_manifest_snapshot(db)
     return response_base.success(
         data=CommonSkillsManifest(
             revision=revision,
             skills=[
                 # 指纹缺失（市场无版本行）诚实给 ''，消费方回落为总是重下，不臆造。
-                CommonSkillManifestItem(skill_id=sid, fingerprint=fingerprints.get(sid, ''))
-                for sid in skill_ids
+                CommonSkillManifestItem(
+                    skill_id=sid,
+                    fingerprint=metadata[sid]['fingerprint'],
+                    file_hash=metadata[sid]['file_hash'],
+                    version=metadata[sid]['version'],
+                )
+                for sid in sorted(metadata)
             ],
         )
     )

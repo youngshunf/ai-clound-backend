@@ -24,6 +24,7 @@ from backend.app.marketplace.service.resource_id import (
     validate_slug,
     validate_version,
 )
+from backend.app.marketplace.service.skill_content_extractor import extract_skill_body, raw_bilingual_body
 from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
@@ -163,6 +164,8 @@ class MarketplaceSkillService:
         filename: str | None = None,
         slug: str | None = None,
         changelog: str | None = None,
+        requested_visibility: str = 'private',
+        commit: bool = True,
     ) -> MarketplaceSkill:
         if not hasn_id:
             raise errors.AuthorizationError(msg='用户未注册 HASN 身份')
@@ -195,6 +198,10 @@ class MarketplaceSkillService:
 
         skill = await marketplace_skill_dao.get_by_namespace_slug_for_user(db, namespace, final_slug, user_id)
         tags, tags_en, tags_zh = _localized_tags_for_storage(metadata.get('tags', []))
+        body = extract_skill_body(package.markdown)
+        body_en, body_zh = raw_bilingual_body(None, body)
+        source_language = 'zh' if body_zh is not None else 'en'
+        files = json.dumps(package.files, ensure_ascii=False)
         if skill:
             skill.name = str(metadata.get('name'))
             skill.name_en = str(metadata.get('name'))
@@ -209,8 +216,13 @@ class MarketplaceSkillService:
             skill.emoji = metadata.get('emoji')
             skill.status = 'draft'
             skill.visibility = 'private'
+            skill.requested_visibility = requested_visibility
             skill.is_private = True
             skill.source_type = 'user'
+            skill.body_en = body_en
+            skill.body_zh = body_zh
+            skill.source_language = source_language
+            skill.files = files
         else:
             skill = MarketplaceSkill(
                 skill_id=skill_id,
@@ -220,12 +232,16 @@ class MarketplaceSkillService:
                 hasn_id=hasn_id,
                 status='draft',
                 visibility='private',
+                requested_visibility=requested_visibility,
                 name=str(metadata.get('name')),
                 name_en=str(metadata.get('name')),
                 name_zh=str(metadata.get('name')),
                 description_en=str(metadata.get('description')),
                 description_zh=str(metadata.get('description')),
-                source_language='en',
+                body_en=body_en,
+                body_zh=body_zh,
+                source_language=source_language,
+                files=files,
                 icon_url=icon_url,
                 emoji=metadata.get('emoji'),
                 author_id=user_id,
@@ -254,6 +270,7 @@ class MarketplaceSkillService:
             existing_version.changelog = changelog
             existing_version.package_url = package_url
             existing_version.file_hash = file_hash
+            existing_version.content_hash = package.content_hash
             existing_version.file_size = file_size
             existing_version.is_latest = True
         else:
@@ -263,11 +280,15 @@ class MarketplaceSkillService:
                 changelog=changelog,
                 package_url=package_url,
                 file_hash=file_hash,
+                content_hash=package.content_hash,
                 file_size=file_size,
                 is_latest=True,
             ))
-        await db.commit()
-        await db.refresh(skill)
+        if commit:
+            await db.commit()
+            await db.refresh(skill)
+        else:
+            await db.flush()
         return skill
 
     @staticmethod

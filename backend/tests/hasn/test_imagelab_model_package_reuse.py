@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from backend.app.hasn.service import app_catalog_service
+from backend.plugin.s3.model import S3Storage
 
 _KEY = 'runtime-model/imagelab/birefnet-general/58f621f00f5d/0226cf2b19966b0c-birefnet-general.zip'
 _SHA = '0226cf2b19966b0cad2d36dac1810943e71366a62ef8330c4f0259df2b6db575'
@@ -41,7 +44,7 @@ async def test_reuses_object_when_server_recomputed_digest_matches(monkeypatch) 
     )
 
     url = await app_catalog_service._reuse_uploaded_model_package(
-        _Storage(),
+        cast(S3Storage, _Storage()),
         object_key=_KEY,
         expected_sha256=_SHA,
         expected_size=_SIZE,
@@ -61,7 +64,7 @@ async def test_does_not_reuse_when_digest_differs(monkeypatch) -> None:
     )
 
     url = await app_catalog_service._reuse_uploaded_model_package(
-        _Storage(),
+        cast(S3Storage, _Storage()),
         object_key=_KEY,
         expected_sha256=_SHA,
         expected_size=_SIZE,
@@ -83,7 +86,7 @@ async def test_does_not_reuse_when_size_differs(monkeypatch) -> None:
     )
 
     url = await app_catalog_service._reuse_uploaded_model_package(
-        _Storage(),
+        cast(S3Storage, _Storage()),
         object_key=_KEY,
         expected_sha256=_SHA,
         expected_size=_SIZE,
@@ -105,7 +108,7 @@ async def test_probe_failure_falls_back_to_upload(monkeypatch) -> None:
     )
 
     url = await app_catalog_service._reuse_uploaded_model_package(
-        _Storage(),
+        cast(S3Storage, _Storage()),
         object_key=_KEY,
         expected_sha256=_SHA,
         expected_size=_SIZE,
