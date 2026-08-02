@@ -102,28 +102,33 @@ class VideoModelCatalogService:
         return merge_catalog(declared, available_names, pricing)
 
     async def _fetch_newapi_facts(self) -> tuple[set[str] | None, dict[str, float]]:
-        """拉 new-api 的可用模型名集合与定价倍率表。
+        """从 new-api 定价表一次拿到「可用模型名集合」与「定价倍率表」。
 
-        可用性拉不到 → 返回 ``(None, {})`` 让调用方整体降级；**定价拉不到只丢价格不丢目录**
-        （没价格的模型仍可用，只是分身少一个选型依据，不该因此整个不可用）。
+        **为什么用 `/api/pricing` 而不是模型注册表 `/api/models/`**：2026-08-02 实测生产网关
+        `llm.dcfuture.cn` 的注册表是**空的**（`total=0`）——运营只配渠道、从不登记模型，
+        所以 `list_available_models()` 在生产恒返回空列表（既有端点
+        `/api/v1/llm/models/available` 因此也一直返回 0 个模型）。定价表则由渠道聚合而来，
+        实测 64 条，是当前唯一真实反映「网关上有哪些模型」的来源。
+
+        拉不到 → 返回 ``(None, {})`` 让调用方整体降级为空目录，绝不报一份不知真假的清单
+        让分身照着花钱（零 fake）。
         """
         try:
-            available = await newapi_admin_client.list_available_models()
+            rows = await newapi_admin_client.get_pricing()
         except NewApiError as error:
-            log.warning(f'[video-catalog] 拉取 new-api 可用模型失败: {error}')
+            log.warning(f'[video-catalog] 拉取 new-api 定价表失败: {error}')
             return None, {}
-        available_names = {str(m.get('model_name') or '') for m in available}
-        available_names.discard('')
 
+        available_names: set[str] = set()
         pricing: dict[str, float] = {}
-        try:
-            for row in await newapi_admin_client.get_pricing():
-                name = str(row.get('model_name') or '')
-                ratio = row.get('model_ratio')
-                if name and isinstance(ratio, (int, float)):
-                    pricing[name] = float(ratio)
-        except NewApiError as error:
-            log.warning(f'[video-catalog] 拉取 new-api 定价失败，目录将不带相对成本: {error}')
+        for row in rows:
+            name = str(row.get('model_name') or '').strip()
+            if not name:
+                continue
+            available_names.add(name)
+            ratio = row.get('model_ratio')
+            if isinstance(ratio, (int, float)):
+                pricing[name] = float(ratio)
         return available_names, pricing
 
 
