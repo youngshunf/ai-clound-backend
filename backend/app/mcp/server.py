@@ -283,9 +283,10 @@ class HasnCloudMcpServer:
             # 侧探 hasn.diag.* 运维工具、或「主人有无某企业角色」。回显调用方自己传入的 tool_name
             # 与真 404 一致、不构成额外泄漏；泄漏面是**措辞差异**。（G4 当前 inert，见 tool_exposure。）
             raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
-        # 兜底：其余任何 HIDDEN reason（理论不可达——上面已穷尽 G1/G2/G4/G5 的隐藏 reason；
-        # 原「运行位置收口」按分身在本地/云端隐藏工具的门已于 2026-07-10 整体退役，见 tool_exposure）
-        # 一律按存在性隐藏处理，绝不静默穿透返回 None。
+        # 兜底：其余任何 HIDDEN reason 一律按存在性隐藏处理，绝不静默穿透返回 None。
+        # 这里**真正可达**的是 G3 的生命周期隐藏（doc21 D-3）：`disabled`（应用已下架）与
+        # `need_beta`/`beta_pending`（灰度内测未获批）——主人自己解不了，故与「工具不存在」
+        # 逐字节同款错误，不确认存在性、不引导购买。商业化 reason 仍走上面的 VISIBLE_DENY 分支。
         raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
 
     async def call_tool(self, agent_context: AgentContext, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
