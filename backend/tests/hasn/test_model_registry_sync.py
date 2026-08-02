@@ -400,3 +400,46 @@ async def test_真实网关pricing信封能解出模型与供应商表() -> None
     # 供应商名只在信封的兄弟字段里，`get_pricing` 只解 data 是拿不到的。
     assert vendors, 'vendors 表应能解出（否则供应商列会整列为空）'
     assert all(isinstance(k, int) and isinstance(v, str) for k, v in vendors.items())
+
+
+# ============================ 价格档位（按能力内比价算出） ============================
+
+
+async def test_价格档位按能力分组算出且不足两个可比模型时不分档(env) -> None:
+    from backend.app.hasn.service.model_registry_catalog_service import cost_tier_map
+
+    cheap, mid, dear, lonely = (
+        _model('tier-cheap'),
+        _model('tier-mid'),
+        _model('tier-dear'),
+        _model('tier-lonely'),
+    )
+    env.track([cheap, mid, dear, lonely])
+    # 生产实测的三个视频模型倍率：0.5 / 1.5 / 2.5，相对最便宜的是 1x / 3x / 5x。
+    env.stub_upstream([
+        _pricing_row(cheap, ratio=0.5),
+        _pricing_row(mid, ratio=1.5),
+        _pricing_row(dear, ratio=2.5),
+        _pricing_row(lonely, ratio=9.9),
+    ])
+    await model_registry_sync_service.sync(env.session)
+    await env.session.commit()
+
+    rows = {}
+    for name, capability in ((cheap, 'video'), (mid, 'video'), (dear, 'video'), (lonely, 'rerank')):
+        row = await _row(env.session, name)
+        row.capability = capability
+        rows[name] = row
+    await env.session.commit()
+
+    tiers = cost_tier_map(rows.values())
+    assert tiers[rows[cheap].id] == 'economy'
+    assert tiers[rows[mid].id] == 'standard'
+    assert tiers[rows[dear].id] == 'premium'
+    # 同类里只有它一个 → 整组不分档：唯一选择既不贵也不便宜，标 economy 等于凭空暗示便宜。
+    assert rows[lonely].id not in tiers
+
+    # 拉不到价格的行也不分档（绝不编一个默认值让分身照着花主人的钱）。
+    rows[cheap].relative_cost = None
+    await env.session.commit()
+    assert rows[cheap].id not in cost_tier_map(rows.values())

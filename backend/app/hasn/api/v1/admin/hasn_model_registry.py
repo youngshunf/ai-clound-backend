@@ -24,6 +24,7 @@ from backend.app.hasn.schema.hasn_model_registry import (
     PatchModelAnnotationParam,
 )
 from backend.app.hasn.service.hasn_model_registry_service import hasn_model_registry_service
+from backend.app.hasn.service.model_registry_catalog_service import cost_tier_map
 from backend.app.hasn.service.model_registry_sync_service import model_registry_sync_service, suggest_capability
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -37,8 +38,12 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _to_row(item: Any) -> ModelRegistryRow:
-    """详情 + 只读建议值。建议值**现算不入库**——它随启发式规则演进，存下来只会过期。
+def _to_row(item: Any, tiers: dict[int, str] | None = None) -> ModelRegistryRow:
+    """详情 + 两个只读派生列。
+
+    - `suggested_capability`：能力建议值，**现算不入库**（随启发式规则演进，存下来只会过期）；
+    - `cost_tier`：生效价格档位，人工覆盖优先、否则按同能力内比价算出（`tiers` 由调用方按
+      **全表**算好传入——分页页内比价会得出错的档位）。
 
     入参既可能是 ORM 行（PATCH 出参），也可能是分页 `model_dump` 后的 dict（列表出参），
     `model_validate` 两者都吃。
@@ -48,6 +53,7 @@ def _to_row(item: Any) -> ModelRegistryRow:
     return ModelRegistryRow(
         **detail.model_dump(),
         suggested_capability=suggest_capability(detail.model_name, endpoint_types),
+        cost_tier=detail.cost_tier_override or (tiers or {}).get(detail.id),
     )
 
 
@@ -66,7 +72,9 @@ async def list_model_registry(
     page_data = await hasn_model_registry_service.get_list(
         db, capability=capability, upstream_status=upstream_status, keyword=keyword
     )
-    page_data['items'] = [_to_row(item) for item in page_data['items']]
+    # 档位按**全表**同能力比价算（分页页内比价会得出错的档位：翻页就变档）。全表 60+ 行，一次查询即可。
+    tiers = cost_tier_map(await hasn_model_registry_service.get_all(db=db))
+    page_data['items'] = [_to_row(item, tiers) for item in page_data['items']]
     return response_base.success(data=page_data)
 
 
@@ -85,7 +93,8 @@ async def patch_model_registry_annotation(
     obj: PatchModelAnnotationParam,
 ) -> ResponseSchemaModel[ModelRegistryRow]:
     row = await hasn_model_registry_service.patch_annotation(db=db, pk=pk, obj=obj)
-    return response_base.success(data=_to_row(row))
+    tiers = cost_tier_map(await hasn_model_registry_service.get_all(db=db))
+    return response_base.success(data=_to_row(row, tiers))
 
 
 @router.post(

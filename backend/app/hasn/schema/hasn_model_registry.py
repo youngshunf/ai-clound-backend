@@ -87,6 +87,10 @@ class ModelRegistryRow(GetHasnModelRegistryDetail):
     """
 
     suggested_capability: str = Field(description='能力类别建议值（只读辅助，需人工确认后才生效）')
+    cost_tier: str | None = Field(
+        None,
+        description='生效价格档位：人工覆盖优先，其次按同能力内比价算出；拉不到价格或同类不足两个可比模型时为空',
+    )
 
 
 class ModelRegistrySyncReportSchema(SchemaBase):
