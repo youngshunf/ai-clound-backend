@@ -293,3 +293,25 @@ async def owner_storage_reconcile() -> str:
         if int(result['used_bytes_before']) != int(result['used_bytes_after']):
             repaired += 1
     return f'reconciled {len(owners)} owner storage accounts, repaired {repaired} differences'
+
+
+@celery_app.task(name='hasn_model_registry_sync')
+async def hasn_model_registry_sync() -> str:
+    """每日从 new-api 同步模型清单进注册表（upsert，绝不删行）。
+
+    定时执行：每天凌晨 4:40（排在其它 sweep 之后，避开整点抖动）。
+    与 Admin「立即同步」同一个 service，语义完全一致：新模型进来标 `unclassified` 且对分身
+    不可见（未标注不下发），既有模型只覆盖 new-api 那几列，本轮没出现的标 `missing` 但保留行。
+
+    new-api 不可达时**如实抛出**由 celery 记失败：绝不吞掉异常，更不会把现有行统统标成
+    `missing`——那等于一次网络抖动就把全平台模型下发清空（零 fake）。
+    """
+    from backend.app.hasn.service.model_registry_sync_service import model_registry_sync_service
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as session:
+        report = await model_registry_sync_service.sync(session)
+    return (
+        f'upstream={report.upstream_total} created={report.created} '
+        f'updated={report.updated} missing={report.missing} unclassified={report.unclassified}'
+    )
