@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_platform_default_config import HasnPlatformDefaultConfig
-from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefaultConfig
+from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefaultConfig, VideoModelSpec
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.platform_default_config_service import (
     DEFAULT_PLATFORM_CONFIG,
@@ -137,9 +137,17 @@ async def test_factory_default_when_no_row() -> None:
         # 模态缺失会让 t2v 请求打到 i2v 模型（必失败且仍预扣配额），方言缺失会让阿里系收到
         # `1280x720` 而不是 `720P` 档位（上游直接 InvalidParameter）。
         # 出参已由 pydantic 解析成 VideoModelSpec，与常量里的 dict 逐字段比。
-        assert [spec.model_dump() for spec in cfg.node.media.video_models] == DEFAULT_PLATFORM_CONFIG[
-            'node'
-        ]['media']['video_models']
+        # 出参形态是 `str | VideoModelSpec` 的联合；出厂默认全是对象形态，逐条 dump 前先断言，
+        # 否则 mypy 认为 str 分支没有 model_dump（也确实没有——真出现字符串就是配置退化了）。
+        for spec in cfg.node.media.video_models:
+            assert isinstance(spec, VideoModelSpec), f'视频模型必须显式声明模态与方言：{spec}'
+        # dump 时剔掉未声明的可选项（quality/notes）——常量里只写了 name/modality/dialect，
+        # 带上 None 键会让这条断言恒假（基线红，2026-08-02 修）。
+        assert [
+            {key: value for key, value in spec.model_dump().items() if value is not None}
+            for spec in cfg.node.media.video_models
+            if isinstance(spec, VideoModelSpec)
+        ] == DEFAULT_PLATFORM_CONFIG['node']['media']['video_models']
         assert cfg.node.media.video_models, '视频渠道已开通，出厂默认不应再为空'
         for spec in cfg.node.media.video_models:
             assert not isinstance(spec, str), f'视频模型必须显式声明模态与方言：{spec}'
