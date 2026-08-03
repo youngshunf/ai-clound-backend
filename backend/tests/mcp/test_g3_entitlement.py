@@ -271,3 +271,97 @@ async def test_g3_call_face_allowed_executes(monkeypatch: pytest.MonkeyPatch) ->
 
     result = await server.call_tool(ctx, DECK_TOOL, {})
     assert result == {'executed': True}
+
+
+# ── 4. doc21 D-3：G3 按 reason 分派 HIDDEN / VISIBLE_DENY ──────────────────
+#
+# 分派依据是「主人解不解得了」：下架与灰度内测主人自己解不了 → 工具面隐身；
+# 付费墙/席位/企业空间主人解得了 → 可见拒，分身要能如实转达。
+
+
+@pytest.mark.parametrize('reason', ['disabled', 'need_beta', 'beta_pending'])
+def test_g3_lifecycle_reasons_are_hidden(reason: str) -> None:
+    """下架 / 灰度内测未获批 / 内测审核中 → HIDDEN（不再无差别 VISIBLE_DENY）。"""
+    decision = ToolExposurePolicy().evaluate(
+        _ctx(app_access={'deck': {'allowed': False, 'reason': reason}}), _DeckTool()
+    )
+    assert decision.action == ACTION_HIDDEN, f'{reason} 必须隐身——主人买不到 / 申请不了'
+    assert decision.gate == GATE_ENTITLEMENT
+    assert decision.reason == reason
+    assert decision.is_hidden
+    assert not decision.is_visible_deny
+
+
+@pytest.mark.parametrize(
+    'reason', ['need_purchase', 'need_upgrade', 'need_seat_assignment', 'need_enterprise_space']
+)
+def test_g3_commercial_reasons_stay_visible_deny(reason: str) -> None:
+    """商业化 reason 维持可见拒——分身能看见并如实告诉主人去买 / 升级 / 要席位 / 切空间。"""
+    decision = ToolExposurePolicy().evaluate(
+        _ctx(app_access={'deck': {'allowed': False, 'reason': reason}}), _DeckTool()
+    )
+    assert decision.action == ACTION_VISIBLE_DENY
+    assert decision.is_visible
+
+
+def test_g3_unknown_reason_falls_back_to_visible_deny() -> None:
+    """云端将来新增的未登记 reason：保守按可见拒透传原文，不静默放行也不冒充不存在。"""
+    decision = ToolExposurePolicy().evaluate(
+        _ctx(app_access={'deck': {'allowed': False, 'reason': 'some_future_reason'}}), _DeckTool()
+    )
+    assert decision.action == ACTION_VISIBLE_DENY
+    assert decision.reason == 'some_future_reason'
+
+
+@pytest.mark.parametrize('reason', ['disabled', 'need_beta', 'beta_pending'])
+def test_g3_hidden_reason_invisible_on_discovery(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    """发现面：生命周期隐身的工具不再列出（此前一律可见 + access_hint 引导购买）。"""
+    server = _server_with_noop_io(monkeypatch)
+    server.tool_registry.register(_DeckTool())
+    ctx = _ctx(app_access={'deck': {'allowed': False, 'reason': reason}})
+
+    tool = server.tool_registry.get_tool(DECK_TOOL)
+    assert tool is not None
+    assert not server.tool_directory._can_discover(ctx, tool)
+    # 隐身工具不带 access_hint（那是可见拒才有的引导）。
+    assert 'access_hint' not in server.tool_directory._tool_schema(tool, ctx)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['disabled', 'need_beta', 'beta_pending'])
+async def test_g3_hidden_reason_call_face_is_tool_not_found(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """执行面：生命周期隐身 → 与「真·未注册」逐字节同款错误（不确认存在性、不引导购买）。"""
+    server = _server_with_noop_io(monkeypatch)
+    server.tool_registry.register(_DeckTool())
+    ctx = _ctx(app_access={'deck': {'allowed': False, 'reason': reason}})
+
+    with pytest.raises(McpToolError) as exc:
+        await server.call_tool(ctx, DECK_TOOL, {})
+    assert exc.value.code == McpErrorCode.TOOL_NOT_FOUND
+    assert exc.value.message == f'Tool not found: {DECK_TOOL}'
+    assert '购买' not in exc.value.message
+    assert reason not in exc.value.message
+
+
+def test_g3_hidden_does_not_hide_from_owner_permission_catalog() -> None:
+    """权限页 catalog **只**消费 G1/G2 硬边界：G3 隐身不得把工具从主人的权限页抹掉。
+
+    否则主人连「这个能力被应用状态挡住了」都看不见，复刻 102-B3 的单向门。
+    """
+    policy = ToolExposurePolicy()
+    ctx = _ctx(app_access={'deck': {'allowed': False, 'reason': 'disabled'}})
+    assert policy.evaluate(ctx, _DeckTool()).is_hidden
+    assert not policy.is_catalog_hidden(ctx, _DeckTool())
+
+
+def test_g3_reason_dispatch_table_matches_local_gate() -> None:
+    """本地 hasn-mcp `app_gate.rs` 与云端必须共用同一张 reason 分派表（doc21 D-3）。
+
+    两侧漂移会造成「云端说隐身、本地说可见拒」这类跨端不一致；此处把云端这一半钉死，
+    本地那一半由 hasn-node 的 `app_entitlement_gate_guard` 钉死。
+    """
+    from backend.app.mcp.tool_exposure import LIFECYCLE_HIDDEN_REASONS
+
+    assert LIFECYCLE_HIDDEN_REASONS == frozenset({'disabled', 'need_beta', 'beta_pending'})

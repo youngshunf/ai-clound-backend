@@ -57,6 +57,11 @@ REASON_OWNER_DENIED = 'owner_denied'  # G5：owner 三态 deny（维持现状 de
 # G3 应用权益门的 reason 不在此枚举——直接透传合并准入 dict 的 reason（need_purchase /
 # need_seat_assignment / need_enterprise_space / need_upgrade…），口径与 doc04 M1 一致。
 
+# G3 里属于**应用生命周期**（而非商业化引导）的 reason：主人自己解不了，故工具面隐身
+# （doc21 D-3）。`disabled` = 已下架、`need_beta`/`beta_pending` = 灰度内测未获批 / 审核中。
+# 与本地 hasn-mcp `crates/hasn-mcp/src/app_gate.rs::HIDDEN_REASONS` 必须保持同一张表。
+LIFECYCLE_HIDDEN_REASONS: frozenset[str] = frozenset({'disabled', 'need_beta', 'beta_pending'})
+
 
 @dataclass(frozen=True)
 class ExposureDecision:
@@ -144,10 +149,23 @@ class ToolExposurePolicy:
         return DECISION_ALLOW
 
     def _entitlement_denial(self, agent_context: AgentContext, tool: BaseTool) -> ExposureDecision | None:
-        """G3 应用权益门判定（doc18 §4.3）：工具所属 app 的合并准入（owner∪enterprise 权益 + 席位，
-        doc04 M1）不通 → VISIBLE_DENY(need_*)。可见（带 access_hint 引导购买），执行面按 reason 回
-        结构化错误。纯查 AgentContext 预取的 app_access_by_id（零 IO）；底座工具 app_id=None / 免费
-        应用 / 未预取 → 该 app_id 缺席即返回 None 跳过（never over-block）。
+        """G3 应用权益门判定（doc18 §4.3 / doc21 D-3）：工具所属 app 的合并准入（owner∪enterprise
+        权益 + 席位，doc04 M1）不通 → 按 reason 分派 HIDDEN / VISIBLE_DENY。纯查 AgentContext 预取的
+        app_access_by_id（零 IO）；底座工具 app_id=None / 免费应用 / 未预取 → 该 app_id 缺席即返回
+        None 跳过（never over-block）。
+
+        **分派依据是「主人解不解得了」**（doc21 D-3，与本地 hasn-mcp `app_gate::decide` 同表）：
+
+        - `disabled`（应用已下架）→ HIDDEN：主人**买不到**，可见拒只会让分身反复尝试、
+          让主人看到一个不存在的东西；
+        - `need_beta` / `beta_pending`（灰度内测未获批）→ HIDDEN：分身没法"申请内测"，
+          看到一个调不动的工具纯浪费轮次。**注意这只是给分身的工具面**——给主人的应用中心
+          （`workbench_domain_service.list_apps`）仍然照常可见并引导申请内测，出参零变化；
+        - `need_purchase` / `need_upgrade` / `need_seat_assignment` / `need_enterprise_space`
+          → VISIBLE_DENY：主人解得了，分身要能看见并如实转达。
+
+        未登记的 reason（云端将来新增口径）保守按 VISIBLE_DENY 透传原文——不静默放行，
+        也不冒充"工具不存在"。
         """
         app_id = resolve_tool_app_id(tool)
         if not app_id:
@@ -155,7 +173,8 @@ class ToolExposurePolicy:
         access = (getattr(agent_context, 'app_access_by_id', None) or {}).get(app_id)
         if access is not None and not access.get('allowed', True):
             reason = access.get('reason') or 'need_purchase'
-            return ExposureDecision(ACTION_VISIBLE_DENY, gate=GATE_ENTITLEMENT, reason=reason, app_id=app_id)
+            action = ACTION_HIDDEN if reason in LIFECYCLE_HIDDEN_REASONS else ACTION_VISIBLE_DENY
+            return ExposureDecision(action, gate=GATE_ENTITLEMENT, reason=reason, app_id=app_id)
         return None
 
     def _role_gate_denial(self, agent_context: AgentContext, tool: BaseTool) -> ExposureDecision | None:

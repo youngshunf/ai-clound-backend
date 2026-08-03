@@ -9,6 +9,20 @@
 
 app_id 值对照 `hasn_app_catalog`（注意 task 应用的 catalog app_id 是 `hasn_task`，
 workflow 工具同属 task 应用）。
+
+## 本表只兜底「云端注册的遗留平台工具」（doc21 D-2）
+
+**新工具一律自带 `app_id`**，不进本表：
+
+- 云端 AI-Native app 工具本就从 manifest 带 `app_id`（`resolve_tool_app_id` 优先取它）；
+- **本地 hasn-mcp 工具完全不经本表**——它们在 Rust 侧由 `HasnTool::app_id()` 自声明
+  （`crates/hasn-mcp/src/*.rs`），判定在 daemon 的本地 G3 门（`app_gate.rs`）完成。
+  历史上本表**不含** `hasn.imagelab` / `hasn.film` / `hasn.reel` / `hasn.finance` /
+  `hasn.meeting` / `hasn.publish` / `hasn.design` 这七个本地商业化应用，正是因为它们
+  从不在云端注册；再抄一张本地表必然与云端漂移（doc21 §2.3 已证），故改由工具自带。
+
+`resolve_tool_app_id` 的优先级不变（工具自带 > 本表回填）；本表只增不扩——除非又出现
+一个**在云端注册、却不带 manifest app_id** 的遗留平台工具。
 """
 
 from __future__ import annotations
