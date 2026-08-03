@@ -26,9 +26,11 @@ from __future__ import annotations
 import json
 import re
 
+from collections.abc import Sequence
 from typing import Any
 
 from backend.app.mcp.errors import McpErrorCode, McpToolError
+from backend.common.security.scope_policy import MODE_ASK, MODE_DENY, narrower
 
 # ── 系统注入的会话信任语境保留参数（分身永不该见到，dispatch 前剥离）──────────────
 # 与 hasn-node 本地 key 承载的 (is_external_conversation, peer_id, peer_trust) 一一对应：
@@ -76,8 +78,29 @@ _SESSION_TRANSPORT_TOOLS = frozenset({
     'hasn.tool.search',
 })
 
-# 系统注入保留字段的公共前缀：三族（`_hasn_session_id` / `_hasn_project_id` 与 `_hasn_is_external` /
-# `_hasn_peer_id` / `_hasn_peer_trust`）都在此命名空间下，wire 上按前缀整族放行。
+# ── 系统注入的派发级能力域收紧覆盖（doc20-tools D-2 · G5 的 per-dispatch 收紧层）──────
+# 一次派发能用哪些工具，**不按工具名**配白名单（工具在无限增长，白名单必然滞后），而是按
+# **能力域 scope** 在 Agent 既有三态之上**再收紧一层**——新工具只要声明同一 scope 就自动落进
+# 同一条约束。典型用法：工作会话 / 对外会话 / 回灌轮次默认 deny `task:run`，封死无边界递归派发。
+#
+# wire 形态 `{scope: "ask" | "deny"}`，与 hasn-node `session_scope.rs::ScopeOverrides::to_wire`、
+# hasn-mcp `auth.rs::RESERVED_SCOPE_OVERRIDES_ARG` 及 Hermes fork
+# `gateway/hasn_session.py::RESERVED_SCOPE_OVERRIDES_ARG` 逐字节一致。由 Runtime 在模型输出
+# **之后**覆盖式盖章（分身不可伪造、工具体不该见），云端 dispatch 前剥离 →
+# `AgentContext.scope_overrides`，G5 判定时与 Agent 三态取更严者。
+RESERVED_SCOPE_OVERRIDES = '_hasn_scope_overrides'
+
+# 收紧覆盖的合法取值（与 hasn-node `mode_wire_value` 同串）。**只收紧不放宽**：最终生效值恒为
+# `min(Agent 三态, 派发覆盖)`，`allow` 在语义上是「放宽」，而放宽在本模型里不存在 → 收到即契约错误。
+SCOPE_OVERRIDE_MODES: frozenset[str] = frozenset({MODE_ASK, MODE_DENY})
+
+# 能力域键的畸形判据，与 hasn-node `session_scope.rs::validate_values` 同口径：
+# 空串、纯空白、含任意空白字符一律非法。
+_SCOPE_KEY_WHITESPACE = re.compile(r'\s')
+
+# 系统注入保留字段的公共前缀：四族（`_hasn_session_id` / `_hasn_project_id` /
+# `_hasn_scope_overrides` 与 `_hasn_is_external` / `_hasn_peer_id` / `_hasn_peer_trust`）
+# 都在此命名空间下，wire 上按前缀整族放行。
 _RESERVED_FIELD_PATTERN = '^_hasn_'
 
 
@@ -272,6 +295,91 @@ def is_session_tool_allowed(agent_context: Any, tool_name: str) -> bool:
         return True
     allowed = getattr(agent_context, 'allowed_tool_names', None)
     return allowed is None or tool_name in allowed
+
+
+def parse_scope_overrides(raw: Any) -> dict[str, str]:
+    """严格解析系统注入的派发级能力域收紧覆盖（doc20-tools D-2）。
+
+    三类非法输入一律以 MCP_9206 **拒绝本次调用**，绝不静默忽略——静默忽略等于本次派发的门禁
+    整条失效（doc18 §10.2 B7 的原教训：自由 dict 无键校验，拼错的键静默无效、没有任何信号）：
+
+    1. 整体不是 JSON 对象；
+    2. 键畸形（非字符串 / 空 / 含空白）；
+    3. 值不在 `ask` / `deny` 内。其中 `allow` 单独给文案：它在语义上是「放宽」，
+       而放宽在本模型里不存在。
+
+    ⚠️ **键是否属于「已知 scope 集合」不在这里校验**，这与 hasn-node 侧同款分工：Runtime 对本地
+    `hasn` 与云端 `cloud` 两个 MCP 服务盖的是**同一份**覆盖，而本地 hasn-mcp 有一批云端根本没有
+    的 scope（`plan:schedule`、`plan:delegate` 等）；在云端按云端 scope 目录判「未知即拒」会把这些
+    完全合法的派发整条打死。云端的未知键只是匹配不到任何工具的 `required_scopes` → 自然无收紧
+    效果。「未知键拒绝派发」由 daemon 的 `ScopeOverrides::validate_against_known` 在**下达端**
+    （它才持有本地 scope 全集）负责，不在消费端重做。
+    """
+    if not isinstance(raw, dict):
+        raise McpToolError(McpErrorCode.TOOL_NOT_ALLOWED, '派发级能力域收紧必须是对象')
+    overrides: dict[str, str] = {}
+    for scope, mode in raw.items():
+        if not isinstance(scope, str) or not scope.strip() or _SCOPE_KEY_WHITESPACE.search(scope):
+            raise McpToolError(McpErrorCode.TOOL_NOT_ALLOWED, f'派发级能力域收紧含畸形能力域键: {scope!r}')
+        if mode == 'allow':
+            raise McpToolError(
+                McpErrorCode.TOOL_NOT_ALLOWED,
+                f'派发级能力域收紧只能收紧、绝不放宽：能力域「{scope}」传了 allow',
+            )
+        if not isinstance(mode, str) or mode not in SCOPE_OVERRIDE_MODES:
+            raise McpToolError(
+                McpErrorCode.TOOL_NOT_ALLOWED,
+                f'派发级能力域收紧「{scope}」的取值必须是 ask 或 deny',
+            )
+        overrides[scope] = mode
+    return overrides
+
+
+def pop_scope_overrides(arguments: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] | None]:
+    """剥离 Runtime 在模型之后盖章的派发级能力域收紧；字段缺失返回 None。
+
+    与 `pop_allowed_tool_names` 同形状——同一分发入口先后各剥离一次。剥离必须发生在
+    dispatch 之前：保留参数是系统注入的门禁语境，工具体永不该见到它。
+    """
+    if not isinstance(arguments, dict) or RESERVED_SCOPE_OVERRIDES not in arguments:
+        return arguments, None
+    cleaned = {key: value for key, value in arguments.items() if key != RESERVED_SCOPE_OVERRIDES}
+    return cleaned, parse_scope_overrides(arguments.get(RESERVED_SCOPE_OVERRIDES))
+
+
+def narrowed_scope_overrides(existing: dict[str, str] | None, incoming: dict[str, str]) -> dict[str, str]:
+    """把一份收紧覆盖**保守合并**进已有的：同键取更严者，异键取并集。
+
+    与 hasn-node `ScopeOverrides::narrowed_with` 同款——合并幂等且可交换，故同一链路上重复
+    叠加不会漂移，任一来源缺席时另一来源仍然生效、绝不互相放松。
+    """
+    merged = dict(existing or {})
+    for scope, mode in incoming.items():
+        current = merged.get(scope)
+        merged[scope] = mode if current is None else narrower(current, mode)
+    return merged
+
+
+def narrow_mode_with_scope_overrides(
+    agent_mode: str, scope_overrides: dict[str, str] | None, required_scopes: Sequence[str] | None
+) -> str:
+    """在 Agent 三态之上叠加本次派发的收紧，返回最终生效三态（G5 内的一层，doc20-tools §3）。
+
+    - 键匹配用工具声明的 `required_scopes`——与 `capability_guard` 消费 `capability_modes`
+      同一套 key 口径，不另造匹配规则；
+    - 一个工具声明多个能力域时**取最严者**（任一能力域被收紧即对整个工具生效），与
+      `resolve_tool_mode` 的聚合语义一致；
+    - **只收紧不放宽**：主人在权限页 deny 的能力，派发侧无论如何配都放不开；
+    - 未列出的能力域、以及无 scope 声明的读类工具，保持 Agent 既有三态不受影响。
+    """
+    if not scope_overrides:
+        return agent_mode
+    mode = agent_mode
+    for scope in required_scopes or []:
+        override = scope_overrides.get(scope)
+        if override is not None:
+            mode = narrower(mode, override)
+    return mode
 
 
 def _coerce_bool(value: str | None) -> bool:

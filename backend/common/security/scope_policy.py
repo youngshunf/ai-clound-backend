@@ -28,6 +28,17 @@ def _coerce_mode(value: Any) -> str:
     return MODE_ALLOW
 
 
+def narrower(left: str, right: str) -> str:
+    """取两个三态里**更严**的那一档（保守序 `deny > ask > allow`）。
+
+    这是「只收紧不放宽」的算子，与 hasn-node `session_scope.rs::narrower` 逐条同款：
+    派发级 scope 收紧（doc20-tools D-2）的最终生效值 = `narrower(Agent 三态, 派发覆盖)`。
+    非法/缺失值经 `_coerce_mode` 落 allow——取 max 故它永远放宽不了对面那一档。
+    这里只暴露既有的限制度排序，**不新建第二套判定规则**。
+    """
+    return max(_coerce_mode(left), _coerce_mode(right), key=lambda mode: _RESTRICTIVENESS[mode])
+
+
 def resolve_capability_mode(default_mode: str, capability_modes: dict | None, key: str) -> str:
     """返回单个能力 key 的三态：'allow' | 'ask' | 'deny'。
 

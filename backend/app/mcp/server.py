@@ -310,6 +310,21 @@ class HasnCloudMcpServer:
                     f'工作会话未授权调用工具: {tool_name}',
                 )
 
+            # 派发级能力域收紧（doc20-tools D-2 · G5 的 per-dispatch 收紧层）：同管道剥离 Runtime
+            # 在模型之后盖章的 `_hasn_scope_overrides`（分身不可伪造、工具体不该见）→ AgentContext，
+            # 由 `AgentContext.tool_mode` 在 Agent 三态之上取更严者。工作会话据此默认 deny
+            # `task:run`，封死「工作会话里再派发 → 无边界递归 / 自激循环」。
+            # 非法覆盖（非对象 / 值非 ask|deny）由 `parse_scope_overrides` 直接 MCP_9206 拒绝本次
+            # 调用，绝不静默忽略——静默忽略等于本次派发的门禁整条失效。
+            # **只进不退**：与既有保留参数同款，重入的内层 tool.call 入参没有 stamp（只打在最外层），
+            # 此时返回 None、沿用同一 AgentContext 上外层已落的收紧；有 stamp 时与已有值**保守合并**
+            # （同键取更严者），任一来源缺席都不会放松另一来源。
+            arguments, stamped_scope_overrides = _tg.pop_scope_overrides(arguments)
+            if stamped_scope_overrides:
+                agent_context.scope_overrides = _tg.narrowed_scope_overrides(
+                    agent_context.scope_overrides, stamped_scope_overrides
+                )
+
             await self._load_app_tools(agent_context)
             await self._load_external_mcp_tools(agent_context)
 

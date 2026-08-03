@@ -85,6 +85,12 @@ class AgentContext:
         # 本次工作会话允许调用的精确业务工具名。None 保持既有不限制语义；
         # frozenset() 表示拒绝全部业务工具。传输包装器由统一判定函数始终保留。
         self.allowed_tool_names: frozenset[str] | None = None
+        # 本次派发对**能力域 scope** 的收紧覆盖（doc20-tools D-2）：`{scope: 'ask' | 'deny'}`。
+        # 由 Runtime 在模型输出之后盖进保留参数 `_hasn_scope_overrides`（分身不可伪造），
+        # server.call_tool dispatch 前剥离落此字段。空 dict = 本次派发不额外收紧（缺省语义）。
+        # 它是 G5 三态门内的**收紧层**、不是第六道门：最终生效值 = min(Agent 三态, 本覆盖)，
+        # 只收紧绝不放宽，也绝不放行 G1–G4 任何一门（见 tool_mode）。
+        self.scope_overrides: dict[str, str] = {}
         # G1 平台特权门（doc18 §4.1）：Admin 授予表 ∪ ENV bootstrap 的授予值集合
         # （精确 scope 或段尾通配）。默认空 = 特权工具全不可见；两凭证入口鉴权后
         # 用 get_privileged_grants_cached 现查灌入。与已废弃的凭证 scopes 无关。
@@ -132,15 +138,29 @@ class AgentContext:
         self.capability_modes = caps if isinstance(caps, dict) else {}
 
     def tool_mode(self, tool: object) -> str:
-        """工具的有效三态（维度①）：走统一判定服务 CapabilityGuard（已预取策略，无需取库）。"""
-        from backend.app.hasn_core.app_platform import capability_guard
+        """工具的有效三态（维度①）：走统一判定服务 CapabilityGuard（已预取策略，无需取库）。
 
-        return capability_guard.resolve_from_policy(
+        在既有三态结果之上再叠一层**本次派发的能力域收紧**（doc20-tools D-2）：最终生效值
+        = `min(Agent 三态, 派发覆盖)`，保守序 `deny > ask > allow`。这**不是**第二套准入判定
+        ——准入规则仍只有 CapabilityGuard 那一套，本层只做「取更严者」这一个算子；也**不是**
+        第六道门：它落在 G5 内部，G1–G4 的任何一门都不会因为这里收紧而被放行（短路求值仍在
+        `ToolExposurePolicy.evaluate` 里、顺序不变）。
+
+        发现面（`tool_directory._can_discover`）与执行面（`server.call_tool`）都经
+        `evaluate` → 本方法求值，故两面天然拿到同一结论，不会出现「搜得到调不动」或
+        「搜不到却能调」（doc18 §2 D6）。
+        """
+        from backend.app.hasn_core.app_platform import capability_guard
+        from backend.app.mcp.trust_gate import narrow_mode_with_scope_overrides
+
+        required_scopes = list(getattr(tool, 'required_scopes', []) or [])
+        mode = capability_guard.resolve_from_policy(
             self.default_mode,
             self.capability_modes,
             tool_name=getattr(tool, 'name', ''),
-            required_scopes=list(getattr(tool, 'required_scopes', []) or []),
+            required_scopes=required_scopes,
         )
+        return narrow_mode_with_scope_overrides(mode, self.scope_overrides, required_scopes)
 
     def is_tool_denied(self, tool: object) -> bool:
         """工具是否被 owner 禁用（mode=deny → 不可见、不可调）。"""
