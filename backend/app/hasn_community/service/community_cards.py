@@ -6,17 +6,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.orm import aliased
 
 from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.article_summary import effective_summary
+from backend.app.hasn_community.service.content_visibility import content_visibility_sql
 from backend.app.hasn_core import HasnAgents, HasnHumans
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class _Unfiltered:
+    """「调用方已在上游 SQL 判过可见性」哨兵（如圈管理审核队列——管理必须看到待审内容）。"""
+
+
+# fetch_*_cards 的 viewer_hasn_id 默认值：不做可见性过滤。
+# 只要传了 viewer（含 None=匿名），就叠加与 evaluate_content_visibility 同判据的 SQL 谓词。
+_UNFILTERED: Final = _Unfiltered()
 
 
 def _author_info(author_type: str, author_hasn_id: str, human_nick, human_avatar, agent_name, agent_avatar, owner_hasn_id, owner_nick) -> dict[str, Any]:
@@ -32,8 +42,17 @@ def _author_info(author_type: str, author_hasn_id: str, human_nick, human_avatar
     return info
 
 
-async def fetch_post_cards(db: AsyncSession, post_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """按 post_id 批量取帖子卡片（含作者/主人信息），返回 {post_id: card}。"""
+async def fetch_post_cards(
+    db: AsyncSession,
+    post_ids: list[str],
+    *,
+    viewer_hasn_id: str | None | _Unfiltered = _UNFILTERED,
+) -> dict[str, dict[str, Any]]:
+    """按 post_id 批量取帖子卡片（含作者/主人信息），返回 {post_id: card}。
+
+    :param viewer_hasn_id: 传入（含 None=匿名）则叠加可见性谓词，越权 id 直接不出现在结果里；
+        默认 _UNFILTERED 表示调用方已在上游查询判过（审核队列等管理面必须看到待审内容）。
+    """
     if not post_ids:
         return {}
     AuthorHuman = aliased(HasnHumans)
@@ -54,6 +73,8 @@ async def fetch_post_cards(db: AsyncSession, post_ids: list[str]) -> dict[str, d
         .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
         .where(HasnPosts.post_id.in_(post_ids))
     )
+    if not isinstance(viewer_hasn_id, _Unfiltered):
+        stmt = stmt.where(content_visibility_sql(HasnPosts, viewer_hasn_id=viewer_hasn_id))
     cards: dict[str, dict[str, Any]] = {}
     for row in (await db.execute(stmt)).all():
         p = row.HasnPosts
@@ -73,8 +94,16 @@ async def fetch_post_cards(db: AsyncSession, post_ids: list[str]) -> dict[str, d
     return cards
 
 
-async def fetch_article_cards(db: AsyncSession, article_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """按 article_id 批量取文章卡片（含作者/主人信息），返回 {article_id: card}。"""
+async def fetch_article_cards(
+    db: AsyncSession,
+    article_ids: list[str],
+    *,
+    viewer_hasn_id: str | None | _Unfiltered = _UNFILTERED,
+) -> dict[str, dict[str, Any]]:
+    """按 article_id 批量取文章卡片（含作者/主人信息），返回 {article_id: card}。
+
+    viewer_hasn_id 语义同 fetch_post_cards。
+    """
     if not article_ids:
         return {}
     AuthorHuman = aliased(HasnHumans)
@@ -95,6 +124,8 @@ async def fetch_article_cards(db: AsyncSession, article_ids: list[str]) -> dict[
         .outerjoin(OwnerHuman, (HasnArticles.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
         .where(HasnArticles.article_id.in_(article_ids))
     )
+    if not isinstance(viewer_hasn_id, _Unfiltered):
+        stmt = stmt.where(content_visibility_sql(HasnArticles, viewer_hasn_id=viewer_hasn_id))
     cards: dict[str, dict[str, Any]] = {}
     for row in (await db.execute(stmt)).all():
         a = row.HasnArticles

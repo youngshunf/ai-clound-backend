@@ -33,6 +33,7 @@ from backend.app.hasn_community.service._community_codec import (
 )
 from backend.app.hasn_community.service.article_summary import effective_summary
 from backend.app.hasn_community.service.content_visibility import (
+    content_visibility_sql,
     evaluate_content_visibility,
     is_own_content,
 )
@@ -271,21 +272,10 @@ class CommunityService:
                     ),
                 )
             )
-            visibility_rules = [content_model.visibility == 'public']
-            if viewer_hasn_id:
-                followed_authors = select(HasnFollows.target_hasn_id).where(
-                    HasnFollows.follower_hasn_id == viewer_hasn_id
-                )
-                visibility_rules.extend(
-                    [
-                        content_model.author_hasn_id == viewer_hasn_id,
-                        and_(
-                            content_model.visibility == 'followers',
-                            content_model.author_hasn_id.in_(followed_authors),
-                        ),
-                    ]
-                )
-            stmt = stmt.where(or_(*visibility_rules))
+            # 可见性判据走唯一实现（content_visibility 的 SQL 投影），不再各写一套。
+            stmt = stmt.where(
+                content_visibility_sql(content_model, viewer_hasn_id=viewer_hasn_id)
+            )
         if viewer_hasn_id:
             blocked_by_me = select(HasnCommunityBlocks.blocked_hasn_id).where(
                 HasnCommunityBlocks.blocker_hasn_id == viewer_hasn_id
@@ -319,6 +309,8 @@ class CommunityService:
         - hot：按 like_count 倒序
         - tag：可叠加在任意 feed_type 上，仅返回 tags 数组包含该话题的内容（标签流）
         - q：关键词搜索，命中帖子正文（ILIKE，可叠加在任意 feed_type 上）
+        - 可见性：published 之外还必须过 visibility 判据（public/followers/private/circle），
+          私密与 followers 帖不会漏给无权 viewer，匿名只剩 public——判据与详情/翻译接口同一份。
         - 游标分页：keyset（按排序键 + post_id），返回真实 next_cursor
         - is_liked/is_collected：批量回填当前 viewer 的互动态
 
@@ -363,6 +355,9 @@ class CommunityService:
             .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
             .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
             .where(HasnPosts.status == 'published', HasnPosts.circle_id.is_(None))  # 圈子内容不串主 feed（95 §2.4）
+            # 可见性闸：published 之外还必须过 visibility——此前这里完全不看 visibility，
+            # 私密/followers 帖会漏进所有 feed_type（含 open 匿名流）。
+            .where(content_visibility_sql(HasnPosts, viewer_hasn_id=viewer_hasn_id))
         )
 
         # 关注流：JOIN hasn_follows 过滤为"当前用户关注对象"的内容
@@ -797,7 +792,9 @@ class CommunityService:
         """
         文章信息流（hasn_articles）
 
-        - 仅 status='published' 且 visibility != 'private'（私密文章不进公共流）
+        - 仅 status='published' 且过 visibility 判据（public/followers/private/circle，
+          与详情/翻译接口同一份；匿名只剩 public）。此前只排 private，followers 文与
+          未知取值（如遗留 workspace_group）都会漏给任何人。
         - 按 published_time 倒序，keyset 游标 "{published_time}|{article_id}"
         - tag：tags 数组包含该话题；q：标题/摘要/正文 ILIKE
         - is_liked/is_collected：按 target_type='article' 批量回填
@@ -822,8 +819,8 @@ class CommunityService:
             .outerjoin(OwnerHuman, (HasnArticles.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
             .where(
                 HasnArticles.status == 'published',
-                HasnArticles.visibility != 'private',
                 HasnArticles.circle_id.is_(None),  # 圈子内容不串主 feed（95 §2.4）
+                content_visibility_sql(HasnArticles, viewer_hasn_id=viewer_hasn_id),
             )
         )
 
@@ -2934,11 +2931,15 @@ class CommunityService:
         :param limit: 每页条数
         :return: 帖子列表
         """
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
         stmt = (
             select(HasnPosts)
             .where(
                 HasnPosts.author_hasn_id == hasn_id,
                 HasnPosts.status == 'published',
+                # 可见性闸：主页列表同样按 viewer 判权——看别人的主页不再能看到
+                # 其私密/followers 帖（followers 帖仅关注者可见）；看自己主页不受限。
+                content_visibility_sql(HasnPosts, viewer_hasn_id=viewer_hasn_id),
             )
             .order_by(HasnPosts.published_time.desc())
             .limit(limit)
@@ -2950,7 +2951,6 @@ class CommunityService:
         # 作者身份（该列表所有帖子同属 hasn_id）+ 查看者点赞态，与信息流条目同形，
         # 否则前端复用的帖子卡缺 author/content_type 会渲染成空头像卡。
         author_info = await CommunityService._resolve_profile_author(db, hasn_id)
-        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
         post_ids = [post.post_id for post in posts]
         liked_ids, _ = await CommunityService._batch_reactions(db, viewer_hasn_id, 'post', post_ids)
 
@@ -2991,11 +2991,14 @@ class CommunityService:
         :param limit: 每页条数
         :return: 文章列表
         """
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
         stmt = (
             select(HasnArticles)
             .where(
                 HasnArticles.author_hasn_id == hasn_id,
                 HasnArticles.status == 'published',
+                # 可见性闸：与 get_profile_posts 同一判据——别人主页的私密/followers 文不再外漏。
+                content_visibility_sql(HasnArticles, viewer_hasn_id=viewer_hasn_id),
             )
             .order_by(HasnArticles.published_time.desc())
             .limit(limit)
@@ -3006,7 +3009,6 @@ class CommunityService:
 
         # 作者身份（该列表所有文章同属 hasn_id）+ 查看者点赞/收藏态，与信息流条目同形
         author_info = await CommunityService._resolve_profile_author(db, hasn_id)
-        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
         article_ids = [article.article_id for article in articles]
         liked_ids, collected_ids = await CommunityService._batch_reactions(
             db, viewer_hasn_id, 'article', article_ids
@@ -4553,9 +4555,34 @@ class CommunityService:
         ).scalar_one_or_none()
 
         if not article:
-            from backend.common.exception import errors
-
             raise errors.NotFoundError(msg='文章不存在')
+
+        # status 闸：仅 published 对外可读；作者本人/责任主体（owner）可看自己的草稿与待审
+        # （与 get_post 同一口径——分身发文默认 pending_review，主人需能点进详情审核）。
+        # 此前完全没有 status/visibility 闸，任何人拿到 article_id 就能读别人的草稿与私密文。
+        if article.status == 'deleted' or (
+            article.status != 'published'
+            and not is_own_content(
+                viewer_hasn_id=hasn_id,
+                author_hasn_id=article.author_hasn_id,
+                owner_hasn_id=article.owner_hasn_id,
+            )
+        ):
+            raise errors.NotFoundError(msg='文章不存在')
+
+        # 可见性闸：published 文也必须过 visibility（public/followers/private/circle）。
+        # 判据与帖子详情/翻译接口共用 content_visibility 唯一实现；拒绝一律 404，不做存在性探测。
+        if article.status == 'published':
+            decision = await evaluate_content_visibility(
+                db,
+                visibility=article.visibility,
+                author_hasn_id=article.author_hasn_id,
+                owner_hasn_id=article.owner_hasn_id,
+                circle_id=article.circle_id,
+                viewer_hasn_id=hasn_id,
+            )
+            if not decision.allowed:
+                raise errors.NotFoundError(msg='文章不存在')
 
         # 查询作者信息
         author_info: dict[str, Any] = {'hasn_id': article.author_hasn_id, 'type': article.author_type}

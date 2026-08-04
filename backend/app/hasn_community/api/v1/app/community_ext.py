@@ -69,8 +69,8 @@ async def app_topic_detail(request: Request, db: CurrentSession, ident: str) -> 
 
 @router.get('/topics/{ident}/feed', summary='话题聚合流', dependencies=[DependsJwtAuth], response_model=ResponseModel)
 async def app_topic_feed(request: Request, db: CurrentSession, ident: str, sort: str = 'latest', cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    await _human(db, request)
-    return response_base.success(data=await topic_service.get_topic_feed(db, ident, sort=sort, cursor=cursor, limit=limit))
+    human, _ = await _human(db, request)
+    return response_base.success(data=await topic_service.get_topic_feed(db, ident, sort=sort, cursor=cursor, limit=limit, viewer_hasn_id=human.hasn_id))
 
 
 @router.post('/topics/{ident}/follow', summary='关注话题', dependencies=[DependsJwtAuth], response_model=ResponseModel)

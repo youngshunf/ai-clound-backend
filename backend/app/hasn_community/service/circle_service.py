@@ -17,6 +17,7 @@ from sqlalchemy import and_, case, func, literal, or_, select, union_all, update
 
 from backend.app.hasn_community.model import HasnArticles, HasnCircleMembers, HasnCircles, HasnPosts
 from backend.app.hasn_community.service.community_cards import fetch_article_cards, fetch_post_cards
+from backend.app.hasn_community.service.content_visibility import content_visibility_sql
 from backend.app.hasn_community.service.notification_service import notification_service
 from backend.app.hasn_im.application.provider import get_presence_query
 from backend.common.exception import errors
@@ -836,6 +837,11 @@ class CircleService:
             m = await CircleService._membership(db, c.circle_id, viewer_hasn_id) if viewer_hasn_id else None
             if public_only or not m or m.status != 'active':
                 raise errors.ForbiddenError(msg='私密圈内容仅成员可见')
+        # 圈闸之上每条内容还要过自己的 visibility 判据：圈成员身份不豁免
+        # followers（仍需关注作者）与 private（仅作者/主人可见）——此前完全不看，
+        # 公开圈里的私密/followers 内容会漏给所有成员，匿名走 open 面同样能读到。
+        # open 面（public_only=True）按匿名 viewer 判权，只剩 public。
+        content_viewer = None if public_only else viewer_hasn_id
         stream = union_all(
             select(
                 literal('post').label('content_type'),
@@ -845,6 +851,7 @@ class CircleService:
                 HasnPosts.circle_id == c.circle_id,
                 HasnPosts.status == 'published',
                 HasnPosts.published_time.is_not(None),
+                content_visibility_sql(HasnPosts, viewer_hasn_id=content_viewer),
             ),
             select(
                 literal('article').label('content_type'),
@@ -854,6 +861,7 @@ class CircleService:
                 HasnArticles.circle_id == c.circle_id,
                 HasnArticles.status == 'published',
                 HasnArticles.published_time.is_not(None),
+                content_visibility_sql(HasnArticles, viewer_hasn_id=content_viewer),
             ),
         ).subquery()
         stmt = select(stream)
@@ -894,8 +902,9 @@ class CircleService:
         rows = rows[:limit]
         post_ids = [row['content_id'] for row in rows if row['content_type'] == 'post']
         article_ids = [row['content_id'] for row in rows if row['content_type'] == 'article']
-        post_cards = await fetch_post_cards(db, post_ids)
-        article_cards = await fetch_article_cards(db, article_ids)
+        # 卡片层再叠一次同一判据（纵深防御：union 已过滤，这里防未来调用方直接塞 id）
+        post_cards = await fetch_post_cards(db, post_ids, viewer_hasn_id=content_viewer)
+        article_cards = await fetch_article_cards(db, article_ids, viewer_hasn_id=content_viewer)
         card_maps = {'post': post_cards, 'article': article_cards}
         page = [
             card_maps[row['content_type']][row['content_id']]
