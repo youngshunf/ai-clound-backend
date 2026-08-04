@@ -11,10 +11,14 @@
 3. **失败就是失败。** 网关挂了、结构校验没过，一律抛错让 UI 显示「翻译失败，重试」，
    **绝不返回原文冒充译文**（零 fake）。用户点了翻译却拿到一模一样的中文，比报错更糟。
 
-判权口径比社区详情接口**更严**：只有「已发布 + 当前用户确实可见」的资源可翻，
-草稿、私密帖、私密圈内容一律 403。这是设计 §4.6 明确要求的（"只有已发布且当前用户
-可见的资源可翻"）。注意这意味着存在「详情接口能读到、翻译接口 403」的情形——因为
-`community_service.get_post` 目前对 published 帖子完全不看 visibility，是既有实现的宽口径。
+判权口径：只有「已发布 + 当前用户确实可见」的资源可翻，草稿、私密帖、私密圈内容一律拒。
+这是设计 §4.6 明确要求的（"只有已发布且当前用户可见的资源可翻"）。
+
+`visibility` 判据现已抽到 `hasn_community/service/content_visibility.py`，与帖子详情
+`community_service.get_post` **共用同一份实现**。此前 `get_post` 对 published 帖完全不看
+`visibility`，导致「详情接口能读到、翻译接口 403」的错位——那是详情接口的越权读取漏洞，
+已随本模块的判据收敛一并修掉。两侧唯一仍不同的是 `status` 闸（本模块更严，草稿连作者
+自己也不给翻，理由见下）与返回码（详情一律 404 不泄露存在性，本模块沿用 403 + 具体文案）。
 """
 
 from __future__ import annotations
@@ -28,6 +32,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_content_translations import HasnContentTranslations
+from backend.app.hasn_community.service.content_visibility import (
+    assert_content_visible,
+    is_active_circle_member,
+)
 from backend.common.exception import errors
 from backend.common.llm import LLMChatClient
 from backend.common.log import log
@@ -235,8 +243,8 @@ class ContentTranslationService:
         ).scalar_one_or_none()
         if circle is None or circle.status == 'blocked':
             raise errors.NotFoundError(msg='圈子不存在')
-        if circle.visibility == 'private' and not await self._is_active_circle_member(
-            db, circle.circle_id, viewer_hasn_id
+        if circle.visibility == 'private' and not await is_active_circle_member(
+            db, circle_id=circle.circle_id, viewer_hasn_id=viewer_hasn_id
         ):
             raise errors.ForbiddenError(msg='私密圈内容仅成员可见')
         return ResolvedSource(fields={field: getattr(circle, field) or '' for field in fields})
@@ -267,84 +275,28 @@ class ContentTranslationService:
         viewer_hasn_id: str,
         not_found_msg: str,
     ) -> None:
-        """帖子/文章的可见性闸：已发布 + 当前用户确实看得到，才准翻。"""
-        # 作者与责任主体永远看得到自己的东西（但仍要求已发布，草稿不给翻——见下）。
-        is_own = viewer_hasn_id in {author_hasn_id, owner_hasn_id}
+        """帖子/文章的可见性闸：已发布 + 当前用户确实看得到，才准翻。
 
+        `status` 闸在这里（翻译侧比详情侧更严，草稿连作者都不给翻）；
+        `visibility` 判据委托给 `content_visibility` 共用实现——它同时也是帖子详情
+        `community_service.get_post` 的判据，两侧共用一份，避免「详情能读、翻译 403」
+        那种口径错位重新长出来。
+        """
         if status != 'published':
             # 草稿/待审/隐藏/已删：一律不给翻，连作者自己也不行。
             # 理由是成本——草稿会被反复编辑，每改一次 source_hash 就变、缓存全失效，
             # 等于把「按需翻译」变成「按编辑次数翻译」。发布后再翻。
             raise errors.NotFoundError(msg=not_found_msg)
 
-        if is_own:
-            return
-
-        if circle_id:
-            await self._assert_circle_readable(db, circle_id, viewer_hasn_id)
-
-        if visibility == 'public':
-            return
-        if visibility == 'followers':
-            if not await self._is_following(db, follower=viewer_hasn_id, target=author_hasn_id):
-                raise errors.ForbiddenError(msg='该内容仅作者的关注者可见')
-            return
-        if visibility == 'private':
-            raise errors.ForbiddenError(msg='该内容为私密内容')
-        if visibility == 'circle':
-            # visibility=circle 但没挂 circle_id 属于脏数据，按最保守处理。
-            if not circle_id:
-                raise errors.ForbiddenError(msg='该内容为圈子内容')
-            return
-        # 未知 visibility 一律拒绝（fail-closed，别让新枚举值默默变成公开）。
-        raise errors.ForbiddenError(msg='该内容不可见')
-
-    async def _assert_circle_readable(
-        self, db: AsyncSession, circle_id: str, viewer_hasn_id: str
-    ) -> None:
-        from backend.app.hasn_community.model.hasn_circles import HasnCircles
-
-        circle = (
-            await db.execute(select(HasnCircles).where(HasnCircles.circle_id == circle_id))
-        ).scalar_one_or_none()
-        if circle is None or circle.status == 'blocked':
-            raise errors.NotFoundError(msg='圈子不存在')
-        if circle.visibility == 'private' and not await self._is_active_circle_member(
-            db, circle_id, viewer_hasn_id
-        ):
-            raise errors.ForbiddenError(msg='私密圈内容仅成员可见')
-
-    @staticmethod
-    async def _is_active_circle_member(db: AsyncSession, circle_id: str, viewer_hasn_id: str) -> bool:
-        from backend.app.hasn_community.model.hasn_circle_members import HasnCircleMembers
-
-        if not viewer_hasn_id:
-            return False
-        member = (
-            await db.execute(
-                select(HasnCircleMembers.status).where(
-                    HasnCircleMembers.circle_id == circle_id,
-                    HasnCircleMembers.member_hasn_id == viewer_hasn_id,
-                )
-            )
-        ).scalar_one_or_none()
-        return member == 'active'
-
-    @staticmethod
-    async def _is_following(db: AsyncSession, *, follower: str, target: str) -> bool:
-        from backend.app.hasn_community.model.hasn_follows import HasnFollows
-
-        if not follower or not target:
-            return False
-        hit = (
-            await db.execute(
-                select(HasnFollows.id).where(
-                    HasnFollows.follower_hasn_id == follower,
-                    HasnFollows.target_hasn_id == target,
-                )
-            )
-        ).scalar_one_or_none()
-        return hit is not None
+        # 抛错版沿用本接口既有的 403 + 具体文案（圈子不存在仍抛 404）。
+        await assert_content_visible(
+            db,
+            visibility=visibility,
+            author_hasn_id=author_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            circle_id=circle_id,
+            viewer_hasn_id=viewer_hasn_id,
+        )
 
     # ------------------------------------------------------------------
     # 缓存

@@ -32,6 +32,10 @@ from backend.app.hasn_community.service._community_codec import (
     _safe_summary,
 )
 from backend.app.hasn_community.service.article_summary import effective_summary
+from backend.app.hasn_community.service.content_visibility import (
+    evaluate_content_visibility,
+    is_own_content,
+)
 from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn.model import HasnContactRequests, HasnContacts
@@ -1788,7 +1792,6 @@ class CommunityService:
         row = result.first()
 
         if not row:
-            from backend.common.exception import errors
             raise errors.NotFoundError(msg='帖子不存在')
 
         post = row.HasnPosts
@@ -1796,14 +1799,38 @@ class CommunityService:
         # 当前 viewer 的点赞/收藏态
         viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
 
-        # 可见性闸：published 任何人可看；草稿/待审/退回仅作者本人或（分身帖的）主人可看；deleted 一律 404。
+        # 状态闸：草稿/待审/退回仅作者本人或（分身帖的）主人可看；deleted 一律 404。
         # （分身发帖默认 pending_review，主人需能从卡片/草稿箱点进详情审核——故 owner_hasn_id 命中即放行。）
         if post.status == 'deleted' or (
             post.status != 'published'
-            and (viewer_hasn_id is None or viewer_hasn_id not in {post.author_hasn_id, post.owner_hasn_id})
+            and not is_own_content(
+                viewer_hasn_id=viewer_hasn_id,
+                author_hasn_id=post.author_hasn_id,
+                owner_hasn_id=post.owner_hasn_id,
+            )
         ):
-            from backend.common.exception import errors
             raise errors.NotFoundError(msg='帖子不存在')
+
+        # 可见性闸：published 帖也必须过 visibility（public/followers/private/circle）。
+        # 此前这里只判 status，任何人拿到 post_id 就能读别人的私密帖全文，未登录走
+        # /api/v1/community/open/posts/{post_id} 同样能读——真实越权读取漏洞。
+        # 判据与翻译接口共用 content_visibility 唯一实现，不再各写一套。
+        #
+        # **一律回 404「帖子不存在」，不回 403**：本接口是主要的存在性探测面（尤其匿名 open 路由），
+        # 403 等于承认「这条帖子存在、只是你没权限」，把整张 hasn_posts 表变成可枚举的存在性预言机。
+        # 而且本接口对草稿/已删已经用 404「不泄露存在性」，私密帖回 403 会自相矛盾。
+        # 翻译接口保持 403 + 具体文案：它只有在详情已放行后才够得着，不额外泄露存在性。
+        if post.status == 'published':
+            decision = await evaluate_content_visibility(
+                db,
+                visibility=post.visibility,
+                author_hasn_id=post.author_hasn_id,
+                owner_hasn_id=post.owner_hasn_id,
+                circle_id=post.circle_id,
+                viewer_hasn_id=viewer_hasn_id,
+            )
+            if not decision.allowed:
+                raise errors.NotFoundError(msg='帖子不存在')
 
         liked_ids, collected_ids = await CommunityService._batch_reactions(
             db, viewer_hasn_id, 'post', [post.post_id]

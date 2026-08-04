@@ -3,10 +3,16 @@
 回归 bug：分身发帖默认 pending_review，主人从卡片/草稿箱点「查看帖子」时，cloud get_post
 此前硬过滤 `status == 'published'` → 主人看自己名下分身的草稿帖也 404。
 
-可见性约定（本测试守卫）：
-- published：任何人可看（含未登录 viewer）。
+**状态**约定（本测试守卫）：
+- published + visibility=public：任何人可看（含未登录 viewer）。
 - 草稿/待审/退回（非 published 且非 deleted）：仅作者本人或（分身帖的）主人可看，他人 404。
 - deleted：一律 404（含主人）。
+
+本文件只守 `status` 维度；`visibility` 维度（public/followers/private/circle）的判权
+由 `backend/tests/hasn_community/test_post_visibility.py` 守。故这里的夹具**显式**写
+`visibility='public'`，把两个维度解耦——否则 `HasnPosts` 的 ORM 侧 Python 默认值是空串
+`''`（DB 侧默认才是 `'public'`），空串会被可见性闸 fail-closed 拒掉，让状态用例挂在
+一个与它无关的原因上。
 
 零 mock：最小化用真实 service + 真实 PG（NullPool + rollback 清理）。
 """
@@ -68,6 +74,8 @@ async def _add_post(sess, *, owner_hasn: str, status: str) -> str:
             author_hasn_id=f'a_{_uid()}',
             owner_hasn_id=owner_hasn,
             content='[E2E] 分身草稿帖。',
+            # 显式 public：本文件守的是 status 维度，不让 ORM 默认空串把用例带进可见性闸（见模块文档）。
+            visibility='public',
             status=status,
         )
     )
