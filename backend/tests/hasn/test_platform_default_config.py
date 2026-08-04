@@ -250,11 +250,10 @@ async def test_partial_legacy_warning_is_deduplicated_by_config_revision(caplog:
 async def test_partial_legacy_advisories_are_returned_by_admin_service() -> None:
     """Admin 读取与更新响应必须稳定返回部分自定义链升级提示。"""
     async with async_db_session() as db:
-        updated = await svc.update_config(
-            db,
-            config=_config(tts=['custom-tts-response', 'tts-1'], stt=['whisper-1', 'custom-asr-response']),
-            updated_by='pytest',
-        )
+        # P3 起 update_config 校验模型名必须在注册表——先把本用例用到的名字登记进去（随事务回滚）。
+        config = _config(tts=['custom-tts-response', 'tts-1'], stt=['whisper-1', 'custom-asr-response'])
+        await _seed_registry(db, config)
+        updated = await svc.update_config(db, config=config, updated_by='pytest')
         loaded = await svc.get_response(db)
 
     assert updated.upgrade_advisories == loaded.upgrade_advisories
