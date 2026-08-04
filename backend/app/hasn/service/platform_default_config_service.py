@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from copy import deepcopy
+from functools import lru_cache
 
 from typing import TYPE_CHECKING
 
@@ -23,6 +25,7 @@ import sqlalchemy as sa
 from backend.app.hasn.model.hasn_platform_default_config import HasnPlatformDefaultConfig
 from backend.app.hasn.schema.hasn_agents import AgentRuntimeConfig, AgentRuntimeModels
 from backend.app.hasn.schema.hasn_platform_default_config import (
+    PlatformConfigUpgradeAdvisory,
     PlatformDefaultConfig,
     PlatformDefaultConfigResponse,
 )
@@ -37,6 +40,7 @@ if TYPE_CHECKING:
 
 # 单行权威键
 _CONFIG_KEY = 'global'
+logger = logging.getLogger(__name__)
 
 # 平台出厂默认（与 hasn-node/config/default.toml [media] 对齐；Admin 未配置时的兜底）。
 # agent_runtime.models 全 None = 不强制平台默认（分身/owner/节点既有链路决定），运营按需在 Admin 填。
@@ -90,6 +94,58 @@ DEFAULT_PLATFORM_CONFIG: dict = {
 
 _LEGACY_TTS_GATEWAY_MODELS = ['tts-1', 'tts-1-hd']
 _LEGACY_STT_GATEWAY_MODELS = ['whisper-1']
+
+
+def collect_media_upgrade_advisories(config_json: dict) -> list[PlatformConfigUpgradeAdvisory]:
+    """识别保留原值但仍含旧语音模型的部分自定义链。"""
+    node = config_json.get('node')
+    media = node.get('media') if isinstance(node, dict) else None
+    if not isinstance(media, dict):
+        return []
+
+    advisories: list[PlatformConfigUpgradeAdvisory] = []
+    checks = (
+        ('node.media.tts_models', 'tts_models', _LEGACY_TTS_GATEWAY_MODELS),
+        ('node.media.stt_models', 'stt_models', _LEGACY_STT_GATEWAY_MODELS),
+    )
+    for field_path, field_name, factory_legacy_models in checks:
+        models = media.get(field_name)
+        if not isinstance(models, list) or models == factory_legacy_models:
+            continue
+        legacy_models = [model for model in factory_legacy_models if model in models]
+        if not legacy_models:
+            continue
+        advisories.append(
+            PlatformConfigUpgradeAdvisory(
+                code='legacy_speech_gateway_model',
+                field_path=field_path,
+                legacy_models=legacy_models,
+                recommended_models=list(DEFAULT_PLATFORM_CONFIG['node']['media'][field_name]),
+            )
+        )
+    return advisories
+
+
+@lru_cache(maxsize=256)
+def _warn_media_upgrade_advisories_once(
+    config_revision: str,
+    advisory_signature: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    """同一进程内按 PDC revision 去重记录旧语音模型告警。"""
+    logger.warning(
+        '平台默认配置仍含旧语音网关模型：revision=%s advisories=%s',
+        config_revision,
+        advisory_signature,
+    )
+
+
+def _record_media_upgrade_advisories(config_json: dict) -> list[PlatformConfigUpgradeAdvisory]:
+    """收集升级提示，并按原始 PDC 内容 revision 记录一次告警。"""
+    advisories = collect_media_upgrade_advisories(config_json)
+    if advisories:
+        signature = tuple((item.field_path, tuple(item.legacy_models)) for item in advisories)
+        _warn_media_upgrade_advisories_once(compute_revision(config_json), signature)
+    return advisories
 
 
 def normalize_legacy_media_gateway_defaults(config_json: dict) -> dict:
@@ -157,6 +213,7 @@ class PlatformDefaultConfigService:
 
         row = await self._get_row(db)
         raw = row.config_json if (row and row.config_json) else DEFAULT_PLATFORM_CONFIG
+        _record_media_upgrade_advisories(raw)
         raw = normalize_legacy_media_gateway_defaults(raw)
         config = PlatformDefaultConfig.model_validate(raw)
         config = config.model_copy(update={'app_configs': await get_all_app_configs(db)})
@@ -168,9 +225,11 @@ class PlatformDefaultConfigService:
         """组装读取出参（含 revision + 元信息）。"""
         row = await self._get_row(db)
         config, revision = await self.get_effective_config(db)
+        raw = row.config_json if (row and row.config_json) else DEFAULT_PLATFORM_CONFIG
         return PlatformDefaultConfigResponse(
             config=config,
             revision=revision,
+            upgrade_advisories=collect_media_upgrade_advisories(raw),
             updated_by=(row.updated_by if row else None),
             updated_time=(row.updated_time if row else None),
         )
@@ -244,6 +303,7 @@ class PlatformDefaultConfigService:
         return PlatformDefaultConfigResponse(
             config=effective,
             revision=revision,
+            upgrade_advisories=collect_media_upgrade_advisories(config_json),
             updated_by=row.updated_by,
             updated_time=row.updated_time,
         )

@@ -29,6 +29,9 @@ from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.pdc_model_validation_service import collect_configured_models
 from backend.app.hasn.service.platform_default_config_service import (
     DEFAULT_PLATFORM_CONFIG,
+    _record_media_upgrade_advisories,
+    _warn_media_upgrade_advisories_once,
+    collect_media_upgrade_advisories,
     normalize_legacy_media_gateway_defaults,
 )
 from backend.app.hasn.service.platform_default_config_service import (
@@ -79,6 +82,8 @@ def _config(
     *,
     image: list[str] | None = None,
     image_edit: list[str] | None = None,
+    tts: list[str] | None = None,
+    stt: list[str] | None = None,
     video: list[str] | None = None,
     main: str | None = None,
     fast: str | None = None,
@@ -91,8 +96,8 @@ def _config(
             'media': {
                 'image_models': image or ['gpt-image-2'],
                 'image_edit_models': image_edit or ['gpt-image-2'],
-                'tts_models': ['qwen3-tts-flash'],
-                'stt_models': ['qwen3-asr-flash'],
+                'tts_models': tts if tts is not None else ['qwen3-tts-flash'],
+                'stt_models': stt if stt is not None else ['qwen3-asr-flash'],
                 'video_models': video or [],
             }
         },
@@ -157,6 +162,106 @@ async def test_custom_speech_gateway_models_are_not_normalized() -> None:
     }
 
     assert normalize_legacy_media_gateway_defaults(raw) == raw
+
+
+async def test_partial_custom_legacy_speech_chains_return_structured_advisories() -> None:
+    """部分自定义链必须保留原值，并逐字段报告仍在使用的旧模型。"""
+    raw = {
+        'node': {
+            'media': {
+                'tts_models': ['custom-tts', 'tts-1'],
+                'stt_models': ['whisper-1', 'custom-asr'],
+                'image_edit_models': ['custom-image-edit'],
+            }
+        }
+    }
+
+    assert normalize_legacy_media_gateway_defaults(raw) == raw
+    advisories = collect_media_upgrade_advisories(raw)
+
+    assert [item.model_dump(mode='json') for item in advisories] == [
+        {
+            'code': 'legacy_speech_gateway_model',
+            'field_path': 'node.media.tts_models',
+            'legacy_models': ['tts-1'],
+            'recommended_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
+        },
+        {
+            'code': 'legacy_speech_gateway_model',
+            'field_path': 'node.media.stt_models',
+            'legacy_models': ['whisper-1'],
+            'recommended_models': ['qwen3-asr-flash'],
+        },
+    ]
+
+
+async def test_exact_legacy_defaults_auto_upgrade_without_advisory() -> None:
+    """完全旧出厂值走自动升级，不再向管理员显示需要手工处理的提示。"""
+    raw = {
+        'node': {
+            'media': {
+                'tts_models': ['tts-1', 'tts-1-hd'],
+                'stt_models': ['whisper-1'],
+            }
+        }
+    }
+
+    assert collect_media_upgrade_advisories(raw) == []
+    normalized = normalize_legacy_media_gateway_defaults(raw)
+    assert normalized['node']['media']['tts_models'] == ['qwen3-tts-flash', 'qwen3-tts-instruct-flash']
+    assert normalized['node']['media']['stt_models'] == ['qwen3-asr-flash']
+
+
+async def test_fully_custom_speech_chains_have_no_advisory() -> None:
+    """完全自定义且不含旧模型时不得制造升级提示。"""
+    raw = {
+        'node': {
+            'media': {
+                'tts_models': ['custom-tts'],
+                'stt_models': ['custom-asr'],
+            }
+        }
+    }
+
+    assert collect_media_upgrade_advisories(raw) == []
+
+
+async def test_partial_legacy_warning_is_deduplicated_by_config_revision(caplog: pytest.LogCaptureFixture) -> None:
+    """同一 PDC revision 被重复读取时只记录一次可处理告警。"""
+    caplog.set_level('WARNING', logger='backend.app.hasn.service.platform_default_config_service')
+    raw = _config(
+        tts=['custom-tts-dedupe', 'tts-1'],
+        stt=['custom-asr-dedupe', 'whisper-1'],
+    ).model_dump(mode='json')
+    _warn_media_upgrade_advisories_once.cache_clear()
+
+    advisories = _record_media_upgrade_advisories(raw)
+    repeated = _record_media_upgrade_advisories(raw)
+
+    assert advisories == repeated
+    assert [item.field_path for item in advisories] == [
+        'node.media.tts_models',
+        'node.media.stt_models',
+    ]
+    matching = [record for record in caplog.records if '平台默认配置仍含旧语音网关模型' in record.message]
+    assert len(matching) == 1
+
+
+async def test_partial_legacy_advisories_are_returned_by_admin_service() -> None:
+    """Admin 读取与更新响应必须稳定返回部分自定义链升级提示。"""
+    async with async_db_session() as db:
+        updated = await svc.update_config(
+            db,
+            config=_config(tts=['custom-tts-response', 'tts-1'], stt=['whisper-1', 'custom-asr-response']),
+            updated_by='pytest',
+        )
+        loaded = await svc.get_response(db)
+
+    assert updated.upgrade_advisories == loaded.upgrade_advisories
+    assert [item.field_path for item in loaded.upgrade_advisories] == [
+        'node.media.tts_models',
+        'node.media.stt_models',
+    ]
 
 
 async def test_factory_default_when_no_row() -> None:

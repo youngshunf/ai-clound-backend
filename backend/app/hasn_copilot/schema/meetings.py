@@ -67,6 +67,34 @@ class WriteMinutesRequest(BaseModel):
     summary_turn_id: str | None = Field(default=None, description='生成它的工作会话轮次 id')
 
 
+class CreateMeetingEnhancementRevisionRequest(BaseModel):
+    """daemon 写入会后增强候选；owner 与 server_id 均由服务端确定。"""
+
+    operation_id: str = Field(min_length=1, max_length=128, description='稳定语音增强 operation ID')
+    supersedes: str = Field(min_length=1, max_length=64, description='来源 revision 的云端 UUID')
+    source_record_version: int = Field(ge=0, description='依据的原始实时稿 record_version')
+    transcript_json: dict[str, Any] | list[Any] = Field(description='候选转写结果')
+    speaker_annotations_json: dict[str, Any] | list[Any] | None = Field(
+        default=None,
+        description='候选说话人标注；可选能力失败时为空',
+    )
+    alignment_json: dict[str, Any] | list[Any] | None = Field(
+        default=None,
+        description='候选时间轴对齐；可选能力失败时为空',
+    )
+    model_run_id: str | None = Field(default=None, max_length=128)
+    model_evidence_json: dict[str, Any] = Field(
+        default_factory=dict,
+        description='组件、revision、capability 结果和错误证据',
+    )
+
+
+class RejectMeetingEnhancementRevisionRequest(BaseModel):
+    """主人拒绝当前待确认候选。"""
+
+    reason: str | None = Field(default=None, max_length=256, description='稳定拒绝原因')
+
+
 class AddMediaRequest(BaseModel):
     """升格媒体条目（幂等键 sha256+kind；允许 daemon 透传额外字段）。"""
 

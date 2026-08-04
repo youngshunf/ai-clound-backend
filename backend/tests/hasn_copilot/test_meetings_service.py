@@ -22,7 +22,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model import HasnAgents
-from backend.app.hasn_copilot.model import MeetingMinutes, MeetingTranscriptSegments, Meetings
+from backend.app.hasn_copilot.model import (
+    MeetingEnhancementRevisions,
+    MeetingMinutes,
+    MeetingTranscriptSegments,
+    Meetings,
+)
+from backend.app.hasn_copilot.service.meeting_enhancement_revisions_service import (
+    meeting_enhancement_revisions_service,
+)
 from backend.app.hasn_copilot.service.meetings_service import meetings_service
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -360,6 +368,15 @@ async def test_delete_all_cascades(session) -> None:
         segments=[{'seq': 0, 'text': 'x', 'started_ms': 0}],
     )
     await meetings_service.write_minutes(session, owner_hasn_id=owner, meeting_id=mid, version=1, body_md='m')
+    await meeting_enhancement_revisions_service.create_candidate(
+        session,
+        owner_hasn_id=owner,
+        meeting_id=mid,
+        operation_id=f'op_{tag}',
+        supersedes=created['realtime_revision_id'],
+        source_record_version=1,
+        transcript_json={'text': '增强稿'},
+    )
     res = await meetings_service.delete_meeting(session, owner_hasn_id=owner, meeting_id=mid, scope='all')
     assert res == {'deleted': True, 'scope': 'all'}
     with pytest.raises(errors.NotFoundError):
@@ -378,8 +395,18 @@ async def test_delete_all_cascades(session) -> None:
         .scalars()
         .all()
     )
+    revisions = (
+        (
+            await session.execute(
+                select(MeetingEnhancementRevisions).where(MeetingEnhancementRevisions.meeting_id == uuid.UUID(mid))
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert seg == []
     assert minutes == []
+    assert revisions == []
 
 
 async def test_delete_local_media_keeps_meeting(session) -> None:

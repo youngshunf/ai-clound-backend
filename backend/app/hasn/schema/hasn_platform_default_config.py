@@ -124,11 +124,26 @@ class PlatformDefaultConfig(SchemaBase):
     )
 
 
+class PlatformConfigUpgradeAdvisory(SchemaBase):
+    """管理员可处理的平台配置升级提示。"""
+
+    code: Literal['legacy_speech_gateway_model'] = Field(description='稳定提示码')
+    field_path: Literal['node.media.tts_models', 'node.media.stt_models'] = Field(
+        description='仍含旧模型的配置字段'
+    )
+    legacy_models: list[str] = Field(description='当前链中命中的旧模型名')
+    recommended_models: list[str] = Field(description='当前出厂推荐模型链')
+
+
 class PlatformDefaultConfigResponse(SchemaBase):
     """平台默认配置读取/更新出参。"""
 
     config: PlatformDefaultConfig = Field(description='当前平台默认配置')
     revision: str = Field(description='配置内容指纹（sha256[:16]）')
+    upgrade_advisories: list[PlatformConfigUpgradeAdvisory] = Field(
+        default_factory=list,
+        description='需要管理员确认处理的配置升级提示；完全旧出厂值已自动升级，不进入此列表',
+    )
     updated_by: str | None = Field(None, description='最后修改管理员')
     updated_time: datetime | None = Field(None, description='最后更新时间')
 
