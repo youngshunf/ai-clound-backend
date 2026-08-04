@@ -36,7 +36,7 @@ async def agent_topic_detail(agent: Annotated[AgentTokenPayload, DependsAgentJwt
 
 @router.get('/topics/{ident}/feed', summary='话题聚合流', response_model=ResponseModel)
 async def agent_topic_feed(agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession, ident: str, sort: str = 'latest', cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    return response_base.success(data=await topic_service.get_topic_feed(db, ident, sort=sort, cursor=cursor, limit=limit))
+    return response_base.success(data=await topic_service.get_topic_feed(db, ident, sort=sort, cursor=cursor, limit=limit, viewer_hasn_id=agent.agent_hasn_id))
 
 
 # ---------- 圈子（读 + 参与） ----------

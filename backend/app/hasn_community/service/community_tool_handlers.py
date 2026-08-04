@@ -637,6 +637,7 @@ async def handle_community_get_topic_feed(db: AsyncSession, agent: AgentTokenPay
     return await topic_service.get_topic_feed(
         db, str(input_payload['topic']), sort=str(input_payload.get('sort') or 'latest'),
         cursor=input_payload.get('cursor'), limit=int(input_payload.get('limit') or 20),
+        viewer_hasn_id=agent.agent_hasn_id,
     )
 
 

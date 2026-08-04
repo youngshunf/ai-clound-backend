@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.hasn_community.model import HasnContentTopics, HasnFollows, HasnTopics
 from backend.app.hasn_community.service.community_cards import fetch_article_cards, fetch_post_cards
+from backend.app.hasn_community.service.content_visibility import content_visibility_sql
 from backend.app.hasn_community.service.topic_normalize import normalize_topic_name, slugify_topic
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
@@ -23,10 +24,6 @@ from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-# 主社区可见的内容可见性（话题流不展示私有 / 圈子内容）
-_OPEN_VIS = ('public',)
-_APP_VIS = ('public', 'followers')
 
 
 class TopicService:
@@ -189,14 +186,16 @@ class TopicService:
 
     @staticmethod
     async def get_topic_feed(
-        db: AsyncSession, ident: str, *, sort: str = 'latest', cursor: str | None = None, limit: int = 20, public_only: bool = False
+        db: AsyncSession, ident: str, *, sort: str = 'latest', cursor: str | None = None, limit: int = 20, public_only: bool = False, viewer_hasn_id: str | None = None
     ) -> dict[str, Any]:
         from backend.app.hasn_community.model import HasnArticles, HasnPosts
 
         t = await TopicService._get_by_ident(db, ident)
         if not t:
             raise errors.NotFoundError(msg='话题不存在')
-        vis = _OPEN_VIS if public_only else _APP_VIS
+        # 可见性改走 content_visibility 唯一判据（此前 _APP_VIS 直接放行 followers、
+        # 不查关注，等于 followers 内容对全体登录用户公开）。open 面按匿名判权只剩 public。
+        content_viewer = None if public_only else viewer_hasn_id
         cur_id = int(cursor) if cursor and cursor.isdigit() else None
 
         def _join(content_model, id_col, ctype):
@@ -208,7 +207,7 @@ class TopicService:
                     HasnContentTopics.content_type == ctype,
                     content_model.status == 'published',
                     content_model.circle_id.is_(None),
-                    content_model.visibility.in_(vis),
+                    content_visibility_sql(content_model, viewer_hasn_id=content_viewer),
                 )
             )
             if cur_id is not None:
@@ -223,8 +222,8 @@ class TopicService:
         )
         has_more = len(merged) > limit
         merged = merged[:limit]
-        post_cards = await fetch_post_cards(db, [c for _, ct, c in merged if ct == 'post'])
-        article_cards = await fetch_article_cards(db, [c for _, ct, c in merged if ct == 'article'])
+        post_cards = await fetch_post_cards(db, [c for _, ct, c in merged if ct == 'post'], viewer_hasn_id=content_viewer)
+        article_cards = await fetch_article_cards(db, [c for _, ct, c in merged if ct == 'article'], viewer_hasn_id=content_viewer)
         items = []
         for _ct_id, ctype, cid in merged:
             card = (post_cards if ctype == 'post' else article_cards).get(cid)

@@ -15,6 +15,11 @@
 本模块把那套严格判据抽出来作为唯一事实源，详情接口与翻译接口都调它，**判据只有一份**，
 不会再次漂移。
 
+- 单条详情/写路径：调 :func:`evaluate_content_visibility`（或其抛错版
+  :func:`assert_content_visible`）。
+- 列表/聚合流路径：在查询层叠加 :func:`content_visibility_sql`——逐行调判官是 N+1，
+  但判据仍只有一份，SQL 谓词是判官逻辑的投影，两边由一致性测试守着同步。
+
 ## 判据（对**已发布**内容而言；`status` 闸由各调用方自己把，见下）
 
 | visibility | 谁能读 |
@@ -52,9 +57,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, false, or_, select
 
 from backend.app.hasn_community.model.hasn_circle_members import HasnCircleMembers
 from backend.app.hasn_community.model.hasn_circles import HasnCircles
@@ -64,6 +69,7 @@ from backend.common.log import log
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.elements import ColumnElement
 
 
 class VisibilityDenialReason(StrEnum):
@@ -248,6 +254,84 @@ async def evaluate_content_visibility(
         f'visibility={visibility!r} author={author_hasn_id!r} circle_id={circle_id!r}'
     )
     return ContentVisibilityDecision(False, VisibilityDenialReason.UNKNOWN_VISIBILITY)
+
+
+def content_visibility_sql(
+    content_model: type[Any],
+    *,
+    viewer_hasn_id: str | None,
+) -> ColumnElement[bool]:
+    """与 :func:`evaluate_content_visibility` 同一判据的 SQL 谓词，供列表/聚合流在查询层过滤。
+
+    列表路径逐行调判官是 N+1（feed 一页 20 条就是 20+ 次额外查询），但**判据仍必须只有
+    一份**——本函数是判官逻辑向 SQL 的投影，任何一边改动必须同步另一边，
+    `test_post_visibility.py` 里有逐行一致性用例守着。
+
+    判据投影（与判官逐条对应）：
+
+    - 作者本人 / 责任主体（`owner_hasn_id`）恒可见，且不受圈闸约束；
+    - 挂了 `circle_id` 的内容先过圈闸：圈存在、未封禁、私密圈限 active 成员；
+    - `public` 任何人可见；`circle` 挂在圈内即可（圈闸已过）；`followers` 需 viewer 已关注作者；
+    - `private` 与任何不认识的取值一律排除（fail-closed）；
+    - 匿名 viewer（None）：只剩 `public` + 公开圈里的 `circle` 内容。
+
+    :param content_model: 带 `author_hasn_id`/`owner_hasn_id`/`visibility`/`circle_id` 列的模型
+    :param viewer_hasn_id: 当前查看者的 human hasn_id；未登录传 None
+    :return: 可直接 `stmt.where(...)` 的 SQL 条件
+    """
+    # 圈闸：未挂圈（NULL 或空串，判官以真值判定）或 圈可读。
+    # 私密圈的成员子查询只在 viewer 非空时有意义，匿名直接 false()。
+    circle_gate_visibility: ColumnElement[bool] = (
+        HasnCircles.circle_id.in_(
+            select(HasnCircleMembers.circle_id).where(
+                HasnCircleMembers.member_hasn_id == viewer_hasn_id,
+                HasnCircleMembers.status == 'active',
+            )
+        )
+        if viewer_hasn_id
+        else false()
+    )
+    readable_circles = select(HasnCircles.circle_id).where(
+        HasnCircles.status != 'blocked',
+        or_(
+            HasnCircles.visibility != 'private',
+            circle_gate_visibility,
+        ),
+    )
+    circle_gate = or_(
+        content_model.circle_id.is_(None),
+        content_model.circle_id == '',
+        content_model.circle_id.in_(readable_circles),
+    )
+
+    # 可见性闸：public 任何人；circle 需真实挂圈（空串/NULL 是脏数据，排除，对齐判官）。
+    visibility_gate: ColumnElement[bool] = or_(
+        content_model.visibility == 'public',
+        and_(
+            content_model.visibility == 'circle',
+            content_model.circle_id.is_not(None),
+            content_model.circle_id != '',
+        ),
+    )
+    own: ColumnElement[bool] = false()
+    if viewer_hasn_id:
+        followed_authors = select(HasnFollows.target_hasn_id).where(
+            HasnFollows.follower_hasn_id == viewer_hasn_id
+        )
+        visibility_gate = or_(
+            visibility_gate,
+            and_(
+                content_model.visibility == 'followers',
+                content_model.author_hasn_id.in_(followed_authors),
+            ),
+        )
+        own = or_(
+            content_model.author_hasn_id == viewer_hasn_id,
+            content_model.owner_hasn_id == viewer_hasn_id,
+        )
+
+    # private 与不认识的取值不在任何分支里——fail-closed 与判官一致。
+    return or_(own, and_(circle_gate, visibility_gate))
 
 
 async def assert_content_visible(
