@@ -96,7 +96,7 @@ def main() -> int:
     t0 = time.monotonic()
     ev: dict = {
         "rehearsal": "r2_snapshot_cutover",
-        "design": "docs/hasn-node设计文档/01-核心架构/实施/92-云端IM-Python底层服务化重构实施方案.md (§4 R2-11/R2-12 + §9)",
+        "design": "docs/技术设计/02-平台能力/消息与会话/云端IM服务化/实施/01-Python服务化重构实施方案(R0-R5·D线).md (§4 R2-11/R2-12 + §9)",  # 原 01-核心架构/实施/92，父仓 2026-08-05 整域迁移
         "started_at": started,
         "src_db": SRC_DB,
         "snapshot_db": SNAP_DB,
