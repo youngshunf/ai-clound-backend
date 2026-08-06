@@ -35,8 +35,8 @@ def test_commit_lock_freezes_after_tag_ready() -> None:
             locked_commit='a' * 40,
             confirmed_commit='b' * 40,
         )
-    assert 'a' * 40 in excinfo.value.msg
-    assert 'b' * 40 in excinfo.value.msg
+    assert 'a' * 40 in str(excinfo.value.msg)
+    assert 'b' * 40 in str(excinfo.value.msg)
 
 
 def test_commit_lock_ready_accepts_same_commit_case_insensitively() -> None:
