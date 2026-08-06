@@ -3,7 +3,7 @@
 
 [paths]
 # 前端项目根目录（相对于 clound-backend 项目根，或使用绝对路径）
-frontend_dir = "../huanxing-cloud-frontend"
+frontend_dir = "../hasn-cloud-frontend"
 
 # 前端子应用名称（对应 apps/ 下的目录名）
 frontend_app = "web-antdv-next"

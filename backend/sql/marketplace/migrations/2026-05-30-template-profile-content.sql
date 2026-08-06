@@ -1,7 +1,7 @@
 -- =====================================================
 -- Agent Profile 云端权威化 (P1)：marketplace_template 补 SOUL/AGENTS/USER 内容列
 -- ADR: decisions/architecture/2026-05-30-agent-profile-cloud-authoritative.md §4
--- 由 github_app_sync_service 同步 huanxing-hub 模板时抽取 *.md 入库；
+-- 由 github_app_sync_service 同步 hasn-hub 模板时抽取 *.md 入库；
 -- 创建 Agent 时云端据此物化进 hasn_agents.{soul_md,agents_md,user_md}。
 -- =====================================================
 

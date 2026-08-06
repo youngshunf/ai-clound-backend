@@ -21,7 +21,7 @@ import re
 
 from pathlib import Path
 
-# 仓库根：本文件在 backend/tests/hasn_core/ 下，向上三层到 huanxing-cloud-backend/
+# 仓库根：本文件在 backend/tests/hasn_core/ 下，向上三层到 hasn-cloud-backend/
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _APP_DIR = _REPO_ROOT / 'backend' / 'app'
 

@@ -1,7 +1,7 @@
 # app/hasn 平台核心 façade 与 god-file 拆分 — 设计提案
 
 > 状态：**候选③ 已部分落地（P1 身份 façade + P2 应用平台服务 façade + P4 守卫），P3 长尾经评估暂不做；候选④ god-file 拆分 sync slice-1（`_sync_codec`）+ community slice-1（`_community_codec` 纯逻辑）+ community sub-service slice-A（管理端 `CommunityAdminService`）/slice-B（设置黑名单 `CommunitySettingsService`）已落地，sync DB god-class 与 community 余下读取簇 slice 暂缓**。福仔 redline：façade 落点=`app/hasn_core`、身份 JOIN=方案 A、身份先行、加 import-lint 守卫。
-> 范围：仅 huanxing-cloud-backend，纯**导入依赖收敛 + 文件内部分解**。**不动 DB schema、不动任何 URL、不动业务行为**。
+> 范围：仅 hasn-cloud-backend，纯**导入依赖收敛 + 文件内部分解**。**不动 DB schema、不动任何 URL、不动业务行为**。
 > 关联：架构候选①（入参绑定接缝，已落地 `f763ce8e`）、候选⑥（死代码清理，已落地 `6bbbcbe1`）。
 > 背景：`app/hasn` 是 39676 行 / 355 文件的遗留巨型模块，团队已陆续拆出 hasn_community / hasn_growth / hasn_task / hasn_deck / hasn_publish / hasn_knowledge / hasn_memory / billing / workbench 等独立模块（ADR-15）。但拆分**制造了边界、却没人定义边界的接口**——这正是本提案要补的两件事。
 

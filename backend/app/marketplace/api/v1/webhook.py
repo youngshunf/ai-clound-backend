@@ -100,7 +100,7 @@ async def github_webhook_skills(
     """
     GitHub webhook endpoint for skills
 
-    Triggered when huanxing-hub repository receives a push event.
+    Triggered when hasn-hub repository receives a push event.
     验签 + 闸门后立即返回 2xx，全量同步在后台执行（GitHub 期望快速响应）。
     """
     try:
@@ -132,7 +132,7 @@ async def github_webhook_skills(
 
         log.warning(
             "检测到官方 Hub 源码变更，服务器仓库扫描已退役；"
-            "必须在可信 huanxing-hub 工作区运行 astrahub publish all"
+            "必须在可信 hasn-hub 工作区运行 astrahub publish all"
         )
         return response_base.success(data=WebhookResponse(
             message='Official Hub release required via astrahub publish all'
@@ -163,7 +163,7 @@ async def github_webhook_templates(
     """
     GitHub webhook endpoint for templates
 
-    Triggered when huanxing-hub repository receives a push event.
+    Triggered when hasn-hub repository receives a push event.
     验签 + 闸门后立即返回 2xx，全量同步在后台执行。
     """
     try:
@@ -203,7 +203,7 @@ async def github_webhook_templates(
 
         log.warning(
             '检测到模板源码变更，服务器仓库扫描已退役；'
-            '必须在可信 huanxing-hub 工作区运行 astrahub publish all'
+            '必须在可信 hasn-hub 工作区运行 astrahub publish all'
         )
         return response_base.success(data=WebhookResponse(
             message='Official Hub release required via astrahub publish all'

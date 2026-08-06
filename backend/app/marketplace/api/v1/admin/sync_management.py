@@ -46,7 +46,7 @@ async def trigger_github_sync(
     raise HTTPException(
         status_code=410,
         detail=(
-            'GitHub 技能服务器同步已退役，请在可信 huanxing-hub 工作区运行 '
+            'GitHub 技能服务器同步已退役，请在可信 hasn-hub 工作区运行 '
             'astrahub publish skills'
         ),
     )
@@ -61,7 +61,7 @@ async def trigger_github_template_sync(
     raise HTTPException(
         status_code=410,
         detail=(
-            'GitHub 模板服务器同步已退役，请在可信 huanxing-hub 工作区运行 '
+            'GitHub 模板服务器同步已退役，请在可信 hasn-hub 工作区运行 '
             'astrahub publish all'
         ),
     )

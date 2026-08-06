@@ -2,7 +2,7 @@
 
 不是 pytest 收集用例（无 `test_` 前缀，需活体数据服务，按需手跑）：
 
-    cd huanxing-cloud-backend && .venv/bin/python backend/tests/hasn_finance/e2e_finance_two_paths.py
+    cd hasn-cloud-backend && .venv/bin/python backend/tests/hasn_finance/e2e_finance_two_paths.py
 
 做什么（真实，零 mock / 零 fake）：
 1. 用 finance-data-service 自带的 `.venv-s0`（含真实 akshare 1.18.64）起一个**真实**数据服务进程
@@ -40,9 +40,9 @@ import httpx
 
 # ── 路径解析（cloud backend repo → 兄弟 huanxing-project 下的 apps / test-results）──
 THIS = Path(__file__).resolve()
-CLOUD_REPO = THIS.parents[3]  # .../huanxing-cloud-backend
+CLOUD_REPO = THIS.parents[3]  # .../hasn-cloud-backend
 PROJECT = CLOUD_REPO.parent  # .../huanxing-project
-DATA_SVC = PROJECT / 'huanxing-apps' / 'finance-data-service'
+DATA_SVC = PROJECT / 'hasn-apps' / 'finance-data-service'
 DATA_VENV_PY = DATA_SVC / '.venv-s0' / 'bin' / 'python'
 EVIDENCE_DIR = PROJECT / 'test-results' / 'finance-e2e'
 

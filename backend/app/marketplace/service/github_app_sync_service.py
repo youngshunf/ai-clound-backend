@@ -39,11 +39,11 @@ if TYPE_CHECKING:
 
 
 class GitHubAppSyncService:
-    """Sync huanxing-hub templates into marketplace_template."""
+    """Sync hasn-hub templates into marketplace_template."""
 
     def __init__(self) -> None:
-        self.repo_url = getattr(settings, 'HUANXING_HUB_REPO_URL', 'https://github.com/youngshunf/huanxing-hub.git')
-        self.local_path = getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub')
+        self.repo_url = getattr(settings, 'HUANXING_HUB_REPO_URL', 'https://github.com/youngshunf/hasn-hub.git')
+        self.local_path = getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/hasn-hub')
         self.repo: Repo | None = None
 
     async def sync_from_github(self, db: AsyncSession, force: bool = False) -> dict[str, Any]:  # noqa: FBT001, FBT002

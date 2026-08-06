@@ -8,7 +8,7 @@ ADD COLUMN IF NOT EXISTS git_commit_hash VARCHAR(64),
 ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ,
 ADD COLUMN IF NOT EXISTS translated_at TIMESTAMPTZ;
 
-COMMENT ON COLUMN marketplace_template.repo_path IS '在 huanxing-hub 中的路径';
+COMMENT ON COLUMN marketplace_template.repo_path IS '在 hasn-hub 中的路径';
 COMMENT ON COLUMN marketplace_template.git_commit_hash IS '最新同步的 commit hash';
 COMMENT ON COLUMN marketplace_template.synced_at IS '最后同步时间';
 COMMENT ON COLUMN marketplace_template.translated_at IS '最后翻译时间';

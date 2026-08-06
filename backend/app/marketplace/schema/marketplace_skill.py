@@ -47,7 +47,7 @@ class MarketplaceSkillSchemaBase(SchemaBase):
         None,
         description='源仓库内路径（如 huanxing-skills/productivity/translator-pro）',
     )
-    repo_path: str | None = Field(None, description='在 huanxing-hub 中的路径')
+    repo_path: str | None = Field(None, description='在 hasn-hub 中的路径')
     pricing_type: str = Field(description='定价类型 (free:免费:green/paid:付费:orange)')
     price: Decimal = Field(description='价格')
     is_private: bool = Field(description='是否私有')

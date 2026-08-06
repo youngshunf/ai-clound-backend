@@ -38,8 +38,8 @@ def find_local_rust_source(relative: Path | str) -> Path | None:
     候选顺序：**同名 worktree** → 主 clone → 其余 worktree（按名字排序，纯兜底）。
     """
     relative = Path(relative)
-    # 本仓可能是主 clone（<project>/huanxing-cloud-backend）也可能是 worktree
-    # （<project>/huanxing-cloud-backend/.worktrees/<name>），故逐级上溯找兄弟目录 hasn-node。
+    # 本仓可能是主 clone（<project>/hasn-cloud-backend）也可能是 worktree
+    # （<project>/hasn-cloud-backend/.worktrees/<name>），故逐级上溯找兄弟目录 hasn-node。
     for ancestor in _HERE.parents:
         node_repo = ancestor / 'hasn-node'
         if not node_repo.is_dir():

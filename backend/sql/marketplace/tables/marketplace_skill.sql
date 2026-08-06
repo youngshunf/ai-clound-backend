@@ -97,7 +97,7 @@ COMMENT ON COLUMN "public"."marketplace_skill"."is_private" IS '是否私有';
 COMMENT ON COLUMN "public"."marketplace_skill"."is_official" IS '是否官方技能';
 COMMENT ON COLUMN "public"."marketplace_skill"."download_count" IS '下载次数';
 COMMENT ON COLUMN "public"."marketplace_skill"."star_count" IS '星标数';
-COMMENT ON COLUMN "public"."marketplace_skill"."repo_path" IS '在 huanxing-hub 中的路径';
+COMMENT ON COLUMN "public"."marketplace_skill"."repo_path" IS '在 hasn-hub 中的路径';
 COMMENT ON COLUMN "public"."marketplace_skill"."git_commit_hash" IS '最新同步的 commit hash';
 COMMENT ON COLUMN "public"."marketplace_skill"."synced_at" IS '最后同步时间';
 COMMENT ON COLUMN "public"."marketplace_skill"."translated_at" IS '最后翻译时间';

@@ -58,7 +58,7 @@ class MarketplaceTemplateSchemaBase(SchemaBase):
     agents_md: str | None = Field(None, description='模板 AGENTS.md 内容（Agent 行为指南）')
     user_md: str | None = Field(None, description='模板 USER.md 内容（主人信息种子）')
     memory_md: str | None = Field(None, description='模板 MEMORY.md 内容（Agent 长期/自我演化记忆种子，§ 记录格式）')
-    repo_path: str | None = Field(None, description='在 huanxing-hub 中的路径')
+    repo_path: str | None = Field(None, description='在 hasn-hub 中的路径')
     git_commit_hash: str | None = Field(None, description='最新同步的 commit hash')
     synced_at: datetime | None = Field(None, description='最后同步时间')
     translated_at: datetime | None = Field(None, description='最后翻译时间')

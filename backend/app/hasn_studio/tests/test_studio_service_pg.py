@@ -49,10 +49,10 @@ _AGENT_A = 'hasn:agent:studio-op-a'
 # 引擎内置 demo-props 名（remotion-composer/public/demo-props/<name>.json）；demo 是名字串、非布尔。
 _DEMO_NAME = 'world-in-numbers'
 
-# 引擎目录候选（首个存在 .venv/bin/python 者）：env 覆盖 > 父仓 huanxing-apps > 开发 worktree。
+# 引擎目录候选（首个存在 .venv/bin/python 者）：env 覆盖 > 父仓 hasn-apps > 开发 worktree。
 _ENGINE_DIR_CANDIDATES = (
-    '/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-apps/montage-engine-service',
-    '/Users/mac/openclaw-workspace/huanxing/.worktrees/studio/huanxing-apps/montage-engine-service',
+    '/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-apps/montage-engine-service',
+    '/Users/mac/openclaw-workspace/huanxing/.worktrees/studio/hasn-apps/montage-engine-service',
 )
 
 

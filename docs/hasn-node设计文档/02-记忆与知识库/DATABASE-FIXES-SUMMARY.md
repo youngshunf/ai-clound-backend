@@ -68,7 +68,7 @@ backend/sql/
 #### 执行命令
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 uv run python backend/sql/migrations/run_migration.py
 ```
 
@@ -201,7 +201,7 @@ asyncio.run(check())
 ### 1. 重启后端服务
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 python backend/run.py
 ```
 

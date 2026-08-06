@@ -14,7 +14,7 @@
 - 旧表用原生 SQL 读取（不依赖已退役的 ORM model）；软删行（deleted_at 非空）不迁。
 
 用法：
-    cd huanxing-cloud-backend && DATABASE_PORT=15432 uv run python scripts/migrate_huanxing_docs_to_knowledge.py
+    cd hasn-cloud-backend && DATABASE_PORT=15432 uv run python scripts/migrate_huanxing_docs_to_knowledge.py
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@
 
 ## 1. 一句话目标
 
-把 `huanxing-cloud-backend` 的 Hermes Agent 业务模块从"60% 骨架"推到"MVP 端到端可用"：
+把 `hasn-cloud-backend` 的 Hermes Agent 业务模块从"60% 骨架"推到"MVP 端到端可用"：
 
 1. **`HermesRuntimeClient`** 加 4 个方法：`apply_template` / `get_template_status` / `install_credential` / `uninstall_credential`（runtime 侧 M2 + B3-3a 已就位）
 2. **`HermesAgentAppService.create_agent`** 编排串通（按 §07 §4.1 + §09 §4.1）：
@@ -185,7 +185,7 @@
 ### 5.7 验收命令
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 NO_PROXY=127.0.0.1,localhost,::1 uv run pytest tests/ -q   # 原数 + ≥10 新增，0 failed
 git status                                                 # working tree 干净
 ```
@@ -195,7 +195,7 @@ git status                                                 # working tree 干净
 ## 6. Hard rules（违反等同验收失败）
 
 1. **不引入新依赖**——backend 已有 fastapi / sqlalchemy / pydantic / httpx 等；够用。
-2. **不动 `huanxing-cloud-backend` 的 LLM 网关 / 用户中心 / 订阅 / oauth2 模块**——只动 `app/hermes/` + `app/llm/` 引用。
+2. **不动 `hasn-cloud-backend` 的 LLM 网关 / 用户中心 / 订阅 / oauth2 模块**——只动 `app/hermes/` + `app/llm/` 引用。
 3. **不动 marketplace 的 schema / CRUD**——templates endpoint 只 read。
 4. **不实现 `hermes_agent_template_application` 表**（owner Q3 决策）。
 5. **跑 pytest 之前确认 NO_PROXY 包含 `127.0.0.1`**（A1 RETRO 教训跨仓适用）。
@@ -209,7 +209,7 @@ git status                                                 # working tree 干净
 
 ## 7. 失败降级策略
 
-- 若 marketplace 还没有 7 个 hub 模板 publish 进表，**create_agent 流程会失败**。降级：保留 fast-fail（`template_not_found`），让 owner 手动跑 `huanxing-hub/scripts/publish_hub.py` 把模板 publish 进 marketplace 表后重试。NOTES 记下"依赖 hub publish 完成"。
+- 若 marketplace 还没有 7 个 hub 模板 publish 进表，**create_agent 流程会失败**。降级：保留 fast-fail（`template_not_found`），让 owner 手动跑 `hasn-hub/scripts/publish_hub.py` 把模板 publish 进 marketplace 表后重试。NOTES 记下"依赖 hub publish 完成"。
 - 若 `LlmNewapiUserMappingService.ensure_agent_token` 当前签名跟 §3 描述不符，照实际签名走，**不重构 service**；NOTES 记。
 - 若 chat SSE 在 backend 异步 generator 嵌套有问题（fastapi `StreamingResponse` 是同步 iter），改用 `EventSourceResponse`（sse-starlette 包，**已在 backend deps 则可用，否则保持原样不流式**）；如不可用，回退 `stream=false` 一次性返回 + NOTES 记"SSE 推到下一阶段补"。
 - 若回滚链中 `runtime.delete_agent` 在 profile 不存在时报 404 不 swallow，改成只 swallow 4xx + 5xx 全部，NOTES 记。

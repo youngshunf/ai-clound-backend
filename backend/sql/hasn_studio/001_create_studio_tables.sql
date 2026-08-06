@@ -1,7 +1,7 @@
 -- OpenMontage 统一视频引擎接入应用 hasn_studio：4 张表（设计 doc22 §3.1）。
 -- 落 schema hasn_studio（ADR-15 应用独立 schema）；PostgreSQL 语法。
 -- 全新建（无存量、无停机约束）。cloud-brokered：产品级数据权威在唤星 PG（不变量 #4），
---   引擎服务（huanxing-apps/montage-engine-service）无产品表，只持渲染运行态（crash-only 可重跑）。
+--   引擎服务（hasn-apps/montage-engine-service）无产品表，只持渲染运行态（crash-only 可重跑）。
 --
 -- 全表公共约定（设计 §3.1.1）：
 --   - id bigserial PK + created_time/updated_time timestamptz（来自 fba Base DateTimeMixin，本 SQL 仅建表用）；

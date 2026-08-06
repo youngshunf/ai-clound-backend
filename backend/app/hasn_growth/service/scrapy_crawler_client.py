@@ -1,6 +1,6 @@
 """lead-crawler-service 的薄 HTTP client（doc93 §3.1 Scrapy 黄页/B2B 深爬·cloud-brokered）。
 
-Scrapy 有独立 Twisted reactor 与 FastAPI async 冲突 → 抓取下沉到 `huanxing-apps/lead-crawler-service`
+Scrapy 有独立 Twisted reactor 与 FastAPI async 冲突 → 抓取下沉到 `hasn-apps/lead-crawler-service`
 独立服务，主云端经本 client 中转（**daemon 不反代**，遵 cloud-brokered 原则）。服务自带 spider
 规则（列表分页 → 详情页定向深爬），返回**已结构化** items → ScrapyProvider 预置 structured_payload
 跳过 LLM。传输层失败（服务未配置/不可达/超时）一律归一成诚实 ok:false（零 fake，绝不抛、绝不造假）。

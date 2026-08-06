@@ -181,7 +181,7 @@ async def scheduled_sync():
 | 同步源 | namespace 格式 | slug 格式 | 触发方式 |
 |--------|---------------|-----------|----------|
 | **ClawHub** | `clawhub/{owner}` | `{skill-name}` | 手动触发 |
-| **GitHub (huanxing-hub)** | `{category}` | `{directory-name}` | 手动 + Webhook |
+| **GitHub (hasn-hub)** | `{category}` | `{directory-name}` | 手动 + Webhook |
 | **本地整理** | `{category}` | `{directory-name}` | 手动 + Webhook |
 
 ### 示例对比
@@ -213,8 +213,8 @@ GitHub (category):
 ### 开发环境
 
 ```bash
-# huanxing-hub 本地路径
-HUANXING_HUB_LOCAL_PATH='/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-hub'
+# hasn-hub 本地路径
+HUANXING_HUB_LOCAL_PATH='/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-hub'
 
 # GitHub Webhook Secret（可选，开发环境可不配置）
 GITHUB_WEBHOOK_SECRET=''
@@ -226,8 +226,8 @@ CLAWHUB_API_URL='https://clawhub.ai/api/v1'
 ### 生产环境
 
 ```bash
-# huanxing-hub 本地路径
-HUANXING_HUB_LOCAL_PATH='/data/huanxing-hub'
+# hasn-hub 本地路径
+HUANXING_HUB_LOCAL_PATH='/data/hasn-hub'
 
 # GitHub Webhook Secret（生产环境必须配置）
 GITHUB_WEBHOOK_SECRET='your-webhook-secret'

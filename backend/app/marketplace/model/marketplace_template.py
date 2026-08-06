@@ -134,7 +134,7 @@ class MarketplaceTemplate(MarketplaceBase):
         default=None,
         comment='依赖的SOP ID列表，逗号分隔',
     )
-    repo_path: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在 huanxing-hub 中的路径')
+    repo_path: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在 hasn-hub 中的路径')
     git_commit_hash: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='最新同步的 commit hash')
     synced_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最后同步时间')
     translated_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最后翻译时间')

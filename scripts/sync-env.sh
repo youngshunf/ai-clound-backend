@@ -5,7 +5,7 @@
 # 约定：改生产配置 **只改本地 backend/.env.prod**，然后跑本脚本同步到线上。
 #       线上 .env 不应手改；任何线上独有的 key 都必须先补回本地 .env.prod。
 #
-# 用法（在 huanxing-cloud-backend 仓库内任意目录执行）：
+# 用法（在 hasn-cloud-backend 仓库内任意目录执行）：
 #   scripts/sync-env.sh              # 比对→确认→备份线上→上传→重启→验活
 #   scripts/sync-env.sh --dry-run    # 只比对 key 差异，绝不改线上
 #   scripts/sync-env.sh --yes        # 跳过交互确认（CI/熟手）

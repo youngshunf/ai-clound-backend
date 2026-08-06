@@ -3,7 +3,7 @@ info:
   title: HuanXing HASN Cloud Control Plane API
   version: 1.0.0-p0
   description: |
-    P0 contract draft for hasn-node ↔ huanxing-cloud-backend integration.
+    P0 contract draft for hasn-node ↔ hasn-cloud-backend integration.
 
     This OpenAPI file is a control-plane contract. HASN wire frames,
     envelopes, message schemas, and conformance fixtures remain canonical in

@@ -16,7 +16,7 @@ from backend.core.conf import settings
 
 
 class AppPackageService:
-    """Build ZIP packages for huanxing-hub templates.
+    """Build ZIP packages for hasn-hub templates.
 
     The class name is kept for existing imports, but all public methods use the
     current template terminology.
@@ -25,10 +25,10 @@ class AppPackageService:
     def __init__(self) -> None:
         self.cache_dir = Path(getattr(settings, 'MARKETPLACE_CACHE_DIR', '/tmp/marketplace-cache'))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.hub_local_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub'))
+        self.hub_local_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/hasn-hub'))
 
     async def build_template_package(self, template_id: str, version: str) -> dict[str, Any]:  # noqa: C901
-        """Build a template ZIP package from huanxing-hub/templates/{category}/{slug}."""
+        """Build a template ZIP package from hasn-hub/templates/{category}/{slug}."""
         cached = await self.get_cached_package(template_id, version)
         if cached:
             log.info(f"Using cached template package for {template_id} v{version}")

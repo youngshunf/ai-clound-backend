@@ -341,13 +341,13 @@ def test_generated_frontend_api_paths_match_registered_backend_prefixes() -> Non
     # 兼容主 clone 与 `.worktrees/<任务>` 两种布局，找不到真实前端仓必须失败。
     frontend_api_root = next(
         (
-            parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
+            parent / 'hasn-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
             for parent in (ROOT, *ROOT.parents)
-            if (parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation').is_dir()
+            if (parent / 'hasn-cloud-frontend/apps/web-antdv-next/src/api/lead_automation').is_dir()
         ),
         None,
     )
-    assert frontend_api_root is not None, '未找到真实 huanxing-cloud-frontend 仓，无法校验跨仓 API 前缀'
+    assert frontend_api_root is not None, '未找到真实 hasn-cloud-frontend 仓，无法校验跨仓 API 前缀'
     for path in frontend_api_root.glob('*.ts'):
         text = path.read_text(encoding='utf-8')
         assert '/api/v1/lead_automation/' not in text

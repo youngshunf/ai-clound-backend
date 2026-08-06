@@ -1,7 +1,7 @@
 """quant_engine_provider —— 主云端 → quant-engine-service 的薄 HTTP client（设计 doc23 §5）。
 
 **唯一耦合点**：QuantService（回测提交/轮询）经本 provider 说话引擎服务；换部署/加场所/双活只动这一层。
-**不 import nautilus**（重依赖隔离在 huanxing-apps/quant-engine-service）。超时/不可达/非 JSON 一律归一成
+**不 import nautilus**（重依赖隔离在 hasn-apps/quant-engine-service）。超时/不可达/非 JSON 一律归一成
 诚实异常或 ok:false 信封（零 fake，绝不造假绩效）。
 
 配置来源：`QUANT_ENGINE_URL / QUANT_ENGINE_TOKEN / QUANT_ENGINE_TIMEOUT`——**进程环境变量优先，回退 `settings`**

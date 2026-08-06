@@ -16,7 +16,7 @@ content_hash（触发 daemon re-provision）；hasn_agents.skills 变化 bump pr
 > 用户包在重新发布时自动归一；本脚本用于一次性收敛存量、避免等待自然同步。
 
 运行：
-    cd huanxing-cloud-backend && uv run python backend/sql/marketplace/migrations/2026-06-06-skill-bundle-member-full-id-backfill.py
+    cd hasn-cloud-backend && uv run python backend/sql/marketplace/migrations/2026-06-06-skill-bundle-member-full-id-backfill.py
 """
 
 from __future__ import annotations

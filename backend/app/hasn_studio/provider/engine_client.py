@@ -2,7 +2,7 @@
 
 **唯一耦合点**：StudioService（渲染提交/轮询/取片/原子工具/流水线目录）经本 provider 说话引擎服务；
 换部署/换引擎/双活只动这一层。**不 import OpenMontage/Remotion**（重依赖隔离在
-huanxing-apps/montage-engine-service）。超时/不可达/非 JSON/非 2xx/引擎 ok:false 一律归一成诚实异常
+hasn-apps/montage-engine-service）。超时/不可达/非 JSON/非 2xx/引擎 ok:false 一律归一成诚实异常
 （``StudioEngineError``，零 fake，绝不造假产物/绩效）。
 
 配置来源：`MONTAGE_ENGINE_URL / MONTAGE_ENGINE_TOKEN / MONTAGE_ENGINE_TIMEOUT`——经
@@ -10,7 +10,7 @@ huanxing-apps/montage-engine-service）。超时/不可达/非 JSON/非 2xx/引�
 127.0.0.1:8002 回落 → prod 留空归一 service_unconfigured，对齐 finance/quant）。本层是唯一取值入口、
 契约不变。
 
-引擎契约（huanxing-apps/montage-engine-service/service/app.py，内网 Bearer + Host 闸）。引擎返回**它自己**的
+引擎契约（hasn-apps/montage-engine-service/service/app.py，内网 Bearer + Host 闸）。引擎返回**它自己**的
 ``{ok, service, interface, <payload>}`` 信封（业务失败仍 HTTP 200；坏请求/未知工具/未知 job 返 400/404）：
 - GET  /v1/healthz                     探活（无鉴权）→ {ok, service, version, pipelines, tools, ...}
 - GET  /v1/pipelines                   流水线目录（只 production）→ ok 信封 {count, pipelines:[...]}

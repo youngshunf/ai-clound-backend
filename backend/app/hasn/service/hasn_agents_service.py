@@ -135,7 +135,7 @@ def compute_seeded_name_refresh(
     return candidate if candidate != current else None
 
 
-# USER.md 模板首行 `称呼: {{owner_nickname}}`（见 huanxing-hub/templates/USER.md）——主人称呼即
+# USER.md 模板首行 `称呼: {{owner_nickname}}`（见 hasn-hub/templates/USER.md）——主人称呼即
 # 分身如何称呼主人。建档时 register_hasn_agent 把 {{owner_nickname}} 渲染成当时 HasnHumans.nickname；
 # 主人未设昵称时是手机号掩码 → 烙进 USER.md，且渲染只在建档做一次、serve/runtime 端不再替换，
 # 主人之后改昵称这行不会自动刷新 → 分身一直按手机号掩码称呼主人（本次 bug）。半/全角冒号都兜。
@@ -178,7 +178,7 @@ def compute_user_md_owner_refresh(
 
 # MEMORY.md（分身笔记）模板首行是身份行
 # `我是 {{display_name}}，{{owner_nickname}} 在唤星（Astra）的 AI 分身，通过记忆工具读写这份长期记忆。`
-# （见 huanxing-hub/templates/MEMORY.md）——同 USER.md `称呼:` 一样在建档时把 {{display_name}}/
+# （见 hasn-hub/templates/MEMORY.md）——同 USER.md `称呼:` 一样在建档时把 {{display_name}}/
 # {{owner_nickname}} 渲染成当时值、之后不再替换。主人改昵称 / 分身改名后这行不会自动刷新 → 分身笔记
 # 里一直是旧分身名与旧主人昵称（本次 bug：主人档案已刷成新昵称，分身笔记仍是旧的）。
 # 只匹配这一「身份行」，绝不碰身份行以外分身自演化追加的记忆正文；半/全角逗号都兜。
@@ -280,7 +280,7 @@ class SqlAlchemyAgentProfileGateway:
     async def get_template(self, db: AsyncSession, *, template_id: str) -> Any | None:
         """读取 Agent 创建模板（权威源 = 活表 marketplace_template）。
 
-        marketplace_template 由 github_app_sync_service 从 huanxing-hub 同步，含
+        marketplace_template 由 github_app_sync_service 从 hasn-hub 同步，含
         SOUL/AGENTS/USER 内容（P1 新增列）与 skill_dependencies。这里返回一个归一化
         适配对象，使 _merge_agent_create_payload 与具体模板表解耦（不再读空表
         hasn_agent_templates）。

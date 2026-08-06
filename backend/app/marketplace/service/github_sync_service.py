@@ -1,7 +1,7 @@
 """
 GitHub Sync Service for Marketplace Skills
 
-Syncs skills from huanxing-hub GitHub repository to database.
+Syncs skills from hasn-hub GitHub repository to database.
 """
 import json
 import os
@@ -169,8 +169,8 @@ class GitHubSyncService:
     """GitHub sync service for marketplace skills"""
 
     def __init__(self) -> None:
-        self.repo_url = getattr(settings, 'HUANXING_HUB_REPO_URL', 'https://github.com/youngshunf/huanxing-hub.git')
-        self.local_path = getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub')
+        self.repo_url = getattr(settings, 'HUANXING_HUB_REPO_URL', 'https://github.com/youngshunf/hasn-hub.git')
+        self.local_path = getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/hasn-hub')
         self.repo: Repo | None = None
 
     async def sync_from_github(

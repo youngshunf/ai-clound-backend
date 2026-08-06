@@ -21,37 +21,37 @@
     {
       "name": "正向: 2026-07-16-r2-02-conversation-seq.sql",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-02-conversation-seq.sql:13: NOTICE:  column \"current_seq\" of relation \"hasn_conversations\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-02-conversation-seq.sql:17: NOTI",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-02-conversation-seq.sql:13: NOTICE:  column \"current_seq\" of relation \"hasn_conversations\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-02-conversation-seq.sql:17: NOTI",
       "seconds": 0.04
     },
     {
       "name": "正向: 2026-07-16-r2-03-conversation-memberships.sql",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-03-conversation-memberships.sql:25: NOTICE:  relation \"hasn_conversation_memberships\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-03-conversation-memberships.sql:42: N",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-03-conversation-memberships.sql:25: NOTICE:  relation \"hasn_conversation_memberships\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-03-conversation-memberships.sql:42: N",
       "seconds": 0.03
     },
     {
       "name": "正向: 2026-07-16-r2-04-integration-events.sql",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-04-integration-events.sql:25: NOTICE:  relation \"hasn_im_integration_events\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-04-integration-events.sql:30: NOTICE:  relatio",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-04-integration-events.sql:25: NOTICE:  relation \"hasn_im_integration_events\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-04-integration-events.sql:30: NOTICE:  relatio",
       "seconds": 0.03
     },
     {
       "name": "正向: 2026-07-16-r2-05-event-consumers.sql",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-05-event-consumers.sql:16: NOTICE:  relation \"hasn_im_event_consumer_offsets\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-05-event-consumers.sql:30: NOTICE:  relation ",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-05-event-consumers.sql:16: NOTICE:  relation \"hasn_im_event_consumer_offsets\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-05-event-consumers.sql:30: NOTICE:  relation ",
       "seconds": 0.03
     },
     {
       "name": "正向: 2026-07-16-r2-07-hasn-sync-append-event.sql",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-07-hasn-sync-append-event.sql:19: NOTICE:  schema \"hasn_sync\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-07-hasn-sync-append-event.sql:25: NOTICE:  column \"producer\" ",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-07-hasn-sync-append-event.sql:19: NOTICE:  schema \"hasn_sync\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-07-hasn-sync-append-event.sql:25: NOTICE:  column \"producer\" ",
       "seconds": 0.03
     },
     {
       "name": "正向: 2026-07-16-r2-11-schema-cutover.sql",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11-schema-cutover.sql:30: NOTICE:  schema \"hasn_sync\" already exists, skipping",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11-schema-cutover.sql:30: NOTICE:  schema \"hasn_sync\" already exists, skipping",
       "seconds": 0.09
     },
     {
@@ -63,7 +63,7 @@
     {
       "name": "权限负测(三角色·旧role写hasn_im/hasn_sync必拒)",
       "ok": true,
-      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11-permission-negative-test.sql:78: NOTICE:  PASS(denied): astra_python_backend 被拒 [INSERT INTO hasn_im.agent_communication_settings(agent_hasn_]\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11",
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11-permission-negative-test.sql:78: NOTICE:  PASS(denied): astra_python_backend 被拒 [INSERT INTO hasn_im.agent_communication_settings(agent_hasn_]\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11",
       "seconds": 0.04
     },
     {

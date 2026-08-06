@@ -17,7 +17,7 @@
 按编号顺序执行（002 依赖 001 的外键，003 依赖 002）：
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 
 uv run fba codegen generate --sql-file backend/sql/app_platform/mvp/001_app_manifests.sql      --app app_platform --execute
 uv run fba codegen generate --sql-file backend/sql/app_platform/mvp/002_app_installations.sql  --app app_platform --execute

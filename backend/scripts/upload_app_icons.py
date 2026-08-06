@@ -39,7 +39,7 @@ from backend.database.db import async_db_session
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import build_object_url, pick_public_storage, write_bytes
 
-# scripts → backend → huanxing-cloud-backend → huanxing-project（兄弟仓 hasn-node 在此层）
+# scripts → backend → hasn-cloud-backend → huanxing-project（兄弟仓 hasn-node 在此层）
 _REPO_PARENT = Path(__file__).resolve().parents[3]
 DEFAULT_SOURCE_DIR = _REPO_PARENT / 'hasn-node' / 'webui' / 'public' / 'app-icons'
 

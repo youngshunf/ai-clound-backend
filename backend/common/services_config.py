@@ -2,13 +2,13 @@
 
 **解决两件事**（取代 `.env` 里逐服务散配的扁平键 `*_SERVICE_URL/TOKEN/TIMEOUT`）：
 
-1. **结构化**：部署值放进一个 TOML 文件 ``huanxing-apps/services.toml``，每服务一个
+1. **结构化**：部署值放进一个 TOML 文件 ``hasn-apps/services.toml``，每服务一个
    ``[service.<name>]`` 块（``url`` / ``timeout`` 可选覆盖），服务再多也一目了然、不膨胀。
 2. **令牌集中**：只配**一个** ``master_secret``，每服务令牌 = ``HMAC-SHA256(master_secret, 服务名)``
    自动派生（:func:`derive_service_token`）。云端发请求按服务名算 token、服务端按自己的名字算同一
    token 来校验——**两边无需各配、无需保持同步**。新增服务零 token 配置（详见 doc25）。
 
-**文件查找**：env ``HUANXING_SERVICES_CONFIG``（显式路径）> 从本文件向上找 ``huanxing-apps/services.toml``。
+**文件查找**：env ``HUANXING_SERVICES_CONFIG``（显式路径）> 从本文件向上找 ``hasn-apps/services.toml``。
 缺文件 = 静默空配（prod 可只用 env ``HUANXING_INTERNAL_SERVICE_SECRET`` 注入主密钥，不依赖文件）。
 **env 同名变量始终优先**（CI / 容器注入 / 运行时覆盖），保证向后兼容。
 
@@ -51,7 +51,7 @@ def _find_config_file() -> Path | None:
         path = Path(explicit)
         return path if path.is_file() else None
     for parent in Path(__file__).resolve().parents:
-        for candidate in (parent / _CONFIG_FILENAME, parent / 'huanxing-apps' / _CONFIG_FILENAME):
+        for candidate in (parent / _CONFIG_FILENAME, parent / 'hasn-apps' / _CONFIG_FILENAME):
             if candidate.is_file():
                 return candidate
     return None

@@ -96,7 +96,7 @@ class MarketplaceSkill(MarketplaceBase):
     )
     download_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='下载次数')
     star_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='星标数')
-    repo_path: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在 huanxing-hub 中的路径')
+    repo_path: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在 hasn-hub 中的路径')
     git_commit_hash: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='最新同步的 commit hash')
     synced_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最后同步时间')
     translated_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最后翻译时间')

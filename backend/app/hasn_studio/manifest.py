@@ -7,7 +7,7 @@ studio 是 **cloud-brokered** AI-Native 应用（对齐 creator/finance/quant，
 - 分身经**云端 MCP** 调 `hasn.studio.*`（Agent MCP Key → `/api/v1/mcp/streamable` → `app_tool_loader` 投影成
   AppTool → `ai_native_runtime_gateway`（transport=gateway_internal）→ 进程内直调云端 handler →
   studio_service（落 hasn_studio PG）→ montage_engine_provider → 内网 REST 调引擎服务
-  （huanxing-apps/montage-engine-service）跑真渲染/出片）。
+  （hasn-apps/montage-engine-service）跑真渲染/出片）。
 - 产品数据权威全在唤星 PG（不变量 #4）；引擎服务无产品表，只持渲染运行态（crash-only 可重跑）。
 
 ⚠️ P3 工具面（read/write 出厂 allow；render/run_pipeline/run_tool/export 出厂 ask）：12 工具走

@@ -1,5 +1,5 @@
 ============================= test session starts ==============================
-platform darwin -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0 -- /Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/.venv/bin/python
+platform darwin -- Python 3.13.5, pytest-9.0.2, pluggy-1.6.0 -- /Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/.venv/bin/python
 rootdir: /Users/mac/openclaw-workspace/huanxing/wt-app-instance
 configfile: pyproject.toml
 plugins: anyio-4.12.1, asyncio-1.3.0, sugar-1.1.1
@@ -36,8 +36,8 @@ backend/app/hasn/model/hasn_conversations.py:13
   /Users/mac/openclaw-workspace/huanxing/wt-app-instance/backend/app/hasn/model/hasn_conversations.py:13: SADeprecationWarning: Callable object passed to the ``default`` parameter for attribute 'id' in a ORM-mapped Dataclasses context is ambiguous, and this use will raise an error in a future release.  If this callable is intended to produce Core level INSERT default values for an underlying ``Column``, use the ``mapped_column.insert_default`` parameter instead.  To establish this callable as providing a default value for instances of the dataclass itself, use the ``default_factory`` dataclasses parameter.
     class HasnConversations(Base):
 
-../huanxing-project/huanxing-cloud-backend/.venv/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:319: 49 warnings
-  /Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/.venv/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:319: PydanticDeprecatedSince20: `json_encoders` is deprecated. See https://docs.pydantic.dev/2.12/concepts/serialization/#custom-serializers for alternatives. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+../huanxing-project/hasn-cloud-backend/.venv/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:319: 49 warnings
+  /Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend/.venv/lib/python3.13/site-packages/pydantic/_internal/_generate_schema.py:319: PydanticDeprecatedSince20: `json_encoders` is deprecated. See https://docs.pydantic.dev/2.12/concepts/serialization/#custom-serializers for alternatives. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     warnings.warn(
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

@@ -107,7 +107,7 @@
 ## 运行测试
 
 ```bash
-# 在 huanxing-cloud-backend/backend 目录下
+# 在 hasn-cloud-backend/backend 目录下
 source ../.venv/bin/activate
 python -m pytest tests/mcp/test_mcp_functional.py -v
 ```

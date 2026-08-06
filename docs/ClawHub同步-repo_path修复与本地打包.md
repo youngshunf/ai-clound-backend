@@ -7,13 +7,13 @@
 
 用户指出了字段使用错误：
 1. ❌ 使用了 `source_repo_path`（这是给第三方 GitHub 仓库路径用的）
-2. ✅ 应该使用 `repo_path`（本地 huanxing-hub 仓库路径）
+2. ✅ 应该使用 `repo_path`（本地 hasn-hub 仓库路径）
 3. ❓ 下载 zip 时应该从 `repo_path` 打包，而不是直接返回 CDN 链接
 
 ## 字段含义澄清
 
 ### repo_path
-- **用途**: 本地 huanxing-hub 仓库中的路径
+- **用途**: 本地 hasn-hub 仓库中的路径
 - **示例**: `clawhub/mnetfairy/insurance-advisor-china`
 - **场景**: 
   - ClawHub 同步的技能
@@ -45,7 +45,7 @@ class MarketplaceSkillSchemaBase(SchemaBase):
     # ... 其他字段
     source_repo_url: str | None = Field(None, description='源仓库 URL')
     source_repo_path: str | None = Field(None, description='源仓库内路径（如 skills/translator-pro，用于 GitHub）')
-    repo_path: str | None = Field(None, description='在 huanxing-hub 中的路径')  # 新增
+    repo_path: str | None = Field(None, description='在 hasn-hub 中的路径')  # 新增
     # ...
 ```
 
@@ -79,14 +79,14 @@ def create_skill_package(repo_path: str, skill_id: str, version: str) -> str:
     从本地 repo_path 创建技能包 zip 文件
     
     Args:
-        repo_path: 技能在 huanxing-hub 中的路径（如 clawhub/owner/slug）
+        repo_path: 技能在 hasn-hub 中的路径（如 clawhub/owner/slug）
         skill_id: 技能 ID
         version: 版本号
     
     Returns:
         临时 zip 文件的路径
     """
-    hub_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub'))
+    hub_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/hasn-hub'))
     skill_dir = hub_path / repo_path
     
     if not skill_dir.exists():
@@ -150,7 +150,7 @@ async def download_skill(db: CurrentSession, skill_id: str, version: str):
    ↓
 3. 下载技能 zip 文件
    ↓
-4. 解压到 huanxing-hub/clawhub/{owner}/{slug}/
+4. 解压到 hasn-hub/clawhub/{owner}/{slug}/
    ↓
 5. 保存 repo_path = "clawhub/{owner}/{slug}"
    ↓
@@ -182,7 +182,7 @@ async def download_skill(db: CurrentSession, skill_id: str, version: str):
 ### 2. 文件验证
 
 ```bash
-$ ls -la huanxing-hub/clawhub/mnetfairy/insurance-advisor-china/
+$ ls -la hasn-hub/clawhub/mnetfairy/insurance-advisor-china/
 -rw-r--r--  1 mac  staff    144 _meta.json
 -rw-r--r--  1 mac  staff  11811 SKILL.md
 drwxr-xr-x  6 mac  staff    192 references/
@@ -224,7 +224,7 @@ drwxr-xr-x  5 mac  staff    160 scripts/
 ```
 ClawHub
   ↓ (同步)
-huanxing-hub (本地文件系统)
+hasn-hub (本地文件系统)
   ├── clawhub/
   │   └── {owner}/
   │       └── {slug}/
@@ -243,7 +243,7 @@ huanxing-hub (本地文件系统)
 需要在 `.env` 中配置：
 
 ```bash
-HUANXING_HUB_LOCAL_PATH='/path/to/huanxing-hub'
+HUANXING_HUB_LOCAL_PATH='/path/to/hasn-hub'
 ```
 
 ## 修改的文件
@@ -269,7 +269,7 @@ HUANXING_HUB_LOCAL_PATH='/path/to/huanxing-hub'
 5. 完整测试验证
 
 ✅ **效果**：
-- 技能文件正确保存到 `huanxing-hub`
+- 技能文件正确保存到 `hasn-hub`
 - `repo_path` 字段正确记录
 - 下载时从本地打包 zip
 - 性能和可控性提升

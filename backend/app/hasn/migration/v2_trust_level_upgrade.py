@@ -7,7 +7,7 @@
 同时更新 isn_contacts.trust_level 注释, hasn_schema 等元数据
 
 用法:
-  cd huanxing-cloud-backend
+  cd hasn-cloud-backend
   python -m backend.app.hasn.migration.v2_trust_level_upgrade
 """
 import asyncio

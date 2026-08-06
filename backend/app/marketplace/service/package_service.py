@@ -26,7 +26,7 @@ class PackageService:
 
     def __init__(self) -> None:
         self.cache_dir = Path(getattr(settings, 'SKILL_PACKAGE_CACHE_DIR', '/tmp/skill-packages'))
-        self.hub_repo_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub'))
+        self.hub_repo_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/hasn-hub'))
 
         # Ensure cache directory exists
         self.cache_dir.mkdir(parents=True, exist_ok=True)

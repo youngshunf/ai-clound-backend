@@ -7,7 +7,7 @@ quant 是 **cloud-brokered** AI-Native 应用（对齐 creator/finance，非 ree
 - 分身经**云端 MCP** 调 `hasn.quant.*`（Agent MCP Key → `/api/v1/mcp/streamable` → `app_tool_loader` 投影成
   AppTool → `ai_native_runtime_gateway`（transport=gateway_internal）→ 进程内直调
   `app/mcp/apps/quant/quant_tool_handlers.py` → `quant_service`（落 hasn_quant PG）→ `quant_engine_provider`
-  → 内网 REST 调引擎服务（huanxing-apps/quant-engine-service）跑真回测）。
+  → 内网 REST 调引擎服务（hasn-apps/quant-engine-service）跑真回测）。
 - 产品数据权威全在唤星 PG（不变量 #3）；引擎服务只持运行态（Redis），不存产品数据。
 
 ⚠️ 本期（P0–P5 回测研究平台，零资金风险）只暴露 5 个回测/读/存工具（出厂 allow）：
@@ -41,7 +41,7 @@ _SCOPE_BACKTEST = 'quant:backtest'
 
 # 引擎内置数据集（quant-engine-service 合成行情，§6；回测无需上传数据，分身按调性选场景）。
 # ⚠️ 须与引擎 CATALOG（真相源）+ webui DATASETS 同源：
-#   huanxing-apps/quant-engine-service/service/datasets.py::CATALOG
+#   hasn-apps/quant-engine-service/service/datasets.py::CATALOG
 #   hasn-node/webui/src/pages/apps/quant/QuantWorkbenchPage.tsx::DATASETS
 # 多标的（ETH/BTC/ADA）× 多形态（震荡/趋势/波动/反转/横盘/暴涨暴跌/牛熊）。仍是合成数据，仅供策略管线验证。
 _DATASETS = [

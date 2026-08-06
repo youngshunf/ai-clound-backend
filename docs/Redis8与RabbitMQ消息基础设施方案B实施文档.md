@@ -7,7 +7,7 @@
 >
 > 架构事实源：[`Redis 8 与 RabbitMQ 消息基础设施迁移方案`](Redis8与RabbitMQ消息基础设施迁移方案.md)
 >
-> 目标仓：`huanxing-cloud-backend` / `huanxing`；涉及 daemon 的任务在 `hasn-node` / `main` 独立实施
+> 目标仓：`hasn-cloud-backend` / `huanxing`；涉及 daemon 的任务在 `hasn-node` / `main` 独立实施
 >
 > 不在本次范围：管理端改造、RabbitMQ 跨地域集群、WebUI 改版、每用户 RabbitMQ 持久队列
 

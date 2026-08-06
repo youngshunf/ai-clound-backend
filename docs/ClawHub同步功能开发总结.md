@@ -213,7 +213,7 @@ LLM_API_KEY='your-llm-key'
 TRANSLATION_MODEL='gpt-5.4-mini'
 
 # 本地路径
-HUANXING_HUB_LOCAL_PATH='/path/to/huanxing-hub'
+HUANXING_HUB_LOCAL_PATH='/path/to/hasn-hub'
 SKILL_PACKAGE_CACHE_DIR='/tmp/skill-packages'
 ```
 

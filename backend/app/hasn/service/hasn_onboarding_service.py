@@ -60,7 +60,7 @@ SMS_CODE_EXPIRE = 1800
 SMS_RATE_PREFIX = 'sms_rate'
 SMS_RATE_EXPIRE = 60
 
-# 默认 Agent 采用 huanxing-hub 的 `assistant`（星诺 💎 首席特助）权威模板：
+# 默认 Agent 采用 hasn-hub 的 `assistant`（星诺 💎 首席特助）权威模板：
 # onboarding 创建时读 marketplace_template 把 SOUL/AGENTS/USER + 技能物化进
 # hasn_agents，与「WebUI 手动创建 assistant」完全等价。模板缺失（云端尚未
 # sync）时回退到下方兜底常量，绝不让 onboarding 因模板缺失而失败。

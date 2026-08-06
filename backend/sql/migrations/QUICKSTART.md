@@ -3,7 +3,7 @@
 ## 快速执行
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 uv run python backend/sql/migrations/run_migration.py
 ```
 

@@ -1,7 +1,7 @@
 # HASN S0/S1 SQL 与 codegen 前置闭环
 
 > 阶段：S0/S1（合并前置任务）
-> 范围：仅 `huanxing-cloud-backend` 服务端轨，迁移式重构，不推倒重写。
+> 范围：仅 `hasn-cloud-backend` 服务端轨，迁移式重构，不推倒重写。
 > 契约源：`docs/openapi-hasn-cloud-v1.yaml`、`sql/errors.md`、`../docs/hasn-node设计文档/46/48/49/50`。
 
 ## S0/S1 执行计划

@@ -45,7 +45,7 @@ backend/sql/hasn/memory/
 ### 4. 执行迁移
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 uv run python backend/sql/migrations/run_migration.py
 ```
 
@@ -165,7 +165,7 @@ WHERE tablename LIKE 'memory_%' OR tablename LIKE '%_turns' OR tablename LIKE 's
 ### 1. 重启后端服务
 
 ```bash
-cd huanxing-cloud-backend
+cd hasn-cloud-backend
 python backend/run.py
 ```
 

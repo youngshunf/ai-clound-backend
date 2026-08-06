@@ -6,7 +6,7 @@
 ## 问题描述
 
 用户反馈：ClawHub 同步的技能有问题
-1. huanxing-hub 仓库中没有实际的技能文件
+1. hasn-hub 仓库中没有实际的技能文件
 2. `source_repo_path` 字段是空的
 
 **根本原因**：同步服务只保存了技能的元数据到数据库，但没有实际下载技能文件到本地仓库。
@@ -31,7 +31,7 @@ async def _download_skill_file(
     Returns:
         Local repo path if successful, None otherwise
     """
-    # Create directory: huanxing-hub/clawhub/{owner}/{slug}
+    # Create directory: hasn-hub/clawhub/{owner}/{slug}
     skill_dir = self.hub_local_path / 'clawhub' / owner_handle / slug
     skill_dir.mkdir(parents=True, exist_ok=True)
     
@@ -128,7 +128,7 @@ if latest_version:
 ### 2. 文件系统验证
 
 ```bash
-$ ls -la huanxing-hub/clawhub/mnetfairy/insurance-advisor-china/
+$ ls -la hasn-hub/clawhub/mnetfairy/insurance-advisor-china/
 total 32
 -rw-r--r--  1 mac  staff    144 May 27 01:41 _meta.json
 drwxr-xr-x  6 mac  staff    192 May 27 01:34 references
@@ -150,7 +150,7 @@ INFO - Extracted and removed zip file
 ## 目录结构
 
 ```
-huanxing-hub/
+hasn-hub/
 └── clawhub/
     └── {owner_handle}/
         └── {slug}/
@@ -201,13 +201,13 @@ export async function downloadClawHubSkillArchive(params: {
 
 ## 配置
 
-需要在 `.env` 中配置 huanxing-hub 路径：
+需要在 `.env` 中配置 hasn-hub 路径：
 
 ```bash
-HUANXING_HUB_LOCAL_PATH='/path/to/huanxing-hub'
+HUANXING_HUB_LOCAL_PATH='/path/to/hasn-hub'
 ```
 
-默认值：`/tmp/huanxing-hub`
+默认值：`/tmp/hasn-hub`
 
 ## 使用示例
 
@@ -232,10 +232,10 @@ async with async_db_session() as db:
 2. 修复 ClawHub API 端点
 3. 修复字段名错误
 4. 集成到同步流程
-5. 验证文件正确下载到 huanxing-hub
+5. 验证文件正确下载到 hasn-hub
 
 ✅ **效果**：
-- 技能文件正确下载到 `huanxing-hub/clawhub/{owner}/{slug}/`
+- 技能文件正确下载到 `hasn-hub/clawhub/{owner}/{slug}/`
 - `source_repo_path` 字段正确保存
 - 支持自动解压 ZIP 文件
 - 完整的错误处理和日志记录

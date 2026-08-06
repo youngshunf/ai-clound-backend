@@ -15,9 +15,9 @@ version) 的 file_hash/version，功能不坏，但拿不到「内容指纹驱�
 
 用法（SCRIPT = backend/sql/marketplace/migrations/2026-06-16-backfill-skill-content-hash.py）：
     # dry-run（默认，只统计不写库）
-    DATABASE_PORT=15432 .venv/bin/python "$SCRIPT" --hub-path /abs/path/to/huanxing-hub
+    DATABASE_PORT=15432 .venv/bin/python "$SCRIPT" --hub-path /abs/path/to/hasn-hub
     # 真跑（加 --execute）
-    DATABASE_PORT=15432 .venv/bin/python "$SCRIPT" --hub-path /abs/path/to/huanxing-hub --execute
+    DATABASE_PORT=15432 .venv/bin/python "$SCRIPT" --hub-path /abs/path/to/hasn-hub --execute
 
 生产：部署最新代码后，可用本脚本立即回填（否则等下次 github_sync/webhook 自动填）。
 """
@@ -95,7 +95,7 @@ async def _backfill(hub_path: Path, *, execute: bool) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description='回填 skill_version.content_hash（doc14 §B1 数据侧）')
-    ap.add_argument('--hub-path', required=True, help='本地 huanxing-hub clone 的绝对路径')
+    ap.add_argument('--hub-path', required=True, help='本地 hasn-hub clone 的绝对路径')
     ap.add_argument('--execute', action='store_true', help='真跑写库（默认 dry-run）')
     args = ap.parse_args()
     asyncio.run(_backfill(Path(args.hub_path).resolve(), execute=args.execute))

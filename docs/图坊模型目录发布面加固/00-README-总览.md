@@ -91,13 +91,13 @@ A 类之所以存在，是因为有三类东西天然在签名工具的覆盖之
 
 ```bash
 # 主 clone 停在 huanxing 不动
-cd /Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend
+cd /Users/mac/openclaw-workspace/huanxing/huanxing-project/hasn-cloud-backend
 git worktree add .worktrees/img4-h-publish-hardening -b fix/img4-h-model-publish-hardening
 ```
 
 - 分支：`fix/img4-h-model-publish-hardening`
-- worktree：`huanxing-cloud-backend/.worktrees/img4-h-publish-hardening`
-- 目标仓 / 主分支：`huanxing-cloud-backend` / `huanxing`
+- worktree：`hasn-cloud-backend/.worktrees/img4-h-publish-hardening`
+- 目标仓 / 主分支：`hasn-cloud-backend` / `huanxing`
 - **禁止从 worktree 直推**：完成后回主 clone `huanxing` → `git fetch origin huanxing` → merge → 主 clone push。
 
 ## 5. 被驳回与舍去的条目（不施工，留档备查）

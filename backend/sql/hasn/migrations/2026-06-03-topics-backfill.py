@@ -5,7 +5,7 @@
 归一回填为 target_hasn_id=topic_id。幂等可重复执行。
 
 运行：
-    cd huanxing-cloud-backend && uv run python backend/sql/hasn/migrations/2026-06-03-topics-backfill.py
+    cd hasn-cloud-backend && uv run python backend/sql/hasn/migrations/2026-06-03-topics-backfill.py
 """
 
 from __future__ import annotations

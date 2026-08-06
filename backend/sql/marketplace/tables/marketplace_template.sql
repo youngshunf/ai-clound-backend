@@ -98,7 +98,7 @@ COMMENT ON COLUMN "public"."marketplace_template"."source_repo_url" IS '源仓�
 COMMENT ON COLUMN "public"."marketplace_template"."source_repo_path" IS '仓库内路径';
 COMMENT ON COLUMN "public"."marketplace_template"."skill_dependencies" IS '依赖的技能ID列表，逗号分隔';
 COMMENT ON COLUMN "public"."marketplace_template"."sop_dependencies" IS '依赖的SOP ID列表，逗号分隔';
-COMMENT ON COLUMN "public"."marketplace_template"."repo_path" IS '在 huanxing-hub 中的路径';
+COMMENT ON COLUMN "public"."marketplace_template"."repo_path" IS '在 hasn-hub 中的路径';
 COMMENT ON COLUMN "public"."marketplace_template"."git_commit_hash" IS '最新同步的 commit hash';
 COMMENT ON COLUMN "public"."marketplace_template"."synced_at" IS '最后同步时间';
 COMMENT ON COLUMN "public"."marketplace_template"."translated_at" IS '最后翻译时间';

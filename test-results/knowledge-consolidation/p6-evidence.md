@@ -1,7 +1,7 @@
 # 知识库实例/凭据收编迁移 — P6 真实验证证据
 
 > 实施文档：`docs/hasn-node设计文档/14-AI-Native应用平台/实施/03-知识库实例与凭据收编迁移实施.md`
-> 仓库：`huanxing-cloud-backend`（fork，主分支 `huanxing`）
+> 仓库：`hasn-cloud-backend`（fork，主分支 `huanxing`）
 > worktree 分支：`feat/knowledge-instance-credential-consolidation`
 > 日期：2026-06-06　数据库：本地 PostgreSQL 16 `huanxing@127.0.0.1:15432`
 

@@ -41,7 +41,7 @@ def _find_newapi_root() -> pathlib.Path | None:
     找不到就返回 None——跨仓行会**如实跳过**，不假装验证过。
     """
     for parent in _BACKEND.parents:
-        for candidate in (parent / '.worktrees' / '94-newapi', parent / 'huanxing-apps' / 'new-api'):
+        for candidate in (parent / '.worktrees' / '94-newapi', parent / 'hasn-apps' / 'new-api'):
             if (candidate / 'model').is_dir():
                 return candidate
     return None

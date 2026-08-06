@@ -1,7 +1,7 @@
 # HASN 模块合并总结
 
 > 日期：2026-03-23
-> 范围：huanxing-cloud-backend 后端
+> 范围：hasn-cloud-backend 后端
 
 ---
 

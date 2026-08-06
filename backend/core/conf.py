@@ -308,7 +308,7 @@ class Settings(BaseSettings):
     FIRECRAWL_BASE_URL: str = ''  # firecrawl 服务地址，如 http://firecrawl-svc.internal:3002
     FIRECRAWL_API_KEY: str = ''  # firecrawl API Key（自托管可空）
 
-    # 获客深爬服务（lead-crawler-service，独立部署，doc93 §3.1·huanxing-apps B 类）：Scrapy 有独立
+    # 获客深爬服务（lead-crawler-service，独立部署，doc93 §3.1·hasn-apps B 类）：Scrapy 有独立
     # Twisted reactor 与 FastAPI async 冲突 → 独立内部服务。ScrapyProvider（yellow_pages/b2b）
     # 经此 cloud-brokered 中转 POST /v1/crawl 出详情页线索。为空时 provider 归一 service_unconfigured
     # （prod 未配诚实不出数·零 fake）。Bearer 令牌由 services.toml master_secret 派生（对齐 finance/quant）。
@@ -676,8 +676,8 @@ class Settings(BaseSettings):
     # [ Marketplace ] 技能市场配置
     ##################################################
     # GitHub 仓库配置
-    HUANXING_HUB_REPO_URL: str = 'https://github.com/youngshunf/huanxing-hub.git'
-    HUANXING_HUB_LOCAL_PATH: str = '/tmp/huanxing-hub'
+    HUANXING_HUB_REPO_URL: str = 'https://github.com/youngshunf/hasn-hub.git'
+    HUANXING_HUB_LOCAL_PATH: str = '/tmp/hasn-hub'
 
     # GitHub Webhook 配置
     GITHUB_WEBHOOK_SECRET: str = ''  # 生产环境在 .env 中设置

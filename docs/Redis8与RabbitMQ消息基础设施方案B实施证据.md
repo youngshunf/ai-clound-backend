@@ -4,7 +4,7 @@
 >
 > 首次采集：2026-07-29 23:55—2026-07-30 00:12 CST
 >
-> 后端基线：`huanxing-cloud-backend@d64337a26`
+> 后端基线：`hasn-cloud-backend@d64337a26`
 >
 > 实施分支：`fix/rabbitmq-b-celery`
 >

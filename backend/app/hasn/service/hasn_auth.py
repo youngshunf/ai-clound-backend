@@ -440,7 +440,7 @@ def _render_profile_vars(
 
     Agent 一旦创建，profile 即权威源——替换只在此处（写 hasn_agents 行前）做一次，
     serve/runtime 端不再替换，owner 记忆合并直接写完整正文，绝不残留 {{}}。
-    占位符集合与 huanxing-hub/templates/README.md、hasn-node render_agent_template 对齐。
+    占位符集合与 hasn-hub/templates/README.md、hasn-node render_agent_template 对齐。
     None / 无占位符则原样返回。
     """
     if not text:

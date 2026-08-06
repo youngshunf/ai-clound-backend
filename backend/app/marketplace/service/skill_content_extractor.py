@@ -1,7 +1,7 @@
 """Shared SKILL.md content extraction for marketplace syncs.
 
 Both syncs land a skill's files on disk before writing the DB row — github_sync
-from a huanxing-hub checkout, clawhub_sync from an extracted ClawHub zip — so the
+from a hasn-hub checkout, clawhub_sync from an extracted ClawHub zip — so the
 on-disk skill directory is the single source for the detail-page content fields:
 
 - the Markdown **body** (everything after the YAML frontmatter), and
