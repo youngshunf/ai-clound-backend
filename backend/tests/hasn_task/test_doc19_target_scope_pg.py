@@ -1,6 +1,6 @@
 """doc19 S4：内置任务 target_scope 广播语义 + memory_review 条目真实 PG 验收（零 mock，末尾回滚）。
 
-设计事实源：docs/hasn-node设计文档/02-记忆与知识库/19-多节点记忆分层与分身自治整理设计.md §9 / 决策 D-24
+设计事实源：docs/产品与技术/技术设计/02-平台能力/记忆与知识库/01-记忆领域与数据权威.md（分身自产片整理边界）
 
 核心心智：`hasn_task.task` 上有 uq_task_owner_builtin_key (owner_id, builtin_key) 唯一索引，
 一个 owner 同一 builtin_key 只能有一行存活；播种幂等键 `bts_{owner}_{builtin_key}` 同样是

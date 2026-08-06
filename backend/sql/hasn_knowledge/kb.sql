@@ -4,7 +4,7 @@
 -- 表名去冗余前缀 + schema 限定：hasn_knowledge.kb / folder / document / document_version / agent_kb_grant
 -- 共享表（资产 public.hasn_assets、身份 public.hasn_humans/hasn_agents）跨 schema 全限定引用
 -- 生成：uv run fba codegen generate --sql-file backend/sql/hasn_knowledge/kb.sql --app hasn_knowledge --schema hasn_knowledge --execute
--- 设计事实源：docs/hasn-node设计文档/02-记忆与知识库/知识库AI-Native应用重设计（RAGFlow处理后端）.md §2.2
+-- 设计事实源：docs/产品与技术/技术设计/02-平台能力/记忆与知识库/04-知识库应用与权限边界.md §3.1
 -- =====================================================
 CREATE SCHEMA IF NOT EXISTS "hasn_knowledge";
 

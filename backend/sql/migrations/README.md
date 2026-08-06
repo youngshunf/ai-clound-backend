@@ -136,5 +136,5 @@ DROP TABLE IF EXISTS "public"."memory_namespace_revisions";
 
 ## 相关文档
 
-- 记忆系统设计：`docs/hasn-node设计文档/02-记忆与知识库/04-记忆数据结构与存储.md`
+- 记忆系统当前事实源：`docs/产品与技术/技术设计/02-平台能力/记忆与知识库/01-记忆领域与数据权威.md`
 - 后端开发规范：`CLAUDE.md`

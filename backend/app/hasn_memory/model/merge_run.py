@@ -8,7 +8,7 @@
   主脑下轮重跑，不静默停摆。
 
 `run_id` 即 `semantic_fact.merge_verdict_run` 指向的轮次（该列组不建外键，§3.2）。
-设计事实源：docs/hasn-node设计文档/02-记忆与知识库/19-多节点记忆分层与分身自治整理设计.md §5.5/§5.6
+设计事实源：docs/产品与技术/技术设计/02-平台能力/记忆与知识库/01-记忆领域与数据权威.md（合并轮次与节点合并规则）
 """
 
 from datetime import datetime

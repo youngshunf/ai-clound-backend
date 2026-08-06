@@ -1,5 +1,5 @@
 -- 迁移：记忆系统 7 张表从 public 搬入独立 PG schema hasn_memory（ADR-15：AI-Native 应用一应用一 schema）。
--- 配套 `docs/hasn-node设计文档/02-记忆与知识库/实施/95-记忆独立模块与schema拆分方案.md`。
+-- 配套 `docs/产品与技术/技术设计/02-平台能力/记忆与知识库/归档/2026-08-06-旧记忆与知识库设计/旧域/实施/95-记忆独立模块与schema拆分方案.md`。
 -- 记忆子系统按 ADR-15 收编为独立模块 app/hasn_memory；本迁移补齐云端轴①（schema 隔离）。
 --
 -- 7 张表（public → hasn_memory，schema 内去 hasn_/memory_ 冗余前缀）：

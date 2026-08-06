@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """一次性数据迁移：app/huanxing 文档子域 → 知识库原生文档（D9 收编）。
 
-设计：docs/hasn-node设计文档/02-记忆与知识库/知识库AI-Native应用重设计（RAGFlow处理后端）.md §7.1。
+设计：docs/产品与技术/技术设计/02-平台能力/记忆与知识库/04-知识库应用与权限边界.md §7.1。
 
     huanxing_document_folder → hasn_knowledge.folder（树结构保持）
     huanxing_document        → hasn_knowledge.document(kind=native) + document_version(v1)

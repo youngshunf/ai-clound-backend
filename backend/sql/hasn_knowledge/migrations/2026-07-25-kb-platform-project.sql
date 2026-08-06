@@ -3,7 +3,7 @@
 -- 纯组织列：不碰权限、不动 RAGFlow dataset 与索引；NULL = 未挂靠，置 NULL 即摘出且资源本体不动。
 -- 外键指 hasn_project.hasn_project(id)，ON DELETE SET NULL（项目 v1 只归档不硬删，此处兜底）。
 -- 幂等：ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS；存量行为 NULL（零行为变化）。
--- 设计事实源：docs/hasn-node设计文档/02-记忆与知识库/知识库AI-Native应用重设计（RAGFlow处理后端）.md §3.4
+-- 设计事实源：docs/产品与技术/技术设计/02-平台能力/记忆与知识库/04-知识库应用与权限边界.md §7
 --             docs/hasn-node设计文档/14-AI-Native应用平台/38-项目管理一级应用(平台项目·联邦挂靠)设计.md §3.2/§5.5
 -- =====================================================
 ALTER TABLE "hasn_knowledge"."kb"

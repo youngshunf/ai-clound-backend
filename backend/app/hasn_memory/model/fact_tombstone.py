@@ -7,7 +7,7 @@ warn）并回令来源节点清理本地行与残留 op。
 
 落 `hasn_memory` schema（继承 HasnMemoryBase）；主键是被删事实自身的 `fact_id`，不用 fba
 自增 id——墓碑的唯一性判据就是「这个 fact_id 已被永久删除」。
-设计事实源：docs/hasn-node设计文档/02-记忆与知识库/19-多节点记忆分层与分身自治整理设计.md §4.5
+设计事实源：docs/产品与技术/技术设计/02-平台能力/记忆与知识库/01-记忆领域与数据权威.md（删除与墓碑规则）
 """
 
 from datetime import datetime

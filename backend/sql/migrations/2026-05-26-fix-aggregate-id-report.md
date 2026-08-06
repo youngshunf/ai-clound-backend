@@ -155,4 +155,4 @@ ORDER BY table_name, column_name;
 
 - 迁移 SQL: `backend/sql/migrations/2026-05-26-fix-hasn-sync-events-aggregate-id-length.sql`
 - 源文件: `backend/sql/hasn/hasn_sync_events.sql`
-- 记忆系统设计: `docs/hasn-node设计文档/02-记忆与知识库/`
+- 记忆系统当前事实源: `docs/产品与技术/技术设计/02-平台能力/记忆与知识库/README.md`

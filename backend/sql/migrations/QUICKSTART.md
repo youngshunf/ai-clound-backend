@@ -48,7 +48,7 @@ asyncio.run(check())
 - **执行脚本**: `backend/sql/migrations/run_migration.py`
 - **详细文档**: `backend/sql/migrations/README.md`
 - **迁移报告**: `backend/sql/migrations/2026-05-26-migration-report.md`
-- **总结文档**: `docs/hasn-node设计文档/02-记忆与知识库/MEMORY-MIGRATION-SUMMARY.md`
+- **当前事实源**: `docs/产品与技术/技术设计/02-平台能力/记忆与知识库/README.md`
 
 ## 回滚
 
