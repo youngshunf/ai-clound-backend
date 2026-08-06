@@ -83,6 +83,23 @@ def _next_patch_version(versions: list[str]) -> str:
     return f'{highest[0]}.{highest[1]}.{highest[2] + 1}'
 
 
+def _ensure_commit_lock_transition(*, tag_status: str, locked_commit: str, confirmed_commit: str) -> None:
+    """判定「confirm-tag 能否把批次的锁定 commit 前移到 confirmed_commit」。
+
+    prepare 写入的 `source_commit` 只是**候选基线**：第一台机器随后要在 main 上补一个
+    「把版本号写进源码」的提交，release tag 必须指向那个提交，源码里的版本才等于发布版本
+    （`git show v{x.y.z}:Cargo.toml` 才对得上）。所以 tag 未 ready 之前允许前移锁定点。
+
+    一旦 tag_status 变成 ready（已经有平台按它检出并构建过），基线即冻结：同一批次四平台
+    必须同 commit，中途换基线会做出「版本号相同、内容不同」的包。
+    """
+    if tag_status == 'ready' and confirmed_commit.lower() != locked_commit.lower():
+        raise errors.RequestError(
+            msg=f'批次已锁定在 {locked_commit}，不接受改到 {confirmed_commit}；'
+            f'需要换基线请作废批次后重新 prepare'
+        )
+
+
 def _normalize_release_notes(raw: str, *, max_chars: int = _RELEASE_NOTES_MAX_CHARS) -> str:
     """清理 LLM 输出并保留 Markdown 结构，确定性限制源码长度。"""
     text_value = (raw or '').strip()
@@ -221,6 +238,7 @@ class ReleaseService:
             text('SELECT pg_advisory_xact_lock(hashtext(:lock_key))'),
             {'lock_key': f'hasn_release:desktop:{channel}'},
         )
+        requested_version = (req.requested_version or '').strip()
         active = (
             await db.execute(
                 select(AppRelease)
@@ -234,12 +252,29 @@ class ReleaseService:
             )
         ).scalar_one_or_none()
         if active is not None:
+            # 后来的机器加入既有批次。显式指定了别的版本号时必须报错而不是静默沿用批次版本：
+            # 同一批次四平台必须同版本同 commit，想换版本只能先补齐或作废这个批次。
+            if requested_version and requested_version != active.version:
+                raise errors.RequestError(
+                    msg=f'{channel} 频道已有进行中的 {active.version} 批次（{active.release_tag}），'
+                    f'无法按 {requested_version} 发布；请先补齐该批次，或作废后重新 prepare'
+                )
             return self._to_batch(active)
 
         versions = list(
             (await db.execute(select(AppRelease.version).where(AppRelease.channel == channel))).scalars().all()
         )
-        version = _next_patch_version(versions)
+        if requested_version:
+            # 指定版本只允许往上走：回退或重号会让 updater 把老包当新版推给已装机用户。
+            highest = max((_semver_tuple(version) for version in versions), default=(0, 0, 0))
+            if _semver_tuple(requested_version) <= highest:
+                raise errors.RequestError(
+                    msg=f'指定版本 {requested_version} 不高于 {channel} 频道历史最高版本 '
+                    f'{".".join(str(part) for part in highest)}，版本号只能往上走'
+                )
+            version = requested_version
+        else:
+            version = _next_patch_version(versions)
         release_tag = f'v{version}'
         previous = (
             await db.execute(
@@ -470,16 +505,20 @@ class ReleaseService:
         release = (await db.execute(select(AppRelease).where(AppRelease.id == release_id))).scalar_one_or_none()
         if release is None or not release.release_tag or not release.source_commit:
             raise errors.NotFoundError(msg='发布批次不存在')
-        if req.source_commit.lower() != release.source_commit.lower():
-            raise errors.RequestError(
-                msg=f'release tag commit 不符：云端={release.source_commit}，本机={req.source_commit}'
-            )
+
+        confirmed_commit = req.source_commit.lower()
+        _ensure_commit_lock_transition(
+            tag_status=str(release.tag_status or ''),
+            locked_commit=str(release.source_commit),
+            confirmed_commit=confirmed_commit,
+        )
 
         remote_commit = await self._resolve_remote_tag_commit(release.release_tag)
-        if remote_commit != release.source_commit.lower():
+        if remote_commit != confirmed_commit:
             raise errors.RequestError(
-                msg=f'远端 {release.release_tag} 指向 {remote_commit}，不是云端锁定的 {release.source_commit}'
+                msg=f'远端 {release.release_tag} 指向 {remote_commit}，不是本机确认的 {confirmed_commit}'
             )
+        release.source_commit = confirmed_commit
         release.tag_status = 'ready'
         release.tag_created_time = release.tag_created_time or timezone.now()
 
