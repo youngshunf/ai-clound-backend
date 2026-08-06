@@ -1,17 +1,51 @@
 """桌面端发布批次纯函数测试。"""
 
+import pytest
+
 from backend.app.hasn_release.schema.release import REQUIRED_DESKTOP_PLATFORMS
 from backend.app.hasn_release.service.release_service import (
     _completed_platforms,
+    _ensure_commit_lock_transition,
     _next_patch_version,
     _normalize_release_notes,
     _should_generate_release_notes,
 )
+from backend.common.exception import errors
 
 
 def test_next_patch_version_uses_highest_allocated_version() -> None:
     assert _next_patch_version(['0.3.0', '0.3.2', '0.3.1']) == '0.3.3'
     assert _next_patch_version([]) == '0.0.1'
+
+
+def test_commit_lock_allows_moving_forward_before_tag_ready() -> None:
+    """tag 未 ready 前允许把锁定点前移到「写入版本号」的那个提交。"""
+    _ensure_commit_lock_transition(
+        tag_status='pending',
+        locked_commit='a' * 40,
+        confirmed_commit='b' * 40,
+    )
+
+
+def test_commit_lock_freezes_after_tag_ready() -> None:
+    """tag 已 ready 说明有平台按它构建过，此时换基线会做出同版本号不同内容的包。"""
+    with pytest.raises(errors.RequestError) as excinfo:
+        _ensure_commit_lock_transition(
+            tag_status='ready',
+            locked_commit='a' * 40,
+            confirmed_commit='b' * 40,
+        )
+    assert 'a' * 40 in excinfo.value.msg
+    assert 'b' * 40 in excinfo.value.msg
+
+
+def test_commit_lock_ready_accepts_same_commit_case_insensitively() -> None:
+    """后续平台重复确认同一个 commit 是幂等的，大小写不该造成误拒。"""
+    _ensure_commit_lock_transition(
+        tag_status='ready',
+        locked_commit='A' * 40,
+        confirmed_commit='a' * 40,
+    )
 
 
 def test_normalize_release_notes_preserves_markdown_and_caps_500_chars() -> None:

@@ -126,7 +126,14 @@ class PrepareReleaseRequest(SchemaBase):
         min_length=40,
         max_length=64,
         pattern=r'^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$',
-        description='第一台机器看到的 origin/main Git commit',
+        description='第一台机器看到的 origin/main Git commit（候选基线，可在 confirm-tag 时前移到版本提交）',
+    )
+    requested_version: str | None = Field(
+        default=None,
+        max_length=32,
+        pattern=r'^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$',
+        description='显式指定本次版本号；不传则按同频道历史最高 semver 自动 patch+1。'
+        '指定值必须严格大于历史最高版本（不允许回退或重号）',
     )
 
 

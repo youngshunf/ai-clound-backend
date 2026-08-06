@@ -31,6 +31,7 @@ from backend.app.hasn_release.model import AppRelease, ReleaseAsset, ReleaseBuil
 from backend.app.hasn_release.schema.release import (
     CiCallbackRequest,
     GithubBuildRequest,
+    PrepareReleaseRequest,
     PublishReleaseRequest,
     ReleaseAssetInput,
 )
@@ -99,6 +100,24 @@ def _asset(target: str, kind: str, *, sig: str | None = None, url: str | None = 
         file_size=1234,
         sha256='a' * 64,
         signature=sig,
+    )
+
+
+def _prepare_req(
+    *,
+    channel: str = 'beta',
+    source_commit: str = 'a' * 40,
+    requested_version: str | None = None,
+) -> PrepareReleaseRequest:
+    """发布批次 prepare 请求。
+
+    默认走 beta 频道：stable 里是真实发布版本，测试在那儿自动分配会取到真实的下一个
+    版本号并留下一行不在 99.x 清理范围内的脏数据。
+    """
+    return PrepareReleaseRequest(
+        channel=channel,
+        source_commit=source_commit,
+        requested_version=requested_version,
     )
 
 
@@ -342,6 +361,51 @@ async def test_github_build_without_config_queues_with_reason(session: AsyncSess
     )
     assert build.status == 'queued'
     assert build.error_message and '未配置' in build.error_message
+
+
+async def test_prepare_allocates_patch_bump_from_highest(session: AsyncSession) -> None:
+    """不指定版本时按同频道历史最高 semver 自动 patch+1。"""
+    await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
+    batch = await release_service.prepare_release(session, _prepare_req())
+    assert batch.version == '99.5.1'
+    assert batch.release_tag == 'v99.5.1'
+    assert batch.source_commit == 'a' * 40
+
+
+async def test_prepare_accepts_explicitly_higher_version(session: AsyncSession) -> None:
+    """显式指定更高版本是发 minor/major 的正路，不必再手改仓内版本号。"""
+    await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
+    batch = await release_service.prepare_release(session, _prepare_req(requested_version='99.6.0'))
+    assert batch.version == '99.6.0'
+    assert batch.release_tag == 'v99.6.0'
+
+
+async def test_prepare_rejects_version_not_higher_than_history(session: AsyncSession) -> None:
+    """版本号只能往上走：回退或重号会让 updater 把老包当新版推给已装机用户。"""
+    await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
+    for requested in ('99.5.0', '99.4.9'):
+        with pytest.raises(errors.RequestError) as excinfo:
+            await release_service.prepare_release(session, _prepare_req(requested_version=requested))
+        assert requested in str(excinfo.value.msg)
+
+
+async def test_prepare_joins_draft_but_rejects_conflicting_version(session: AsyncSession) -> None:
+    """加入既有批次时不得静默改版本号：同批次四平台必须同版本同 commit。"""
+    await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
+    first = await release_service.prepare_release(session, _prepare_req())
+
+    # 后来的平台不带指定版本 → 加入同一批次，拿到同样的版本/tag/锁定 commit
+    joined = await release_service.prepare_release(session, _prepare_req(source_commit='c' * 40))
+    assert (joined.id, joined.version, joined.source_commit) == (
+        first.id,
+        first.version,
+        first.source_commit,
+    )
+
+    # 带一个不同的指定版本 → 必须报错，而不是沿用批次版本让操作者以为发的是 99.9.0
+    with pytest.raises(errors.RequestError) as excinfo:
+        await release_service.prepare_release(session, _prepare_req(requested_version='99.9.0'))
+    assert first.version in str(excinfo.value.msg)
 
 
 async def test_delete_cascades_assets(session: AsyncSession) -> None:
