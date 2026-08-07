@@ -13,7 +13,7 @@ import logging
 
 from typing import TYPE_CHECKING, Any
 
-from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_core import identity
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 async def resolve_owner_human(db: AsyncSession, request: Request) -> Any:
     """登录用户 → HASN 主人身份行（``HasnHumans``）。"""
-    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
     return human

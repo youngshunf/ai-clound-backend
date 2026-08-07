@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from backend.app.hasn.model import HasnAppCredential
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.newapi.crud import llm_newapi_user_mapping_dao
 from backend.common.exception import errors
 from backend.common.security.encryption import key_encryption
@@ -129,9 +129,8 @@ def _byo_families(families: list[str] | None) -> list[str]:
 
 async def _owner_user_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
     """owner hasn_id（h_xxx）→ 唤星平台 user_id；无映射返回 None。"""
-    stmt = sa.select(HasnHumans.user_id).where(HasnHumans.hasn_id == owner_hasn_id)
-    user_id = (await db.execute(stmt)).scalars().first()
-    return int(user_id) if user_id else None
+    human = await identity.get_human(db, hasn_id=owner_hasn_id)
+    return int(human.user_id) if human and human.user_id else None
 
 
 # ============================ (a) 网关路凭据 ============================

@@ -81,19 +81,16 @@ _APP_MODULES = (
 # 的分身归属+在架校验改用新增的 identity.agent_owned_by(require_active=...)；
 # builtin_seeding_service.py 改用新增的 identity.active_agent_refs_of_owner /
 # agents_of_owner（AgentRef 新增 builtin_agent_key 字段）。
+#
+# I4（hasn_creator/hasn_project/hasn_deck/hasn_publish/hasn_studio/hasn_designsystem/
+# hasn_knowledge，2026-08-06）：9 个文件（scope_context.py/plan_authz.py 除外）全部迁移至
+# 零违规并从本表删除。project_app_service.py 的 bound_agent_id 校验语义是"归属 + 未软删但
+# 不要求在架"，与 agent_owned_by(require_active=True) 不同形，改用 identity.get_agent 后在
+# 调用方核对 owner_id/deleted_at，未新增 façade 形状（避免为单一调用点堆参数组合）。
 _WHITELIST = frozenset({
     'hasn_community/service/community_service.py',
-    'hasn_deck/api/v1/app/deck.py',
-    'hasn_plan/api/v1/app/plan.py',
-    'hasn_plan/service/plan_authz.py',
-    'hasn_publish/api/v1/app/site.py',
-    'hasn_studio/service/media_credentials.py',
-    'hasn_creator/service/creator_service.py',
     'hasn_creator/service/scope_context.py',
-    'hasn_designsystem/api/v1/app/designsystem.py',
-    'hasn_knowledge/api/v1/app/knowledge.py',
-    'hasn_project/api/v1/app/_common.py',
-    'hasn_project/service/project_app_service.py',
+    'hasn_plan/service/plan_authz.py',
 })
 
 
