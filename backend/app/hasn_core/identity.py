@@ -82,6 +82,7 @@ class AgentRef:
     profession: str | None
     bio: str | None
     description: str | None
+    builtin_agent_key: str | None
 
     @classmethod
     def from_model(cls, m: Any) -> AgentRef:
@@ -95,6 +96,7 @@ class AgentRef:
             profession=m.profession,
             bio=m.bio,
             description=m.description,
+            builtin_agent_key=m.builtin_agent_key,
         )
 
 
@@ -177,6 +179,15 @@ class IdentityFacade:
             stmt = stmt.where(HasnAgents.status == 'active', HasnAgents.deleted_at.is_(None))
         model = (await db.execute(stmt)).scalars().first()
         return AgentRef.from_model(model) if model is not None else None
+
+    async def active_agent_refs_of_owner(self, db: AsyncSession, *, owner_hasn_id: str) -> Sequence[AgentRef]:
+        """按 owner_hasn_id 取该主人名下**在架**（status=='active'）分身只读投影，按创建时间正序。
+
+        与既有 `active_agents_of_owner` 同一 DAO 查询、同一顺序，仅把返回形状从 ORM 换成 DTO；
+        只想要 ORM（如需继续 `db.add`/`db.flush` 该行）用旧方法，仅需读展示/匹配字段用本方法。
+        """
+        rows = await hasn_agents_dao.get_active_agents_by_owner(db, owner_hasn_id)
+        return [AgentRef.from_model(m) for m in rows]
 
     async def agents_of_owner(self, db: AsyncSession, *, owner_hasn_id: str) -> Sequence[AgentRef]:
         """按 owner_hasn_id 取该主人名下**全部**分身（不筛状态），按创建时间倒序。

@@ -75,6 +75,12 @@ _APP_MODULES = (
 # 匹配 + 粉丝数相关子查询排序 + 分页的"身份目录搜索"能力——不是清单描述的 A/B 档点查，
 # 也不是 C 档企业 JOIN，是清单现状实测未识别的第三类复杂度，需要独立设计（详见本次施工报告），
 # 本次不擅自处理。
+#
+# I3（hasn_growth ×6 + hasn_copilot ×4 + hasn_task ×3，2026-08-06）：13 个文件全部迁移至
+# 零违规并从本表删除。growth_profile_service.py / meetings_service.py / copilot_service.py
+# 的分身归属+在架校验改用新增的 identity.agent_owned_by(require_active=...)；
+# builtin_seeding_service.py 改用新增的 identity.active_agent_refs_of_owner /
+# agents_of_owner（AgentRef 新增 builtin_agent_key 字段）。
 _WHITELIST = frozenset({
     'hasn_community/service/community_service.py',
     'hasn_deck/api/v1/app/deck.py',
@@ -84,20 +90,7 @@ _WHITELIST = frozenset({
     'hasn_studio/service/media_credentials.py',
     'hasn_creator/service/creator_service.py',
     'hasn_creator/service/scope_context.py',
-    'hasn_growth/service/growth_profile_service.py',
-    'hasn_growth/service/scope_context.py',
-    'hasn_growth/service/form_service.py',
-    'hasn_growth/service/project_lead_service.py',
-    'hasn_growth/service/business_service.py',
-    'hasn_growth/service/outreach_service.py',
     'hasn_designsystem/api/v1/app/designsystem.py',
-    'hasn_copilot/api/v1/app/meetings.py',
-    'hasn_copilot/api/v1/app/copilot.py',
-    'hasn_copilot/service/meetings_service.py',
-    'hasn_copilot/service/copilot_service.py',
-    'hasn_task/api/v1/app/skill_bundle.py',
-    'hasn_task/api/v1/app/task.py',
-    'hasn_task/service/builtin_seeding_service.py',
     'hasn_knowledge/api/v1/app/knowledge.py',
     'hasn_project/api/v1/app/_common.py',
     'hasn_project/service/project_app_service.py',

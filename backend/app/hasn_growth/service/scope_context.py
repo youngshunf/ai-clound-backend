@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 
 if TYPE_CHECKING:
@@ -67,9 +67,8 @@ class GrowthScope:
 
 
 async def _resolve_owner_hasn_id(db: AsyncSession, user_id: int) -> str | None:
-    return (
-        await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))
-    ).scalars().first()
+    human = await identity.get_human_by_user_id(db, user_id=user_id)
+    return human.hasn_id if human else None
 
 
 async def _active_enterprise_id(db: AsyncSession, owner_hasn_id: str) -> int | None:

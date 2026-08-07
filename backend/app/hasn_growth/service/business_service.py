@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.hasn_growth.model import (
     LeadAuditLog,
     LeadCollectionJob,
@@ -426,9 +426,8 @@ class LeadAutomationBusinessService:
         )
         # M6 通知卡片：新线索批次落库 → 提醒发起者去筛（有发起者 + 有新增有效线索时）。
         if job.user_id and job.valid_count > 0:
-            owner_hasn_id = (
-                await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == job.user_id))
-            ).scalar_one_or_none()
+            owner_human = await identity.get_human_by_user_id(db, user_id=job.user_id)
+            owner_hasn_id = owner_human.hasn_id if owner_human else None
             if owner_hasn_id:
                 await growth_notification_service.leads_collected_batch(
                     db,

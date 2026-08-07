@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
 from backend.app.hasn_growth.model.customer import Customer
@@ -1239,14 +1239,10 @@ class ProjectLeadService:
             require_writable=True,
         )
         normalized_assignee = assignee.strip()
+        assignee_human = await identity.get_human(db, hasn_id=normalized_assignee)
         assignee_user_id = (
-            await db.execute(
-                sa.select(HasnHumans.user_id).where(
-                    HasnHumans.hasn_id == normalized_assignee,
-                    HasnHumans.status == 'active',
-                )
-            )
-        ).scalar_one_or_none()
+            assignee_human.user_id if assignee_human and assignee_human.status == 'active' else None
+        )
         membership = (
             await db.execute(
                 sa.select(HasnEnterpriseMembership.id).where(
