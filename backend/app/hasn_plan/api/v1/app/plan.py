@@ -16,7 +16,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Path, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_core import identity
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_plan.service.plan_authz import active_enterprise_id
 from backend.app.hasn_plan.service.plan_notify import notify_invited
@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 async def _resolve_owner_human(db: AsyncSession, request: Request) -> Any:
     """登录用户 → HASN 主人身份行（`HasnHumans`）。"""
-    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
     return human

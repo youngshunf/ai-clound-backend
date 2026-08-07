@@ -23,7 +23,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission
@@ -134,9 +134,7 @@ class GrowthFormService:
                 msg='落地页未绑定可用的获客项目',
                 data={'error_code': 'GROWTH_FORM_PROJECT_UNAVAILABLE'},
             )
-        human = (
-            await db.execute(sa.select(HasnHumans).where(HasnHumans.hasn_id == binding['owner_hasn_id']))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=binding['owner_hasn_id'])
         if not human or human.user_id != project.user_id:
             raise errors.NotFoundError(msg='落地页归属主人不存在')
         return human.user_id, binding['owner_hasn_id'], project

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.authz.deps import DependsResourceAccess
-from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_core import identity
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -86,7 +86,7 @@ class AddShareRequest(BaseModel):
 
 async def _resolve_owner(db: CurrentSession, request: Request) -> str:
     """登录用户 → HASN 主人 hasn_id。"""
-    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
     return human.hasn_id

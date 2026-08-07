@@ -71,11 +71,16 @@ def test_agent_ref_from_model_renames_owner_id() -> None:
         avatar=None,
         profession='全能助理',
         bio='b',
+        description='d',
+        builtin_agent_key='assistant',
     )
     ref = AgentRef.from_model(m)
     assert ref.owner_hasn_id == 'h_1'  # 模型 owner_id → DTO owner_hasn_id
     assert ref.hasn_id == 'a_1'
     assert ref.profession == '全能助理'
+    assert ref.bio == 'b'
+    assert ref.description == 'd'
+    assert ref.builtin_agent_key == 'assistant'
 
 
 # ---- (3) façade 点查薄委派 DAO ----

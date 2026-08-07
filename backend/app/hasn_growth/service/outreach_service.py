@@ -28,7 +28,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.hasn_core.app_platform import app_catalog_service
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.customer import Customer
@@ -2220,9 +2220,8 @@ class GrowthOutreachService:
             metadata={'activity_id': activity.id},
         )
         # M6 通知卡片：客户回复 → 提醒主人（J3 即时跟进的人侧提醒）。owner hasn_id 由 user_id 解析。
-        owner_hasn_id = (
-            await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))
-        ).scalar_one_or_none()
+        owner_human = await identity.get_human_by_user_id(db, user_id=user_id)
+        owner_hasn_id = owner_human.hasn_id if owner_human else None
         if owner_hasn_id:
             await growth_notification_service.inbound_reply_received(
                 db,

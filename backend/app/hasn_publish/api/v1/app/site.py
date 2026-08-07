@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_core import identity
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -66,7 +66,7 @@ async def _resolve_owner(db: CurrentSession, request: Request) -> str:
     owner_id = getattr(request.user, 'hasn_id', None)
     if owner_id:
         return owner_id
-    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
     return human.hasn_id

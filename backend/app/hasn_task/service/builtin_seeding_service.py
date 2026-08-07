@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.schema.hasn_sync import ClientEvent
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
-from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_core import AgentRef, identity
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog
 from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_task.service.task_service import calc_next_run_at
@@ -55,17 +55,11 @@ def _split_csv(value: str | None) -> list[str]:
     return [s.strip() for s in (value or '').split(',') if s.strip()]
 
 
-async def _active_agents(db: AsyncSession, owner_id: str) -> list[HasnAgents]:
-    rows = await db.execute(
-        sa
-        .select(HasnAgents)
-        .where(HasnAgents.owner_id == owner_id, HasnAgents.status == 'active')
-        .order_by(HasnAgents.id.asc())
-    )
-    return list(rows.scalars().all())
+async def _active_agents(db: AsyncSession, owner_id: str) -> list[AgentRef]:
+    return list(await identity.active_agent_refs_of_owner(db, owner_hasn_id=owner_id))
 
 
-async def _resolve_primary_agent(db: AsyncSession, owner_id: str, agents: list[HasnAgents]) -> HasnAgents | None:
+async def _resolve_primary_agent(db: AsyncSession, owner_id: str, agents: list[AgentRef]) -> AgentRef | None:
     """主脑：复用全仓唯一实现 `home.workbench_pref_service.resolve_master_brain_agent_id`。
 
     算法本身（显式 pref → `role='primary'` → 最早活跃分身）不在这里重写——doc19 §4.4 / D-18 的
@@ -104,22 +98,15 @@ async def reconcile_builtin_agents(db: AsyncSession, owner_id: str, node_id: str
     if not templates:
         return []
 
-    # 已建齐的 builtin_agent_key 集合（幂等判存在）。
-    existing_keys = set(
-        (
-            await db.execute(
-                sa.select(HasnAgents.builtin_agent_key).where(
-                    HasnAgents.owner_id == owner_id,
-                    HasnAgents.builtin_agent_key.isnot(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    owner_nickname = (
-        await db.execute(sa.select(HasnHumans.nickname).where(HasnHumans.hasn_id == owner_id))
-    ).scalar_one_or_none()
+    # 已建齐的 builtin_agent_key 集合（幂等判存在；不筛状态——已停用/软删的内置分身
+    # 同样不能重复创建，语义与旧查询一致）。
+    existing_keys = {
+        a.builtin_agent_key
+        for a in await identity.agents_of_owner(db, owner_hasn_id=owner_id)
+        if a.builtin_agent_key
+    }
+    owner_human = await identity.get_human(db, hasn_id=owner_id)
+    owner_nickname = owner_human.nickname if owner_human else None
 
     created: list[str] = []
     for tpl in templates:
@@ -220,7 +207,7 @@ async def seed_builtin_tasks(db: AsyncSession, owner_id: str) -> list[str]:
         return []
 
     agents = await _active_agents(db, owner_id)
-    by_key: dict[str, HasnAgents] = {}
+    by_key: dict[str, AgentRef] = {}
     for a in agents:
         if a.builtin_agent_key and a.builtin_agent_key not in by_key:
             by_key[a.builtin_agent_key] = a  # 最早创建（已按 id asc 排序）

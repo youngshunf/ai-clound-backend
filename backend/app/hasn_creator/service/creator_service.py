@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 
-from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core import identity
 from backend.app.hasn_creator.model.account import Account
 from backend.app.hasn_creator.model.competitor import Competitor
 from backend.app.hasn_creator.model.content import Content
@@ -217,15 +217,10 @@ class CreatorService:
         owner_hasn_id = scope.owner_hasn_id if scope else None
         if not owner_hasn_id:
             raise errors.NotFoundError(msg='指定的负责分身不存在或不属于你')
-        row = (
-            await db.execute(
-                sa.select(HasnAgents.id).where(
-                    HasnAgents.hasn_id == agent_id,
-                    HasnAgents.owner_id == owner_hasn_id,
-                )
-            )
-        ).first()
-        if row is None:
+        agent = await identity.agent_owned_by(
+            db, hasn_id=agent_id, owner_hasn_id=owner_hasn_id, require_active=False
+        )
+        if agent is None:
             raise errors.NotFoundError(msg='指定的负责分身不存在或不属于你')
 
     @staticmethod

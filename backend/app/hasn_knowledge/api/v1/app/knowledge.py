@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Header, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_core import identity
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
 from backend.app.hasn_knowledge.service.knowledge_service import Subject, knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
@@ -33,7 +33,7 @@ router = APIRouter()
 
 async def _resolve_owner(db: CurrentSession, request: Request) -> str:
     """登录用户 → HASN 主人 hasn_id（owner 隔离键）。"""
-    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
     return human.hasn_id

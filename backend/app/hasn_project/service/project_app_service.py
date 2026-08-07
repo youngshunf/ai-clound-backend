@@ -25,7 +25,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core import identity
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_assets import HasnAssets
@@ -501,15 +501,11 @@ class ProjectService:
                 fields['bound_agent_id'], code='INVALID_BOUND_AGENT', field_name='默认协作分身'
             )
             if bound_agent_id is not None:
-                agent = (
-                    await db.execute(
-                        sa.select(HasnAgents.id).where(
-                            HasnAgents.hasn_id == bound_agent_id,
-                            HasnAgents.owner_id == owner,
-                            HasnAgents.deleted_at.is_(None),
-                        )
-                    )
-                ).scalar_one_or_none()
+                # 仅校验归属 + 未软删，不要求 status=='active'（与既有语义一致，暂停中的
+                # 分身仍可被设为默认协作分身），故不用 agent_owned_by(require_active=True)。
+                agent = await identity.get_agent(db, hasn_id=bound_agent_id)
+                if agent is None or agent.owner_id != owner or agent.deleted_at is not None:
+                    agent = None
                 if agent is None:
                     raise _err('INVALID_BOUND_AGENT', '默认协作分身不存在或不属于当前主人', http_code=422)
             fields['bound_agent_id'] = bound_agent_id
@@ -526,16 +522,7 @@ class ProjectService:
 
     async def assert_active_owned_agent(self, db: AsyncSession, *, owner: str, agent_id: str) -> None:
         """确认当前分身仍活跃且属于该主人，避免 Agent JWT 误写到其它主人项目。"""
-        agent = (
-            await db.execute(
-                sa.select(HasnAgents.id).where(
-                    HasnAgents.hasn_id == agent_id,
-                    HasnAgents.owner_id == owner,
-                    HasnAgents.status == 'active',
-                    HasnAgents.deleted_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
+        agent = await identity.agent_owned_by(db, hasn_id=agent_id, owner_hasn_id=owner, require_active=True)
         if agent is None:
             raise _err('INVALID_PROJECT_AGENT', '当前分身不存在、已停用或不属于当前主人', http_code=403)
 

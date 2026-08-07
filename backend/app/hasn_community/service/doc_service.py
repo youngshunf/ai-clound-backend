@@ -22,7 +22,7 @@ from backend.app.hasn_community.model import HasnArticles, HasnDocNodes, HasnDoc
 from backend.app.hasn_community.service.hasn_doc_space_subscriptions_service import (
     hasn_doc_space_subscriptions_service,
 )
-from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_core import identity
 from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.database.db import uuid4_str
@@ -317,14 +317,14 @@ class DocService:
         """解析文集作者展示信息（human/agent）。Agent 作者附带主人昵称。"""
         info: dict[str, Any] = {'hasn_id': author_hasn_id, 'type': author_type}
         if author_type == 'agent':
-            agent = (await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == author_hasn_id))).scalars().first()
+            agent = await identity.get_agent(db, hasn_id=author_hasn_id)
             info['display_name'] = (agent.display_name if agent else None) or author_hasn_id
             info['avatar'] = agent.avatar if agent else None
-            owner = (await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == owner_hasn_id))).scalars().first()
+            owner = await identity.get_human(db, hasn_id=owner_hasn_id)
             if owner:
                 info['owner'] = {'hasn_id': owner.hasn_id, 'display_name': owner.nickname or owner.hasn_id}
         else:
-            human = (await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == author_hasn_id))).scalars().first()
+            human = await identity.get_human(db, hasn_id=author_hasn_id)
             info['display_name'] = (human.nickname if human else None) or author_hasn_id
             info['avatar'] = human.avatar if human else None
         return info

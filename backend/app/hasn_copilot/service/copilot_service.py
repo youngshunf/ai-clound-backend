@@ -22,7 +22,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core import identity
 from backend.app.hasn_copilot.model import CopilotPreference, CopilotSession
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -86,14 +86,9 @@ class CopilotService:
     @staticmethod
     async def _validate_agent_owner(db: AsyncSession, *, owner_hasn_id: str, agent_id: str) -> None:
         """校验 agent_id 是本 owner 名下分身；不是则拒绝（404 不泄露他人分身是否存在）。"""
-        agent = (
-            await db.execute(
-                select(HasnAgents.id).where(
-                    HasnAgents.hasn_id == agent_id,
-                    HasnAgents.owner_id == owner_hasn_id,
-                )
-            )
-        ).first()
+        agent = await identity.agent_owned_by(
+            db, hasn_id=agent_id, owner_hasn_id=owner_hasn_id, require_active=False
+        )
         if agent is None:
             raise errors.NotFoundError(msg='指定的协作分身不存在或不属于你')
 

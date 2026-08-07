@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core import identity
 from backend.app.hasn_growth.model.growth_profile_suggestion import GrowthProfileSuggestion
 from backend.app.hasn_growth.model.growth_profile_version import GrowthProfileVersion
 from backend.app.hasn_growth.model.growth_project import GrowthProject
@@ -337,16 +337,9 @@ class GrowthProfileService:
                     'current_version': growth.profile_version,
                 },
             )
-        agent = (
-            await db.execute(
-                sa.select(HasnAgents).where(
-                    HasnAgents.hasn_id == agent_hasn_id,
-                    HasnAgents.owner_id == owner_hasn_id,
-                    HasnAgents.status == 'active',
-                    HasnAgents.deleted_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
+        agent = await identity.agent_owned_by(
+            db, hasn_id=agent_hasn_id, owner_hasn_id=owner_hasn_id, require_active=True
+        )
         if agent is None:
             raise errors.NotFoundError(msg='负责分身不存在或不可用')
         kb_id = _parse_kb_id(growth.kb_ref)
@@ -561,16 +554,9 @@ class GrowthProfileService:
             blocking.append('icp_incomplete')
         agent = None
         if growth.owner_agent_id:
-            agent = (
-                await db.execute(
-                    sa.select(HasnAgents).where(
-                        HasnAgents.hasn_id == growth.owner_agent_id,
-                        HasnAgents.owner_id == owner_hasn_id,
-                        HasnAgents.status == 'active',
-                        HasnAgents.deleted_at.is_(None),
-                    )
-                )
-            ).scalar_one_or_none()
+            agent = await identity.agent_owned_by(
+                db, hasn_id=growth.owner_agent_id, owner_hasn_id=owner_hasn_id, require_active=True
+            )
         if agent is None:
             blocking.append('agent_missing')
 
@@ -636,7 +622,9 @@ class GrowthProfileService:
                     'hasn_id': agent.hasn_id,
                     'display_name': agent.display_name,
                     'profession': agent.profession,
-                    'status': agent.status,
+                    # agent 非 None 时已由 identity.agent_owned_by(require_active=True) 保证
+                    # status == 'active'（AgentRef 不携带该字段，此处按查询语义直接给字面量）。
+                    'status': 'active',
                 }
                 if agent is not None
                 else None

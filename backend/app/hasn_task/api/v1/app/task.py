@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 
-from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_core import identity
 from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_task.schema.task import (
     CreateHasnTaskParam,
@@ -40,7 +40,7 @@ async def current_owner_id(request: Request, db: CurrentSession) -> str:
     owner_id = getattr(request.user, 'hasn_id', None)
     if owner_id:
         return owner_id
-    hasn_human = await hasn_humans_dao.get_by_user_id(db, user_id=request.user.id)
+    hasn_human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not hasn_human:
         raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
     return hasn_human.hasn_id

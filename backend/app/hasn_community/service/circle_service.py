@@ -308,26 +308,19 @@ class CircleService:
 
     @staticmethod
     async def invite(db: AsyncSession, *, ident: str, actor_hasn_id: str, invitee_hasn_id: str, invitee_type: str = 'human', invitee_owner_hasn_id: str | None = None) -> dict[str, Any]:
-        from backend.app.hasn_core import HasnAgents, HasnHumans
+        from backend.app.hasn_core import identity
 
         c = await CircleService._get(db, ident)
         if not c:
             raise errors.NotFoundError(msg='圈子不存在')
         await CircleService._assert_manager(db, c.circle_id, actor_hasn_id)
         if invitee_type == 'agent':
-            authoritative_owner = (
-                await db.execute(
-                    select(HasnAgents.owner_id).where(HasnAgents.hasn_id == invitee_hasn_id)
-                )
-            ).scalar_one_or_none()
+            invitee_agent = await identity.get_agent(db, hasn_id=invitee_hasn_id)
+            authoritative_owner = invitee_agent.owner_id if invitee_agent else None
             if not authoritative_owner:
                 raise errors.NotFoundError(msg='受邀分身不存在')
         elif invitee_type == 'human':
-            human_exists = (
-                await db.execute(
-                    select(HasnHumans.hasn_id).where(HasnHumans.hasn_id == invitee_hasn_id)
-                )
-            ).scalar_one_or_none()
+            human_exists = await identity.get_human(db, hasn_id=invitee_hasn_id)
             if not human_exists:
                 raise errors.NotFoundError(msg='受邀用户不存在')
             authoritative_owner = invitee_hasn_id
@@ -378,36 +371,14 @@ class CircleService:
 
         诚实留空：查不到 profession → ''；display_name 兜底用 member_hasn_id（前端再兜底）。
         """
-        from backend.app.hasn_core import HasnAgents, HasnHumans
+        from backend.app.hasn_core import identity
 
         human_ids = {m['member_hasn_id'] for m in members if m.get('member_type') == 'human'}
         agent_ids = {m['member_hasn_id'] for m in members if m.get('member_type') == 'agent'}
         owner_ids = {m['owner_hasn_id'] for m in members if m.get('member_type') == 'agent' and m.get('owner_hasn_id')}
 
-        human_map: dict[str, Any] = {}
-        if human_ids or owner_ids:
-            human_rows = (
-                await db.execute(
-                    select(HasnHumans.hasn_id, HasnHumans.nickname, HasnHumans.avatar).where(
-                        HasnHumans.hasn_id.in_(human_ids | owner_ids)
-                    )
-                )
-            ).all()
-            human_map = {r.hasn_id: r for r in human_rows}
-
-        agent_map: dict[str, Any] = {}
-        if agent_ids:
-            agent_rows = (
-                await db.execute(
-                    select(
-                        HasnAgents.hasn_id,
-                        HasnAgents.display_name,
-                        HasnAgents.avatar,
-                        HasnAgents.profession,
-                    ).where(HasnAgents.hasn_id.in_(agent_ids))
-                )
-            ).all()
-            agent_map = {r.hasn_id: r for r in agent_rows}
+        human_map = await identity.refs_for_humans(db, hasn_ids=list(human_ids | owner_ids))
+        agent_map = await identity.refs_for_agents(db, hasn_ids=list(agent_ids))
         online_map = await _presence_query.get_online_map(list(agent_ids)) if agent_ids else {}
 
         for m in members:

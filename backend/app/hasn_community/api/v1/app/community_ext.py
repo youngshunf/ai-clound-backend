@@ -24,9 +24,9 @@ router = APIRouter()
 
 async def _human(db, request: Request):
     """解析登录 Owner 的 hasn_id（身份=认证凭证）。"""
-    from backend.app.hasn_core import hasn_humans_dao
+    from backend.app.hasn_core import identity
 
-    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    human = await identity.get_human_by_user_id(db, user_id=request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
     return human, request.user.id

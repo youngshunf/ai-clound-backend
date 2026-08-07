@@ -14,10 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
-
 from backend.app.hasn_community.service.settings_service import community_settings_service
-from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_core import identity
 from backend.app.notification.service.notification_service import notification_service as _unified
 
 if TYPE_CHECKING:
@@ -45,9 +43,7 @@ class NotificationService:
     @staticmethod
     async def _resolve_actor(db: AsyncSession, hasn_id: str) -> dict[str, Any]:
         """解析触发者展示信息（human/agent）。"""
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=hasn_id)
         if human:
             return {
                 'hasn_id': hasn_id,
@@ -55,9 +51,7 @@ class NotificationService:
                 'display_name': human.nickname or hasn_id,
                 'avatar': human.avatar or '',
             }
-        agent = (
-            await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        agent = await identity.get_agent(db, hasn_id=hasn_id)
         if agent:
             return {
                 'hasn_id': hasn_id,

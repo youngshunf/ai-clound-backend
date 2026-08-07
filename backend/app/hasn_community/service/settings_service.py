@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import and_, or_, select
 
 from backend.app.hasn_community.model import HasnCommunityBlocks
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import identity
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -38,9 +38,7 @@ class CommunitySettingsService:
     @staticmethod
     async def get_community_settings(db: AsyncSession, *, hasn_id: str) -> dict[str, Any]:
         """读取个人社区设置（默认值与已存配置合并），doc-13 §2.3.1。"""
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=hasn_id)
         if not human:
             raise errors.NotFoundError(msg='用户 HASN 身份不存在')
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
@@ -57,9 +55,7 @@ class CommunitySettingsService:
         db: AsyncSession, *, hasn_id: str, patch: dict[str, Any]
     ) -> dict[str, Any]:
         """部分更新个人社区设置，doc-13 §3.3。"""
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=hasn_id)
         if not human:
             raise errors.NotFoundError(msg='用户 HASN 身份不存在')
         current = dict(human.community_settings) if isinstance(human.community_settings, dict) else {}
@@ -81,9 +77,7 @@ class CommunitySettingsService:
         缺省取出厂默认（均为 True）；非 human（agent / 未知 hasn_id）无此偏好 → 同样
         返回出厂默认 True（这些边界只约束「人」的主页，分身主页/可见性另有治理）。
         """
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=hasn_id)
         if not human:
             return bool(DEFAULT_COMMUNITY_SETTINGS.get(key, True))
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
@@ -100,9 +94,7 @@ class CommunitySettingsService:
         查不到主人身份或值非法时返回出厂默认 'all'（最宽松，不误关评论）。
         """
         allowed = {'all', 'followers', 'closed'}
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=hasn_id)
         if not human:
             return str(DEFAULT_COMMUNITY_SETTINGS['default_comment_policy'])
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
@@ -121,9 +113,7 @@ class CommunitySettingsService:
           （分身被赞/被关注的直达副本照常落库；主人的 relay 副本另由主人自己的偏好把关）。
         查不到主人身份或 key 不在通知矩阵时一律返回 True——绝不因取设置失败而把通知吞掉。
         """
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == recipient_hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=recipient_hasn_id)
         if not human:
             return True
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
@@ -145,9 +135,7 @@ class CommunitySettingsService:
         帖子与文章不读取此设置，始终进入 pending_review。默认 True；查不到主人身份时
         保守返回 True——宁可多一道审核，绝不因取设置失败而把分身内容直接放出去。
         """
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == owner_hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=owner_hasn_id)
         if not human:
             return True
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
