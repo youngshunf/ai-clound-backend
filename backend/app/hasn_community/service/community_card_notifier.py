@@ -14,9 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
-
-from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core import identity
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn_im.adapters.sqlalchemy_producer_outbox import (
     enqueue_send_message,
@@ -62,10 +60,8 @@ async def _resolve_agent_display_name(db: AsyncSession, agent_hasn_id: str) -> s
     返回 None，调用方回落到入参 author_name（best-effort，绝不因取名失败而不发卡）。
     """
     try:
-        value = (
-            await db.execute(select(HasnAgents.display_name).where(HasnAgents.hasn_id == agent_hasn_id))
-        ).scalar_one_or_none()
-        return (value or '').strip() or None
+        agent = await identity.get_agent(db, hasn_id=agent_hasn_id)
+        return (agent.display_name if agent else '').strip() or None
     except Exception:
         return None
 

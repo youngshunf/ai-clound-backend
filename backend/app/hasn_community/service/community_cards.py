@@ -9,12 +9,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import select
-from sqlalchemy.orm import aliased
 
 from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.article_summary import effective_summary
 from backend.app.hasn_community.service.content_visibility import content_visibility_sql
-from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_core import identity
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +41,44 @@ def _author_info(author_type: str, author_hasn_id: str, human_nick, human_avatar
     return info
 
 
+async def _batch_author_refs(
+    db: AsyncSession, entries: list[tuple[str, str]]
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """按 (author_type, author_hasn_id) 批量取只读投影，返回 (human_refs, agent_refs, owner_refs)。
+
+    二段式：先按 id 批量取展示字段（`identity.refs_for_humans/refs_for_agents`），
+    agent 的主人展示名再补一次批量查询——替代此前"JOIN 身份表回填展示列"的写法，
+    不再需要 import `HasnHumans`/`HasnAgents`。
+    """
+    human_ids = {hid for t, hid in entries if t == 'human'}
+    agent_ids = {hid for t, hid in entries if t == 'agent'}
+    human_refs = await identity.refs_for_humans(db, hasn_ids=list(human_ids))
+    agent_refs = await identity.refs_for_agents(db, hasn_ids=list(agent_ids))
+    owner_ids = {r.owner_hasn_id for r in agent_refs.values() if r.owner_hasn_id}
+    owner_refs = await identity.refs_for_humans(db, hasn_ids=list(owner_ids))
+    return human_refs, agent_refs, owner_refs
+
+
+def _build_author_info(
+    author_type: str,
+    author_hasn_id: str,
+    *,
+    human_refs: dict[str, Any],
+    agent_refs: dict[str, Any],
+    owner_refs: dict[str, Any],
+) -> dict[str, Any]:
+    if author_type == 'human':
+        h = human_refs.get(author_hasn_id)
+        return _author_info('human', author_hasn_id, h.nickname if h else None, h.avatar if h else None, None, None, None, None)
+    a = agent_refs.get(author_hasn_id)
+    owner = owner_refs.get(a.owner_hasn_id) if a and a.owner_hasn_id else None
+    return _author_info(
+        'agent', author_hasn_id, None, None,
+        a.display_name if a else None, a.avatar if a else None,
+        a.owner_hasn_id if a else None, owner.nickname if owner else None,
+    )
+
+
 async def fetch_post_cards(
     db: AsyncSession,
     post_ids: list[str],
@@ -55,36 +92,23 @@ async def fetch_post_cards(
     """
     if not post_ids:
         return {}
-    AuthorHuman = aliased(HasnHumans)
-    AuthorAgent = aliased(HasnAgents)
-    OwnerHuman = aliased(HasnHumans)
-    stmt = (
-        select(
-            HasnPosts,
-            AuthorHuman.nickname.label('human_nickname'),
-            AuthorHuman.avatar.label('human_avatar'),
-            AuthorAgent.display_name.label('agent_display_name'),
-            AuthorAgent.avatar.label('agent_avatar'),
-            OwnerHuman.hasn_id.label('owner_hasn_id'),
-            OwnerHuman.nickname.label('owner_nickname'),
-        )
-        .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
-        .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
-        .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-        .where(HasnPosts.post_id.in_(post_ids))
-    )
+    stmt = select(HasnPosts).where(HasnPosts.post_id.in_(post_ids))
     if not isinstance(viewer_hasn_id, _Unfiltered):
         stmt = stmt.where(content_visibility_sql(HasnPosts, viewer_hasn_id=viewer_hasn_id))
+    posts = (await db.execute(stmt)).scalars().all()
+    human_refs, agent_refs, owner_refs = await _batch_author_refs(
+        db, [(p.author_type, p.author_hasn_id) for p in posts]
+    )
     cards: dict[str, dict[str, Any]] = {}
-    for row in (await db.execute(stmt)).all():
-        p = row.HasnPosts
+    for p in posts:
         cards[p.post_id] = {
             'content_type': 'post',
             'post_id': p.post_id,
             'circle_id': p.circle_id,
-            'author': _author_info('agent' if p.author_type == 'agent' else 'human', p.author_hasn_id,
-                                    row.human_nickname, row.human_avatar, row.agent_display_name, row.agent_avatar,
-                                    row.owner_hasn_id, row.owner_nickname),
+            'author': _build_author_info(
+                'agent' if p.author_type == 'agent' else 'human', p.author_hasn_id,
+                human_refs=human_refs, agent_refs=agent_refs, owner_refs=owner_refs,
+            ),
             'content': p.content,
             'tags': p.tags or [],
             'like_count': p.like_count,
@@ -106,36 +130,23 @@ async def fetch_article_cards(
     """
     if not article_ids:
         return {}
-    AuthorHuman = aliased(HasnHumans)
-    AuthorAgent = aliased(HasnAgents)
-    OwnerHuman = aliased(HasnHumans)
-    stmt = (
-        select(
-            HasnArticles,
-            AuthorHuman.nickname.label('human_nickname'),
-            AuthorHuman.avatar.label('human_avatar'),
-            AuthorAgent.display_name.label('agent_display_name'),
-            AuthorAgent.avatar.label('agent_avatar'),
-            OwnerHuman.hasn_id.label('owner_hasn_id'),
-            OwnerHuman.nickname.label('owner_nickname'),
-        )
-        .outerjoin(AuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == AuthorHuman.hasn_id))
-        .outerjoin(AuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == AuthorAgent.hasn_id))
-        .outerjoin(OwnerHuman, (HasnArticles.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-        .where(HasnArticles.article_id.in_(article_ids))
-    )
+    stmt = select(HasnArticles).where(HasnArticles.article_id.in_(article_ids))
     if not isinstance(viewer_hasn_id, _Unfiltered):
         stmt = stmt.where(content_visibility_sql(HasnArticles, viewer_hasn_id=viewer_hasn_id))
+    articles = (await db.execute(stmt)).scalars().all()
+    human_refs, agent_refs, owner_refs = await _batch_author_refs(
+        db, [(a.author_type, a.author_hasn_id) for a in articles]
+    )
     cards: dict[str, dict[str, Any]] = {}
-    for row in (await db.execute(stmt)).all():
-        a = row.HasnArticles
+    for a in articles:
         cards[a.article_id] = {
             'content_type': 'article',
             'article_id': a.article_id,
             'circle_id': a.circle_id,
-            'author': _author_info('agent' if a.author_type == 'agent' else 'human', a.author_hasn_id,
-                                    row.human_nickname, row.human_avatar, row.agent_display_name, row.agent_avatar,
-                                    row.owner_hasn_id, row.owner_nickname),
+            'author': _build_author_info(
+                'agent' if a.author_type == 'agent' else 'human', a.author_hasn_id,
+                human_refs=human_refs, agent_refs=agent_refs, owner_refs=owner_refs,
+            ),
             'title': a.title,
             'summary': effective_summary(a.summary, a.content),
             'cover_url': a.cover_url,

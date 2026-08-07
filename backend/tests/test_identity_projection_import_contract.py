@@ -63,18 +63,20 @@ _APP_MODULES = (
 
 # I0 起步白名单：2026-08-06 施工前实测的 35 个违规文件全量登记，守卫从此刻起立即为绿。
 # 随 I2/I3/I4 每完成一批迁移就从这里删除对应条目——**白名单只减不增**，见文件顶部说明。
+#
+# I2（hasn_community，2026-08-06）：11 个文件中 10 个已迁移至零违规并从本表删除
+# （community.py / community_ext.py ×2 / community_card_notifier.py / settings_service.py /
+# circle_service.py / community_cards.py / notification_service.py / admin_query_service.py /
+# doc_service.py）。`community_service.py` 保留：其信息流/评论/主页/草稿相关用法已迁移到
+# `identity.refs_for_humans/refs_for_agents` 二段式批量投影，但 `search_group` 的
+# humans/agents 分组搜索、`get_recommended_agents` 推荐广场、`discover_peers` 整个发现集群
+# （`_query_humans/_query_agents/_discover_humans/_discover_agents/_discover_agent_rows/
+# _peer_human_item/_peer_agent_item/_human_searchable_cond`）是直接在身份表上做 ILIKE 关键词
+# 匹配 + 粉丝数相关子查询排序 + 分页的"身份目录搜索"能力——不是清单描述的 A/B 档点查，
+# 也不是 C 档企业 JOIN，是清单现状实测未识别的第三类复杂度，需要独立设计（详见本次施工报告），
+# 本次不擅自处理。
 _WHITELIST = frozenset({
-    'hasn_community/api/v1/app/community.py',
-    'hasn_community/api/v1/app/community_ext.py',
-    'hasn_community/api/v1/open/community_ext.py',
-    'hasn_community/service/community_card_notifier.py',
-    'hasn_community/service/settings_service.py',
-    'hasn_community/service/circle_service.py',
-    'hasn_community/service/community_cards.py',
-    'hasn_community/service/notification_service.py',
     'hasn_community/service/community_service.py',
-    'hasn_community/service/admin_query_service.py',
-    'hasn_community/service/doc_service.py',
     'hasn_deck/api/v1/app/deck.py',
     'hasn_plan/api/v1/app/plan.py',
     'hasn_plan/service/plan_authz.py',

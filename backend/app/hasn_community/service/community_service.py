@@ -38,7 +38,7 @@ from backend.app.hasn_community.service.content_visibility import (
     is_own_content,
 )
 from backend.app.hasn_community.service.settings_service import community_settings_service
-from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans, identity
 from backend.app.hasn.model import HasnContactRequests, HasnContacts
 from backend.app.hasn_im.application.provider import get_presence_query
 from backend.common.exception import errors
@@ -74,9 +74,8 @@ class CommunityService:
         """由 user_id 解析当前操作者的 human hasn_id（open scope 无身份时返回 None）。"""
         if user_id is None:
             return None
-        return (
-            await db.execute(select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human_by_user_id(db, user_id=user_id)
+        return human.hasn_id if human else None
 
     @staticmethod
     async def _fanout_to_followers(db: AsyncSession, *, author_hasn_id: str) -> None:
@@ -98,12 +97,8 @@ class CommunityService:
         if not follower_ids:
             return
 
-        agent_owner_rows = (
-            await db.execute(
-                select(HasnAgents.hasn_id, HasnAgents.owner_id).where(HasnAgents.hasn_id.in_(follower_ids))
-            )
-        ).all()
-        agent_owner_map = {r.hasn_id: r.owner_id for r in agent_owner_rows}
+        agent_refs = await identity.refs_for_agents(db, hasn_ids=follower_ids)
+        agent_owner_map = {hid: ref.owner_hasn_id for hid, ref in agent_refs.items()}
 
         owner_hasn_ids = {agent_owner_map.get(fid) or fid for fid in follower_ids}
         owner_hasn_ids.discard('')
@@ -164,37 +159,51 @@ class CommunityService:
 
     @staticmethod
     async def _enrich_authors(db: AsyncSession, authors: list[dict[str, Any]]) -> None:
-        """给一批已序列化的 author dict（含 hasn_id/type）就地补「专家名称 + 实时在线态」。
+        """给一批已序列化的 author dict（仅含 hasn_id/type）就地补齐展示字段。
 
-        - profession：批量查 HasnAgents.profession（仅 agent 作者）。社区作者可为全网任意分身，
-          云端 hasn_agents 是权威，故能给出所有作者的专家头衔（不像 daemon 本地镜像仅自有分身有值）。
-        - online_status：Redis presence（ws_router.get_online_map），断线即 offline，不读持久列避免僵尸在线。
+        二段式批量投影（替代此前"JOIN 身份表回填展示列"的写法）：
+        - human：nickname → display_name，avatar；
+        - agent：display_name/avatar/专家名称(profession)/主人(owner，取自 AgentRef.owner_hasn_id
+          二次批量查 HumanRef)/online_status（Redis presence，断线即 offline，不读持久列避免僵尸在线）。
 
-        诚实留空：查不到 profession → ''；human 作者不设这两个字段。daemon 社区镜像存整条
-        source_json 原样回放，故云端补的字段冷读/热读都带，无需 daemon 侧改动。
+        社区作者可为全网任意分身，云端 hasn_agents 是权威，故能给出所有作者的专家头衔
+        （不像 daemon 本地镜像仅自有分身有值）。诚实留空：查不到 → display_name 回落
+        hasn_id，profession 回落 ''；human 作者不设 profession/online_status/owner 字段。
+        daemon 社区镜像存整条 source_json 原样回放，故云端补的字段冷读/热读都带，无需
+        daemon 侧改动。
         """
-        agent_ids = list(
-            {a['hasn_id'] for a in authors if a.get('type') == 'agent' and a.get('hasn_id')}
-        )
-        if not agent_ids:
+        human_ids = list({a['hasn_id'] for a in authors if a.get('type') == 'human' and a.get('hasn_id')})
+        agent_ids = list({a['hasn_id'] for a in authors if a.get('type') == 'agent' and a.get('hasn_id')})
+        if not human_ids and not agent_ids:
             return
-        prof_rows = (
-            await db.execute(
-                select(HasnAgents.hasn_id, HasnAgents.profession).where(
-                    HasnAgents.hasn_id.in_(agent_ids)
-                )
-            )
-        ).all()
-        prof_map = {r.hasn_id: (r.profession or '') for r in prof_rows}
-        online_map = await _presence_query.get_online_map(agent_ids)
+
+        human_refs = await identity.refs_for_humans(db, hasn_ids=human_ids) if human_ids else {}
+        agent_refs = await identity.refs_for_agents(db, hasn_ids=agent_ids) if agent_ids else {}
+        owner_ids = list({r.owner_hasn_id for r in agent_refs.values() if r.owner_hasn_id})
+        owner_refs = await identity.refs_for_humans(db, hasn_ids=owner_ids) if owner_ids else {}
+        online_map = await _presence_query.get_online_map(agent_ids) if agent_ids else {}
+
         for a in authors:
-            if a.get('type') != 'agent':
-                continue
             hid = a.get('hasn_id')
             if not isinstance(hid, str):
                 continue
-            a['profession'] = prof_map.get(hid, '')
-            a['online_status'] = 'online' if online_map.get(hid) else 'offline'
+            if a.get('type') == 'human':
+                h = human_refs.get(hid)
+                a['display_name'] = (h.nickname if h and h.nickname else hid)
+                a['avatar'] = h.avatar if h else None
+            elif a.get('type') == 'agent':
+                ag = agent_refs.get(hid)
+                a['display_name'] = (ag.display_name if ag and ag.display_name else hid)
+                a['avatar'] = ag.avatar if ag else None
+                a['profession'] = (ag.profession or '') if ag else ''
+                a['online_status'] = 'online' if online_map.get(hid) else 'offline'
+                owner_hid = ag.owner_hasn_id if ag else None
+                if owner_hid:
+                    owner = owner_refs.get(owner_hid)
+                    a['owner'] = {
+                        'hasn_id': owner_hid,
+                        'display_name': (owner.nickname if owner and owner.nickname else owner_hid),
+                    }
 
     @staticmethod
     async def _build_single_author_info(
@@ -214,27 +223,21 @@ class CommunityService:
             'type': author_type,
         }
         if author_type == 'human':
-            author_human = (
-                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == author_hasn_id))
-            ).scalars().first()
+            author_human = await identity.get_human(db, hasn_id=author_hasn_id)
             author_info['display_name'] = (
                 author_human.nickname if author_human and author_human.nickname else author_hasn_id
             )
             author_info['avatar'] = author_human.avatar if author_human else None
             return author_info
 
-        author_agent = (
-            await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == author_hasn_id))
-        ).scalars().first()
+        author_agent = await identity.get_agent(db, hasn_id=author_hasn_id)
         author_info['display_name'] = (
             author_agent.display_name if author_agent and author_agent.display_name else author_hasn_id
         )
         author_info['avatar'] = author_agent.avatar if author_agent else None
         owner_hid = (author_agent.owner_id if author_agent else None) or fallback_owner_hasn_id
         if owner_hid:
-            owner_human = (
-                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == owner_hid))
-            ).scalars().first()
+            owner_human = await identity.get_human(db, hasn_id=owner_hid)
             author_info['owner'] = {
                 'hasn_id': owner_hid,
                 'display_name': (owner_human.nickname if owner_human and owner_human.nickname else owner_hid),
@@ -246,7 +249,6 @@ class CommunityService:
         stmt: Any,
         *,
         content_model: Any,
-        author_human: Any,
         viewer_hasn_id: str | None,
         exclude_unsearchable_authors: bool = False,
     ) -> Any:
@@ -255,6 +257,8 @@ class CommunityService:
         - exclude_unsearchable_authors（仅搜索路径传 True）：剔除作者 human 显式
           searchable=False 的内容；分身作者不受此约束（与 show_profile/allow_follow 一致，
           这些边界只治理「人」的可见性，分身可见性另有治理）。JSONB 缺省键 → 视为可被搜索。
+          用 `identity.unsearchable_human_hasn_ids_subquery()` 的 `.notin_(...)` 子查询表达，
+          不再 JOIN 身份表——调用方不需要 import `HasnHumans`。
         - viewer_hasn_id 非空：剔除与 viewer 互为拉黑关系（任一方向）的作者内容，
           双向都看不到对方（黑名单语义）。viewer 匿名（None）时不施加（无身份可比对）。
         """
@@ -262,14 +266,7 @@ class CommunityService:
             stmt = stmt.where(
                 or_(
                     content_model.author_type != 'human',
-                    and_(
-                        author_human.community_settings['searchable'].astext.is_distinct_from(
-                            'false'
-                        ),
-                        author_human.community_settings['show_profile'].astext.is_distinct_from(
-                            'false'
-                        ),
-                    ),
+                    content_model.author_hasn_id.notin_(identity.unsearchable_human_hasn_ids_subquery()),
                 )
             )
             # 可见性判据走唯一实现（content_visibility 的 SQL 投影），不再各写一套。
@@ -323,10 +320,6 @@ class CommunityService:
         :param limit: 每页条数
         :return: 信息流数据 {items, next_cursor}
         """
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
-
         viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
 
         # 文章流单独取数：文章存于 hasn_articles（与 hasn_posts 独立），item 形态不同
@@ -342,18 +335,7 @@ class CommunityService:
             )
 
         stmt = (
-            select(
-                HasnPosts,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
+            select(HasnPosts)
             .where(HasnPosts.status == 'published', HasnPosts.circle_id.is_(None))  # 圈子内容不串主 feed（95 §2.4）
             # 可见性闸：published 之外还必须过 visibility——此前这里完全不看 visibility，
             # 私密/followers 帖会漏进所有 feed_type（含 open 匿名流）。
@@ -382,7 +364,6 @@ class CommunityService:
         stmt = CommunityService._apply_visibility_filters(
             stmt,
             content_model=HasnPosts,
-            author_human=AuthorHuman,
             viewer_hasn_id=viewer_hasn_id,
             exclude_unsearchable_authors=exclude_unsearchable_authors,
         )
@@ -423,37 +404,23 @@ class CommunityService:
         stmt = stmt.limit(limit + 1)
 
         result = await db.execute(stmt)
-        rows = result.all()
+        posts = result.scalars().all()
 
-        has_more = len(rows) > limit
-        rows = rows[:limit]
+        has_more = len(posts) > limit
+        posts = posts[:limit]
 
         # 批量回填 is_liked / is_collected
-        post_ids = [row.HasnPosts.post_id for row in rows]
+        post_ids = [post.post_id for post in posts]
         liked_ids, collected_ids = await CommunityService._batch_reactions(
             db, viewer_hasn_id, 'post', post_ids
         )
 
         items = []
-        for row in rows:
-            post = row.HasnPosts
-
+        for post in posts:
             author_info = {
                 'hasn_id': post.author_hasn_id,
                 'type': post.author_type,
             }
-
-            if post.author_type == 'human':
-                author_info['display_name'] = row.human_nickname or post.author_hasn_id
-                author_info['avatar'] = row.human_avatar
-            else:  # agent
-                author_info['display_name'] = row.agent_display_name or post.author_hasn_id
-                author_info['avatar'] = row.agent_avatar
-                if row.owner_hasn_id:
-                    author_info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
 
             items.append({
                 'content_type': 'post',
@@ -478,8 +445,8 @@ class CommunityService:
 
         # 真实 next_cursor（仅当还有下一页）
         next_cursor = None
-        if has_more and rows:
-            last = rows[-1].HasnPosts
+        if has_more and posts:
+            last = posts[-1]
             if is_hot:
                 next_cursor = f'{last.like_count}|{last.post_id}'
             elif last.published_time:
@@ -535,16 +502,10 @@ class CommunityService:
         viewer_hasn_id: str | None,
     ) -> int:
         """按统一搜索的可见性规则计算帖子或文章精确总数。"""
-        author_human = aliased(HasnHumans)
         model = HasnArticles if content_type == 'article' else HasnPosts
         stmt = (
             select(func.count())
             .select_from(model)
-            .outerjoin(
-                author_human,
-                (model.author_type == 'human')
-                & (model.author_hasn_id == author_human.hasn_id),
-            )
             .where(model.status == 'published', model.circle_id.is_(None))
         )
         keyword = f'%{query}%'
@@ -561,7 +522,6 @@ class CommunityService:
         stmt = CommunityService._apply_visibility_filters(
             stmt,
             content_model=model,
-            author_human=author_human,
             viewer_hasn_id=viewer_hasn_id,
             exclude_unsearchable_authors=True,
         )
@@ -800,23 +760,8 @@ class CommunityService:
         - is_liked/is_collected：按 target_type='article' 批量回填
         - item 携带 content_type='article'，便于前端与帖子区分渲染与跳转
         """
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
-
         stmt = (
-            select(
-                HasnArticles,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(AuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnArticles.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
+            select(HasnArticles)
             .where(
                 HasnArticles.status == 'published',
                 HasnArticles.circle_id.is_(None),  # 圈子内容不串主 feed（95 §2.4）
@@ -843,7 +788,6 @@ class CommunityService:
         stmt = CommunityService._apply_visibility_filters(
             stmt,
             content_model=HasnArticles,
-            author_human=AuthorHuman,
             viewer_hasn_id=viewer_hasn_id,
             exclude_unsearchable_authors=exclude_unsearchable_authors,
         )
@@ -867,35 +811,22 @@ class CommunityService:
         stmt = stmt.limit(limit + 1)
 
         result = await db.execute(stmt)
-        rows = result.all()
+        articles = result.scalars().all()
 
-        has_more = len(rows) > limit
-        rows = rows[:limit]
+        has_more = len(articles) > limit
+        articles = articles[:limit]
 
-        article_ids = [row.HasnArticles.article_id for row in rows]
+        article_ids = [article.article_id for article in articles]
         liked_ids, collected_ids = await CommunityService._batch_reactions(
             db, viewer_hasn_id, 'article', article_ids
         )
 
         items = []
-        for row in rows:
-            article = row.HasnArticles
-
+        for article in articles:
             author_info = {
                 'hasn_id': article.author_hasn_id,
                 'type': article.author_type,
             }
-            if article.author_type == 'human':
-                author_info['display_name'] = row.human_nickname or article.author_hasn_id
-                author_info['avatar'] = row.human_avatar
-            else:  # agent
-                author_info['display_name'] = row.agent_display_name or article.author_hasn_id
-                author_info['avatar'] = row.agent_avatar
-                if row.owner_hasn_id:
-                    author_info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
 
             items.append({
                 'content_type': 'article',
@@ -917,8 +848,8 @@ class CommunityService:
             })
 
         next_cursor = None
-        if has_more and rows:
-            last = rows[-1].HasnArticles
+        if has_more and articles:
+            last = articles[-1]
             if last.published_time:
                 next_cursor = f'{last.published_time.isoformat()}|{last.article_id}'
 
@@ -935,41 +866,12 @@ class CommunityService:
         """按 id 取一批帖子并富化为 feed 同形 item，返回 {post_id: item}（已下架的略过）。"""
         if not post_ids:
             return {}
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
-        stmt = (
-            select(
-                HasnPosts,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-            .where(HasnPosts.post_id.in_(post_ids), HasnPosts.status == 'published')
-        )
-        rows = (await db.execute(stmt)).all()
+        stmt = select(HasnPosts).where(HasnPosts.post_id.in_(post_ids), HasnPosts.status == 'published')
+        posts = (await db.execute(stmt)).scalars().all()
         _, collected_ids = await CommunityService._batch_reactions(db, viewer_hasn_id, 'post', post_ids)
         result: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            post = row.HasnPosts
+        for post in posts:
             author_info: dict[str, Any] = {'hasn_id': post.author_hasn_id, 'type': post.author_type}
-            if post.author_type == 'human':
-                author_info['display_name'] = row.human_nickname or post.author_hasn_id
-                author_info['avatar'] = row.human_avatar
-            else:
-                author_info['display_name'] = row.agent_display_name or post.author_hasn_id
-                author_info['avatar'] = row.agent_avatar
-                if row.owner_hasn_id:
-                    author_info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
             result[post.post_id] = {
                 'content_type': 'post',
                 'post_id': post.post_id,
@@ -997,41 +899,12 @@ class CommunityService:
         """按 id 取一批文章并富化为 feed 同形 item，返回 {article_id: item}（已下架的略过）。"""
         if not article_ids:
             return {}
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
-        stmt = (
-            select(
-                HasnArticles,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(AuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnArticles.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-            .where(HasnArticles.article_id.in_(article_ids), HasnArticles.status == 'published')
-        )
-        rows = (await db.execute(stmt)).all()
+        stmt = select(HasnArticles).where(HasnArticles.article_id.in_(article_ids), HasnArticles.status == 'published')
+        articles = (await db.execute(stmt)).scalars().all()
         _, collected_ids = await CommunityService._batch_reactions(db, viewer_hasn_id, 'article', article_ids)
         result: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            article = row.HasnArticles
+        for article in articles:
             author_info: dict[str, Any] = {'hasn_id': article.author_hasn_id, 'type': article.author_type}
-            if article.author_type == 'human':
-                author_info['display_name'] = row.human_nickname or article.author_hasn_id
-                author_info['avatar'] = row.human_avatar
-            else:
-                author_info['display_name'] = row.agent_display_name or article.author_hasn_id
-                author_info['avatar'] = row.agent_avatar
-                if row.owner_hasn_id:
-                    author_info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
             result[article.article_id] = {
                 'content_type': 'article',
                 'article_id': article.article_id,
@@ -1114,72 +987,51 @@ class CommunityService:
         result: dict[str, dict[str, Any]] = {}
 
         if human_ids:
-            human_rows = (
-                await db.execute(
-                    select(
-                        HasnHumans.hasn_id,
-                        HasnHumans.nickname,
-                        HasnHumans.avatar,
-                        HasnHumans.bio,
-                        User.province,
-                        User.city,
-                        User.district,
+            human_refs = await identity.refs_for_humans(db, hasn_ids=human_ids)
+            # region（省市区）来自 admin.User，不属于身份投影字段；按 HumanRef.user_id
+            # 二次批量查询，不需要 JOIN 身份表本身（也不需要 import HasnHumans）。
+            region_map: dict[int, tuple[str | None, str | None, str | None]] = {}
+            user_ids = [h.user_id for h in human_refs.values()]
+            if user_ids:
+                user_rows = (
+                    await db.execute(
+                        select(User.id, User.province, User.city, User.district).where(User.id.in_(user_ids))
                     )
-                    .outerjoin(User, HasnHumans.user_id == User.id)
-                    .where(HasnHumans.hasn_id.in_(human_ids))
-                )
-            ).all()
-            for r in human_rows:
-                region = ' '.join(p for p in (r.province, r.city, r.district) if p)
-                result[r.hasn_id] = {
-                    'hasn_id': r.hasn_id,
+                ).all()
+                region_map = {u.id: (u.province, u.city, u.district) for u in user_rows}
+            for hid, h in human_refs.items():
+                province, city, district = region_map.get(h.user_id, (None, None, None))
+                region = ' '.join(p for p in (province, city, district) if p)
+                result[hid] = {
+                    'hasn_id': hid,
                     'type': 'human',
-                    'display_name': r.nickname or r.hasn_id,
-                    'avatar': r.avatar or '',
-                    'bio': r.bio or '',
+                    'display_name': h.nickname or hid,
+                    'avatar': h.avatar or '',
+                    'bio': h.bio or '',
                     'region': region,
                 }
 
         if agent_ids:
-            agent_rows = (
-                await db.execute(
-                    select(
-                        HasnAgents.hasn_id,
-                        HasnAgents.display_name,
-                        HasnAgents.avatar,
-                        HasnAgents.bio,
-                        HasnAgents.profession,
-                        HasnAgents.owner_id,
-                    ).where(HasnAgents.hasn_id.in_(agent_ids))
-                )
-            ).all()
-            owner_ids = [r.owner_id for r in agent_rows if r.owner_id]
-            owner_map: dict[str, dict[str, Any]] = {}
-            if owner_ids:
-                owner_rows = (
-                    await db.execute(
-                        select(HasnHumans.hasn_id, HasnHumans.nickname, HasnHumans.avatar).where(
-                            HasnHumans.hasn_id.in_(owner_ids)
-                        )
-                    )
-                ).all()
-                owner_map = {
-                    o.hasn_id: {
-                        'hasn_id': o.hasn_id,
-                        'display_name': o.nickname or o.hasn_id,
-                        'avatar': o.avatar or '',
-                    }
-                    for o in owner_rows
+            agent_refs = await identity.refs_for_agents(db, hasn_ids=agent_ids)
+            owner_ids = [a.owner_hasn_id for a in agent_refs.values() if a.owner_hasn_id]
+            owner_refs = await identity.refs_for_humans(db, hasn_ids=owner_ids) if owner_ids else {}
+            owner_map: dict[str, dict[str, Any]] = {
+                o_hid: {
+                    'hasn_id': o_hid,
+                    'display_name': o.nickname or o_hid,
+                    'avatar': o.avatar or '',
                 }
-            for agent_row in agent_rows:
-                result[agent_row.hasn_id] = {
-                    'hasn_id': agent_row.hasn_id,
+                for o_hid, o in owner_refs.items()
+            }
+            for hid, a in agent_refs.items():
+                result[hid] = {
+                    'hasn_id': hid,
                     'type': 'agent',
-                    'display_name': agent_row.display_name or agent_row.hasn_id,
-                    'avatar': agent_row.avatar or '',
-                    'bio': agent_row.bio or '',
-                    'profession': agent_row.profession or '',
-                    'owner': owner_map.get(agent_row.owner_id),
+                    'display_name': a.display_name or hid,
+                    'avatar': a.avatar or '',
+                    'bio': a.bio or '',
+                    'profession': a.profession or '',
+                    'owner': owner_map.get(a.owner_hasn_id),
                 }
         return result
 
@@ -1263,13 +1115,7 @@ class CommunityService:
         agent_id_set: set[str] = set()
         following_back: set[str] = set()
         if follower_ids:
-            agent_id_set = set(
-                (
-                    await db.execute(
-                        select(HasnAgents.hasn_id).where(HasnAgents.hasn_id.in_(follower_ids))
-                    )
-                ).scalars().all()
-            )
+            agent_id_set = set((await identity.refs_for_agents(db, hasn_ids=follower_ids)).keys())
             following_back = set(
                 (
                     await db.execute(
@@ -1311,17 +1157,8 @@ class CommunityService:
         近 N 篇已发布、非私密文章，按发布时间倒序的轻量列表；点击进入文章详情。
         返回轻量字段（article_id/title/summary/cover_url/author/计数/时间）。
         """
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-
         stmt = (
-            select(
-                HasnArticles,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorAgent.display_name.label('agent_display_name'),
-            )
-            .outerjoin(AuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == AuthorAgent.hasn_id))
+            select(HasnArticles)
             .where(
                 HasnArticles.status == 'published',
                 HasnArticles.visibility != 'private',
@@ -1332,15 +1169,10 @@ class CommunityService:
         )
 
         result = await db.execute(stmt)
-        rows = result.all()
+        articles = result.scalars().all()
 
-        items = []
-        for row in rows:
-            article = row.HasnArticles
-            if article.author_type == 'human':
-                author_name = row.human_nickname or article.author_hasn_id
-            else:
-                author_name = row.agent_display_name or article.author_hasn_id
+        items: list[dict[str, Any]] = []
+        for article in articles:
             items.append({
                 'article_id': article.article_id,
                 'title': article.title,
@@ -1349,13 +1181,13 @@ class CommunityService:
                 'author': {
                     'hasn_id': article.author_hasn_id,
                     'type': article.author_type,
-                    'display_name': author_name,
                 },
                 'like_count': article.like_count,
                 'comment_count': article.comment_count,
                 'read_time_min': article.read_time_min,
                 'published_time': article.published_time.isoformat() if article.published_time else None,
             })
+        await CommunityService._enrich_authors(db, [it['author'] for it in items])
 
         return items
 
@@ -1490,49 +1322,16 @@ class CommunityService:
         :return: 草稿列表
         """
         # 草稿条目必须与信息流条目同形（嵌套 author + content_type + 计数），WebUI 草稿
-        # tab 复用同款卡片渲染——否则缺 author 会整页白屏崩溃。因此与 get_feed 一样 JOIN
-        # 作者/主人表回填展示名与头像。
+        # tab 复用同款卡片渲染——否则缺 author 会整页白屏崩溃。作者展示字段统一交给末尾
+        # 的 `_enrich_authors` 二段式批量投影回填，取数阶段不再 JOIN 身份表。
         #
         # 草稿箱同时收纳「帖子」与「文章」（含 Agent 自主发文的 pending_review 待审核内容）：
         # 历史实现只查 HasnPosts，导致 Agent 文章有通知却进不了草稿箱、无法审核（2026-06-04 修复）。
         from backend.app.hasn_community.model.hasn_articles import HasnArticles
 
-        def _build_author(
-            author_type: str,
-            author_hasn_id: str,
-            row: Any,
-        ) -> dict[str, Any]:
-            info: dict[str, Any] = {'hasn_id': author_hasn_id, 'type': author_type}
-            if author_type == 'human':
-                info['display_name'] = row.human_nickname or author_hasn_id
-                info['avatar'] = row.human_avatar
-            else:  # agent
-                info['display_name'] = row.agent_display_name or author_hasn_id
-                info['avatar'] = row.agent_avatar
-                if row.owner_hasn_id:
-                    info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
-            return info
-
         # ---- 帖子草稿 ----
-        PostAuthorHuman = aliased(HasnHumans)
-        PostAuthorAgent = aliased(HasnAgents)
-        PostOwnerHuman = aliased(HasnHumans)
         post_stmt = (
-            select(
-                HasnPosts,
-                PostAuthorHuman.nickname.label('human_nickname'),
-                PostAuthorHuman.avatar.label('human_avatar'),
-                PostAuthorAgent.display_name.label('agent_display_name'),
-                PostAuthorAgent.avatar.label('agent_avatar'),
-                PostOwnerHuman.hasn_id.label('owner_hasn_id'),
-                PostOwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(PostAuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == PostAuthorHuman.hasn_id))
-            .outerjoin(PostAuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == PostAuthorAgent.hasn_id))
-            .outerjoin(PostOwnerHuman, (HasnPosts.author_type == 'agent') & (PostAuthorAgent.owner_id == PostOwnerHuman.hasn_id))
+            select(HasnPosts)
             .where(
                 HasnPosts.owner_hasn_id == hasn_id,
                 HasnPosts.status.in_(['draft', 'pending_review']),
@@ -1540,25 +1339,11 @@ class CommunityService:
             .order_by(HasnPosts.created_time.desc())
             .limit(limit)
         )
-        post_rows = (await db.execute(post_stmt)).all()
+        posts = (await db.execute(post_stmt)).scalars().all()
 
         # ---- 文章草稿（含 Agent pending_review）----
-        ArtAuthorHuman = aliased(HasnHumans)
-        ArtAuthorAgent = aliased(HasnAgents)
-        ArtOwnerHuman = aliased(HasnHumans)
         article_stmt = (
-            select(
-                HasnArticles,
-                ArtAuthorHuman.nickname.label('human_nickname'),
-                ArtAuthorHuman.avatar.label('human_avatar'),
-                ArtAuthorAgent.display_name.label('agent_display_name'),
-                ArtAuthorAgent.avatar.label('agent_avatar'),
-                ArtOwnerHuman.hasn_id.label('owner_hasn_id'),
-                ArtOwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(ArtAuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == ArtAuthorHuman.hasn_id))
-            .outerjoin(ArtAuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == ArtAuthorAgent.hasn_id))
-            .outerjoin(ArtOwnerHuman, (HasnArticles.author_type == 'agent') & (ArtAuthorAgent.owner_id == ArtOwnerHuman.hasn_id))
+            select(HasnArticles)
             .where(
                 HasnArticles.owner_hasn_id == hasn_id,
                 HasnArticles.status.in_(['draft', 'pending_review']),
@@ -1566,13 +1351,12 @@ class CommunityService:
             .order_by(HasnArticles.created_time.desc())
             .limit(limit)
         )
-        article_rows = (await db.execute(article_stmt)).all()
+        articles = (await db.execute(article_stmt)).scalars().all()
 
         # ---- 合并：按 created_time 倒序统一排序，cap 到 limit ----
         merged: list[tuple[Any, dict[str, Any]]] = []
 
-        for row in post_rows:
-            post = row.HasnPosts
+        for post in posts:
             # 草稿未发布：时间退回 created_time 让卡片有时间展示；无点赞/收藏交互。
             draft_time = (
                 post.published_time.isoformat()
@@ -1587,7 +1371,7 @@ class CommunityService:
                     'kind': post.origin_workspace_kind,
                     'id': post.origin_workspace_id,
                 },
-                'author': _build_author(post.author_type, post.author_hasn_id, row),
+                'author': {'hasn_id': post.author_hasn_id, 'type': post.author_type},
                 'content': post.content,
                 'tags': post.tags or [],
                 'media': _present_media(post.media_json),
@@ -1602,8 +1386,7 @@ class CommunityService:
                 'is_collected': False,
             }))
 
-        for article_row in article_rows:
-            article = article_row.HasnArticles
+        for article in articles:
             draft_time = (
                 article.published_time.isoformat()
                 if article.published_time
@@ -1617,7 +1400,7 @@ class CommunityService:
                     'kind': article.origin_workspace_kind,
                     'id': article.origin_workspace_id,
                 },
-                'author': _build_author(article.author_type, article.author_hasn_id, article_row),
+                'author': {'hasn_id': article.author_hasn_id, 'type': article.author_type},
                 'title': article.title,
                 'summary': article.summary,
                 'cover_url': article.cover_url,
@@ -1763,35 +1546,11 @@ class CommunityService:
         :param user_id: 当前用户 ID
         :return: 帖子详情
         """
-        # 创建别名用于 JOIN
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
+        stmt = select(HasnPosts).where(HasnPosts.post_id == post_id)
+        post = (await db.execute(stmt)).scalars().first()
 
-        # 构建查询，JOIN 用户信息表
-        stmt = (
-            select(
-                HasnPosts,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-            .where(HasnPosts.post_id == post_id)
-        )
-
-        result = await db.execute(stmt)
-        row = result.first()
-
-        if not row:
+        if not post:
             raise errors.NotFoundError(msg='帖子不存在')
-
-        post = row.HasnPosts
 
         # 当前 viewer 的点赞/收藏态
         viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
@@ -1833,24 +1592,11 @@ class CommunityService:
             db, viewer_hasn_id, 'post', [post.post_id]
         )
 
-        # 构建 author 信息
+        # 构建 author 信息（展示字段交给下方 `_enrich_authors` 二段式批量投影回填）
         author_info: dict[str, Any] = {
             'hasn_id': post.author_hasn_id,
             'type': post.author_type,
         }
-
-        if post.author_type == 'human':
-            author_info['display_name'] = row.human_nickname or post.author_hasn_id
-            author_info['avatar'] = row.human_avatar
-        else:  # agent
-            author_info['display_name'] = row.agent_display_name or post.author_hasn_id
-            author_info['avatar'] = row.agent_avatar
-            # 添加 owner 信息
-            if row.owner_hasn_id:
-                author_info['owner'] = {
-                    'hasn_id': row.owner_hasn_id,
-                    'display_name': row.owner_nickname or row.owner_hasn_id,
-                }
 
         # 评论权限预判（doc-12 B-3 姊妹刀）：详情接口直接把 comment_policy 真实生效的判定结果
         # 带给 webui，驱动「关闭评论时不显示输入框、改提示原因」，而不是让用户点提交才被拒。
@@ -1948,30 +1694,10 @@ class CommunityService:
         :param limit: 每页条数
         :return: 评论列表
         """
-        # 创建别名用于 JOIN
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
-
-        # 构建查询，JOIN 用户信息表
-        stmt = (
-            select(
-                HasnComments,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
-            )
-            .outerjoin(AuthorHuman, (HasnComments.author_type == 'human') & (HasnComments.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnComments.author_type == 'agent') & (HasnComments.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnComments.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-            .where(
-                HasnComments.target_type == target_type,
-                HasnComments.target_id == target_id,
-                HasnComments.status == 'visible',
-            )
+        stmt = select(HasnComments).where(
+            HasnComments.target_type == target_type,
+            HasnComments.target_id == target_id,
+            HasnComments.status == 'visible',
         )
 
         if sort not in {'time_asc', 'time_desc', 'hot'}:
@@ -2048,14 +1774,14 @@ class CommunityService:
 
         stmt = stmt.limit(limit + 1)
         result = await db.execute(stmt)
-        rows = result.all()
-        has_more = len(rows) > limit
-        rows = rows[:limit]
+        comments = result.scalars().all()
+        has_more = len(comments) > limit
+        comments = comments[:limit]
 
         viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
         liked_comment_ids: set[str] = set()
-        if viewer_hasn_id and rows:
-            comment_ids = [row.HasnComments.comment_id for row in rows]
+        if viewer_hasn_id and comments:
+            comment_ids = [comment.comment_id for comment in comments]
             liked_comment_ids = set(
                 (
                     await db.execute(
@@ -2068,28 +1794,13 @@ class CommunityService:
                 ).scalars().all()
             )
 
-        items = []
-        for row in rows:
-            comment = row.HasnComments
-
-            # 构建 author 信息
+        items: list[dict[str, Any]] = []
+        for comment in comments:
+            # 构建 author 信息（展示字段交给下方 `_enrich_authors` 二段式批量投影回填）
             author_info = {
                 'hasn_id': comment.author_hasn_id,
                 'type': comment.author_type,
             }
-
-            if comment.author_type == 'human':
-                author_info['display_name'] = row.human_nickname or comment.author_hasn_id
-                author_info['avatar'] = row.human_avatar
-            else:  # agent
-                author_info['display_name'] = row.agent_display_name or comment.author_hasn_id
-                author_info['avatar'] = row.agent_avatar
-                # 添加 owner 信息
-                if row.owner_hasn_id:
-                    author_info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
 
             items.append({
                 'comment_id': comment.comment_id,
@@ -2103,8 +1814,8 @@ class CommunityService:
 
         await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         next_cursor = None
-        if has_more and rows:
-            last = rows[-1].HasnComments
+        if has_more and comments:
+            last = comments[-1]
             if sort == 'hot':
                 next_cursor = f'{last.like_count}|{last.created_time.isoformat()}|{last.comment_id}'
             else:
@@ -2576,11 +2287,8 @@ class CommunityService:
         # 触发通知：被关注者（Agent 被关注额外 relay 给主人）
         target_owner_hasn_id = None
         if target_type == 'agent':
-            target_owner_hasn_id = (
-                await db.execute(
-                    select(HasnAgents.owner_id).where(HasnAgents.hasn_id == target_hasn_id)
-                )
-            ).scalar_one_or_none()
+            target_agent = await identity.get_agent(db, hasn_id=target_hasn_id)
+            target_owner_hasn_id = target_agent.owner_id if target_agent else None
         from backend.app.hasn_community.service.notification_service import notification_service
 
         await notification_service.notify_follow(
@@ -2699,14 +2407,10 @@ class CommunityService:
         viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
 
         # 判别类型
-        human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        human = await identity.get_human(db, hasn_id=hasn_id)
         agent = None
         if human is None:
-            agent = (
-                await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == hasn_id))
-            ).scalar_one_or_none()
+            agent = await identity.get_agent(db, hasn_id=hasn_id)
         if human is None and agent is None:
             raise errors.NotFoundError(msg='主页不存在')
 
@@ -2842,9 +2546,7 @@ class CommunityService:
         # 主人信息条
         owner_info = None
         if agent.owner_id:
-            owner = (
-                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_id))
-            ).scalar_one_or_none()
+            owner = await identity.get_human(db, hasn_id=agent.owner_id)
             if owner:
                 owner_info = {
                     'hasn_id': owner.hasn_id,
@@ -2882,9 +2584,7 @@ class CommunityService:
         供 get_profile_posts / get_profile_articles 复用，避免前端按 content_type/author
         渲染失败（缺 author 会渲染成空头像卡）。
         """
-        author_human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        author_human = await identity.get_human(db, hasn_id=hasn_id)
         if author_human is not None:
             return {
                 'hasn_id': hasn_id,
@@ -2893,9 +2593,7 @@ class CommunityService:
                 'avatar': author_human.avatar,
             }
 
-        author_agent = (
-            await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        author_agent = await identity.get_agent(db, hasn_id=hasn_id)
         author_info: dict[str, Any] = {
             'hasn_id': hasn_id,
             'type': 'agent',
@@ -2903,9 +2601,7 @@ class CommunityService:
             'avatar': author_agent.avatar if author_agent else None,
         }
         if author_agent and author_agent.owner_id:
-            owner_human = (
-                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == author_agent.owner_id))
-            ).scalar_one_or_none()
+            owner_human = await identity.get_human(db, hasn_id=author_agent.owner_id)
             author_info['owner'] = {
                 'hasn_id': author_agent.owner_id,
                 'display_name': (owner_human.nickname if owner_human else None) or author_agent.owner_id,
@@ -3054,19 +2750,10 @@ class CommunityService:
         :return: Agent 列表
         """
         # 查询该用户拥有的 Agent（hasn_agents 无 follower_count 列，改按创建时间倒序）
-        stmt = (
-            select(HasnAgents)
-            .where(HasnAgents.owner_id == hasn_id)
-            .order_by(HasnAgents.created_time.desc())
-        )
-
-        result = await db.execute(stmt)
-        agents = result.scalars().all()
+        agents = await identity.agents_of_owner(db, owner_hasn_id=hasn_id)
 
         # 查询主人真实 display_name（修 owner display_name 写死，doc-12 C4）
-        owner_human = (
-            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
-        ).scalar_one_or_none()
+        owner_human = await identity.get_human(db, hasn_id=hasn_id)
         owner_display_name = (owner_human.nickname if owner_human else None) or hasn_id
 
         # 查询当前用户是否已关注这些 Agent
@@ -3475,11 +3162,7 @@ class CommunityService:
             # 不泄露私有收藏夹的存在
             raise errors.NotFoundError(msg='收藏夹不存在')
 
-        owner = (
-            await db.execute(
-                select(HasnHumans).where(HasnHumans.hasn_id == collection.owner_hasn_id)
-            )
-        ).scalar_one_or_none()
+        owner = await identity.get_human(db, hasn_id=collection.owner_hasn_id)
 
         # 复用 owner-scoped 的内容项投影（access 已在上方校验）
         items_page = await CommunityService.get_collection_items(
@@ -4336,22 +4019,14 @@ class CommunityService:
         :return: 待确认草稿列表
         """
         # 查询当前用户拥有的 Agent
-        agent_stmt = select(HasnAgents.hasn_id).where(HasnAgents.owner_id == hasn_id)
-        agent_result = await db.execute(agent_stmt)
-        agent_ids = [row[0] for row in agent_result.all()]
+        agent_ids = [a.hasn_id for a in await identity.agents_of_owner(db, owner_hasn_id=hasn_id)]
 
         if not agent_ids:
             return {'items': [], 'next_cursor': None}
 
-        # 查询这些 Agent 的待确认草稿
-        AuthorAgent = aliased(HasnAgents)
-
+        # 查询这些 Agent 的待确认草稿（展示字段交给下方 `_enrich_authors` 批量投影回填）
         stmt = (
-            select(
-                HasnPosts,
-                AuthorAgent.display_name.label('agent_display_name'),
-            )
-            .join(AuthorAgent, HasnPosts.author_hasn_id == AuthorAgent.hasn_id)
+            select(HasnPosts)
             .where(
                 HasnPosts.author_type == 'agent',
                 HasnPosts.author_hasn_id.in_(agent_ids),
@@ -4362,12 +4037,10 @@ class CommunityService:
         )
 
         result = await db.execute(stmt)
-        rows = result.all()
+        posts = result.scalars().all()
 
-        items = []
-        for row in rows:
-            post = row.HasnPosts
-
+        items: list[dict[str, Any]] = []
+        for post in posts:
             items.append({
                 'content_type': 'post',
                 'post_id': post.post_id,
@@ -4378,7 +4051,6 @@ class CommunityService:
                 'author': {
                     'hasn_id': post.author_hasn_id,
                     'type': 'agent',
-                    'display_name': row.agent_display_name or post.author_hasn_id,
                 },
                 'content': post.content,
                 'tags': post.tags or [],
@@ -4393,7 +4065,7 @@ class CommunityService:
         await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         return {
             'items': items,
-            'next_cursor': rows[-1].HasnPosts.post_id if rows else None,
+            'next_cursor': posts[-1].post_id if posts else None,
         }
 
     # ==================== 文章相关方法 ====================
@@ -4547,7 +4219,6 @@ class CommunityService:
         :return: 文章详情
         """
         from backend.app.hasn_community.model.hasn_articles import HasnArticles
-        from backend.app.hasn_core import HasnAgents, HasnHumans
 
         # 查询文章
         article = (
@@ -4584,33 +4255,8 @@ class CommunityService:
             if not decision.allowed:
                 raise errors.NotFoundError(msg='文章不存在')
 
-        # 查询作者信息
+        # 查询作者信息（展示字段交给下方 `_enrich_authors` 二段式批量投影回填）
         author_info: dict[str, Any] = {'hasn_id': article.author_hasn_id, 'type': article.author_type}
-
-        if article.author_type == 'human':
-            human = (
-                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == article.author_hasn_id))
-            ).scalar_one_or_none()
-            if human:
-                author_info['display_name'] = human.nickname
-                author_info['avatar'] = human.avatar
-        else:
-            agent = (
-                await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == article.author_hasn_id))
-            ).scalar_one_or_none()
-            if agent:
-                author_info['display_name'] = agent.display_name
-                author_info['avatar'] = agent.avatar
-
-                # 查询 Agent 的主人信息（HasnAgents 主人字段是 owner_id，不是 owner_hasn_id）
-                owner = (
-                    await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_id))
-                ).scalar_one_or_none()
-                if owner:
-                    author_info['owner'] = {
-                        'hasn_id': owner.hasn_id,
-                        'display_name': owner.nickname,
-                    }
 
         # 回填当前 viewer 对该文章的点赞/收藏态（doc-12 B-3，与 get_post 一致）
         liked_ids, collected_ids = await CommunityService._batch_reactions(
@@ -4891,26 +4537,9 @@ class CommunityService:
         if not article:
             raise errors.NotFoundError(msg='文章不存在')
 
+        # 展示字段交给下方 `_enrich_authors` 二段式批量投影回填，不再逐表点查 + JOIN。
         author_info: dict[str, Any] = {'hasn_id': article.author_hasn_id, 'type': article.author_type}
-        if article.author_type == 'human':
-            human = (
-                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == article.author_hasn_id))
-            ).scalar_one_or_none()
-            if human:
-                author_info['display_name'] = human.nickname
-                author_info['avatar'] = human.avatar
-        else:
-            agent = (
-                await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == article.author_hasn_id))
-            ).scalar_one_or_none()
-            if agent:
-                author_info['display_name'] = agent.display_name
-                author_info['avatar'] = agent.avatar
-                owner = (
-                    await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_id))
-                ).scalar_one_or_none()
-                if owner:
-                    author_info['owner'] = {'hasn_id': owner.hasn_id, 'display_name': owner.nickname}
+        await CommunityService._enrich_authors(db, [author_info])
 
         return {
             'article_id': article.article_id,

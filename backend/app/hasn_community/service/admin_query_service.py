@@ -9,18 +9,37 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
-from sqlalchemy.orm import aliased
 
 from backend.app.hasn_community.model import HasnArticles, HasnComments, HasnPosts
 from backend.app.hasn_community.service._community_codec import _present_reference_cards
 from backend.app.hasn_community.service.article_summary import effective_summary
-from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_core import identity
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from typing import Any
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def _batch_display_names(
+    db: AsyncSession, entries: list[tuple[str, str]]
+) -> dict[str, str | None]:
+    """按 (author_type, author_hasn_id) 批量取展示名，返回 {author_hasn_id: display_name}。
+
+    管理端列表只展示名字（不含头像/主人），二段式批量投影足够；替代此前
+    "JOIN 身份表回填 human_nickname/agent_display_name 列"的写法。
+    """
+    human_ids = [hid for t, hid in entries if t == 'human']
+    agent_ids = [hid for t, hid in entries if t == 'agent']
+    human_refs = await identity.refs_for_humans(db, hasn_ids=human_ids) if human_ids else {}
+    agent_refs = await identity.refs_for_agents(db, hasn_ids=agent_ids) if agent_ids else {}
+    names: dict[str, str | None] = {}
+    for hid, human_ref in human_refs.items():
+        names[hid] = human_ref.nickname
+    for hid, agent_ref in agent_refs.items():
+        names[hid] = agent_ref.display_name
+    return names
 
 
 class CommunityAdminService:
@@ -36,44 +55,34 @@ class CommunityAdminService:
         offset: int = 0,
     ) -> dict[str, Any]:
         """管理端列出帖子（全状态，可按 status/author 过滤），用于审核可见性。"""
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        stmt = (
-            select(
-                HasnPosts,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorAgent.display_name.label('agent_display_name'),
-            )
-            .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
-        )
+        stmt = select(HasnPosts)
         if status:
             stmt = stmt.where(HasnPosts.status == status)
         if author_hasn_id:
             stmt = stmt.where(HasnPosts.author_hasn_id == author_hasn_id)
         stmt = stmt.order_by(HasnPosts.created_time.desc()).limit(limit).offset(offset)
-        rows = (await db.execute(stmt)).all()
+        posts = (await db.execute(stmt)).scalars().all()
+        names = await _batch_display_names(db, [(p.author_type, p.author_hasn_id) for p in posts])
         items = [
             {
-                'post_id': r.HasnPosts.post_id,
+                'post_id': p.post_id,
                 'author': {
-                    'hasn_id': r.HasnPosts.author_hasn_id,
-                    'type': r.HasnPosts.author_type,
-                    'display_name': (r.human_nickname if r.HasnPosts.author_type == 'human' else r.agent_display_name)
-                    or r.HasnPosts.author_hasn_id,
+                    'hasn_id': p.author_hasn_id,
+                    'type': p.author_type,
+                    'display_name': names.get(p.author_hasn_id) or p.author_hasn_id,
                 },
-                'owner_hasn_id': r.HasnPosts.owner_hasn_id,
-                'content': r.HasnPosts.content,
-                'tags': r.HasnPosts.tags or [],
-                'visibility': r.HasnPosts.visibility,
-                'status': r.HasnPosts.status,
-                'generation_type': r.HasnPosts.generation_type,
-                'like_count': r.HasnPosts.like_count,
-                'comment_count': r.HasnPosts.comment_count,
-                'created_time': r.HasnPosts.created_time.isoformat() if r.HasnPosts.created_time else None,
-                'published_time': r.HasnPosts.published_time.isoformat() if r.HasnPosts.published_time else None,
+                'owner_hasn_id': p.owner_hasn_id,
+                'content': p.content,
+                'tags': p.tags or [],
+                'visibility': p.visibility,
+                'status': p.status,
+                'generation_type': p.generation_type,
+                'like_count': p.like_count,
+                'comment_count': p.comment_count,
+                'created_time': p.created_time.isoformat() if p.created_time else None,
+                'published_time': p.published_time.isoformat() if p.published_time else None,
             }
-            for r in rows
+            for p in posts
         ]
         return {'items': items, 'limit': limit, 'offset': offset}
 
@@ -87,43 +96,33 @@ class CommunityAdminService:
         offset: int = 0,
     ) -> dict[str, Any]:
         """管理端列出文章（全状态，可按 status/author 过滤），用于审核可见性。"""
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        stmt = (
-            select(
-                HasnArticles,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorAgent.display_name.label('agent_display_name'),
-            )
-            .outerjoin(AuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == AuthorAgent.hasn_id))
-        )
+        stmt = select(HasnArticles)
         if status:
             stmt = stmt.where(HasnArticles.status == status)
         if author_hasn_id:
             stmt = stmt.where(HasnArticles.author_hasn_id == author_hasn_id)
         stmt = stmt.order_by(HasnArticles.created_time.desc()).limit(limit).offset(offset)
-        rows = (await db.execute(stmt)).all()
+        articles = (await db.execute(stmt)).scalars().all()
+        names = await _batch_display_names(db, [(a.author_type, a.author_hasn_id) for a in articles])
         items = [
             {
-                'article_id': r.HasnArticles.article_id,
-                'title': r.HasnArticles.title,
-                'summary': r.HasnArticles.summary,
+                'article_id': a.article_id,
+                'title': a.title,
+                'summary': a.summary,
                 'author': {
-                    'hasn_id': r.HasnArticles.author_hasn_id,
-                    'type': r.HasnArticles.author_type,
-                    'display_name': (r.human_nickname if r.HasnArticles.author_type == 'human' else r.agent_display_name)
-                    or r.HasnArticles.author_hasn_id,
+                    'hasn_id': a.author_hasn_id,
+                    'type': a.author_type,
+                    'display_name': names.get(a.author_hasn_id) or a.author_hasn_id,
                 },
-                'owner_hasn_id': r.HasnArticles.owner_hasn_id,
-                'visibility': r.HasnArticles.visibility,
-                'status': r.HasnArticles.status,
-                'like_count': r.HasnArticles.like_count,
-                'comment_count': r.HasnArticles.comment_count,
-                'created_time': r.HasnArticles.created_time.isoformat() if r.HasnArticles.created_time else None,
-                'published_time': r.HasnArticles.published_time.isoformat() if r.HasnArticles.published_time else None,
+                'owner_hasn_id': a.owner_hasn_id,
+                'visibility': a.visibility,
+                'status': a.status,
+                'like_count': a.like_count,
+                'comment_count': a.comment_count,
+                'created_time': a.created_time.isoformat() if a.created_time else None,
+                'published_time': a.published_time.isoformat() if a.published_time else None,
             }
-            for r in rows
+            for a in articles
         ]
         return {'items': items, 'limit': limit, 'offset': offset}
 
@@ -138,17 +137,7 @@ class CommunityAdminService:
         offset: int = 0,
     ) -> dict[str, Any]:
         """管理端列出评论（全状态，可按 status/target 过滤），用于审核可见性。"""
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        stmt = (
-            select(
-                HasnComments,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorAgent.display_name.label('agent_display_name'),
-            )
-            .outerjoin(AuthorHuman, (HasnComments.author_type == 'human') & (HasnComments.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnComments.author_type == 'agent') & (HasnComments.author_hasn_id == AuthorAgent.hasn_id))
-        )
+        stmt = select(HasnComments)
         if status:
             stmt = stmt.where(HasnComments.status == status)
         if target_type:
@@ -156,26 +145,26 @@ class CommunityAdminService:
         if target_id:
             stmt = stmt.where(HasnComments.target_id == target_id)
         stmt = stmt.order_by(HasnComments.created_time.desc()).limit(limit).offset(offset)
-        rows = (await db.execute(stmt)).all()
+        comments = (await db.execute(stmt)).scalars().all()
+        names = await _batch_display_names(db, [(c.author_type, c.author_hasn_id) for c in comments])
         items = [
             {
-                'comment_id': r.HasnComments.comment_id,
-                'target_type': r.HasnComments.target_type,
-                'target_id': r.HasnComments.target_id,
+                'comment_id': c.comment_id,
+                'target_type': c.target_type,
+                'target_id': c.target_id,
                 'author': {
-                    'hasn_id': r.HasnComments.author_hasn_id,
-                    'type': r.HasnComments.author_type,
-                    'display_name': (r.human_nickname if r.HasnComments.author_type == 'human' else r.agent_display_name)
-                    or r.HasnComments.author_hasn_id,
+                    'hasn_id': c.author_hasn_id,
+                    'type': c.author_type,
+                    'display_name': names.get(c.author_hasn_id) or c.author_hasn_id,
                 },
-                'owner_hasn_id': r.HasnComments.owner_hasn_id,
-                'content': r.HasnComments.content,
-                'is_auto_reply': r.HasnComments.is_auto_reply,
-                'status': r.HasnComments.status,
-                'like_count': r.HasnComments.like_count,
-                'created_time': r.HasnComments.created_time.isoformat() if r.HasnComments.created_time else None,
+                'owner_hasn_id': c.owner_hasn_id,
+                'content': c.content,
+                'is_auto_reply': c.is_auto_reply,
+                'status': c.status,
+                'like_count': c.like_count,
+                'created_time': c.created_time.isoformat() if c.created_time else None,
             }
-            for r in rows
+            for c in comments
         ]
         return {'items': items, 'limit': limit, 'offset': offset}
 

@@ -34,9 +34,9 @@ async def _optional_viewer_hasn_id(request: Request, db: CurrentSession) -> str 
     user_id = getattr(user, 'id', None)
     if user_id is None:
         return None
-    from backend.app.hasn_core import hasn_humans_dao
+    from backend.app.hasn_core import identity
 
-    human = await hasn_humans_dao.get_by_user_id(db, user_id)
+    human = await identity.get_human_by_user_id(db, user_id=user_id)
     return human.hasn_id if human else None
 
 
