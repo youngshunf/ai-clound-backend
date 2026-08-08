@@ -133,7 +133,11 @@ class PrepareReleaseRequest(SchemaBase):
         max_length=32,
         pattern=r'^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$',
         description='显式指定本次版本号；不传则按同频道历史最高 semver 自动 patch+1。'
-        '指定值必须严格大于历史最高版本（不允许回退或重号）',
+        '普通发布的指定值必须严格大于历史最高版本',
+    )
+    replace_existing: bool = Field(
+        default=False,
+        description='是否原位覆盖已发布的 requested_version；必须显式授权',
     )
 
 

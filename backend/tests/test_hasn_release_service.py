@@ -108,6 +108,7 @@ def _prepare_req(
     channel: str = 'beta',
     source_commit: str = 'a' * 40,
     requested_version: str | None = None,
+    replace_existing: bool = False,
 ) -> PrepareReleaseRequest:
     """发布批次 prepare 请求。
 
@@ -118,6 +119,7 @@ def _prepare_req(
         channel=channel,
         source_commit=source_commit,
         requested_version=requested_version,
+        replace_existing=replace_existing,
     )
 
 
@@ -387,6 +389,123 @@ async def test_prepare_rejects_version_not_higher_than_history(session: AsyncSes
         with pytest.raises(errors.RequestError) as excinfo:
             await release_service.prepare_release(session, _prepare_req(requested_version=requested))
         assert requested in str(excinfo.value.msg)
+
+
+async def test_prepare_explicitly_rebuilds_published_version_idempotently(session: AsyncSession) -> None:
+    """显式覆盖复用原发布行，同一源码重试不增加 tag 代次。"""
+    detail = await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
+
+    first = await release_service.prepare_release(
+        session,
+        _prepare_req(requested_version='99.5.0', replace_existing=True),
+    )
+    assert first.id == detail.id
+    assert first.release_tag == 'v99.5.0-rebuild.1'
+    assert first.status == 'published'
+
+    retried = await release_service.prepare_release(
+        session,
+        _prepare_req(requested_version='99.5.0', replace_existing=True),
+    )
+    assert (retried.id, retried.release_tag, retried.source_commit) == (
+        first.id,
+        first.release_tag,
+        first.source_commit,
+    )
+
+    next_source = await release_service.prepare_release(
+        session,
+        _prepare_req(
+            source_commit='c' * 40,
+            requested_version='99.5.0',
+            replace_existing=True,
+        ),
+    )
+    assert next_source.release_tag == 'v99.5.0-rebuild.2'
+    assert next_source.previous_release_tag == 'v99.5.0-rebuild.1'
+
+
+async def test_prepare_replace_requires_published_target(session: AsyncSession) -> None:
+    """覆盖开关不能用来凭空创建旧版本。"""
+    with pytest.raises(errors.RequestError) as excinfo:
+        await release_service.prepare_release(
+            session,
+            _prepare_req(requested_version='99.4.9', replace_existing=True),
+        )
+    assert '已发布' in str(excinfo.value.msg)
+
+
+async def test_prepare_replace_rejects_when_channel_has_active_batch(session: AsyncSession) -> None:
+    """频道里已有新版本草稿时不能穿透它去重打历史版本。"""
+    await release_service.publish(
+        session,
+        _publish_req('99.4.0', channel='beta'),
+        source='manual',
+    )
+    active = await release_service.prepare_release(session, _prepare_req())
+
+    with pytest.raises(errors.RequestError) as excinfo:
+        await release_service.prepare_release(
+            session,
+            _prepare_req(requested_version='99.4.0', replace_existing=True),
+        )
+    assert active.version in str(excinfo.value.msg)
+    assert '进行中' in str(excinfo.value.msg)
+
+
+async def test_rebuild_callback_replaces_only_incoming_platform_and_preserves_latest(
+    session: AsyncSession,
+) -> None:
+    """重打历史版本只覆盖本次平台资产，不提升版本也不删除其它平台。"""
+    await release_service.publish(
+        session,
+        _publish_req('99.5.0', channel='beta'),
+        source='manual',
+    )
+    await release_service.publish(
+        session,
+        _publish_req('99.5.1', channel='beta'),
+        source='manual',
+    )
+    batch = await release_service.prepare_release(
+        session,
+        _prepare_req(requested_version='99.5.0', replace_existing=True),
+    )
+    rebuilt = (
+        await session.execute(select(AppRelease).where(AppRelease.id == batch.id))
+    ).scalar_one()
+    rebuilt.tag_status = 'ready'
+    await session.flush()
+
+    callback = CiCallbackRequest(
+        version='99.5.0',
+        channel='beta',
+        source='github',
+        release_id=batch.id,
+        release_tag=batch.release_tag,
+        assets=[
+            _asset(
+                'darwin-aarch64',
+                'installer',
+                url=f'{_CDN}/99.5.0/rebuild-arm64.dmg',
+            ),
+            _asset(
+                'darwin-aarch64',
+                'updater',
+                sig='SIG_ARM64_REBUILD',
+                url=f'{_CDN}/99.5.0/rebuild-arm64.tar.gz',
+            ),
+        ],
+    )
+    detail = await release_service.ci_callback(session, callback)
+    assets = {(asset.platform_target, asset.asset_kind): asset for asset in detail.assets}
+
+    assert assets[('darwin-aarch64', 'installer')].download_url.endswith('rebuild-arm64.dmg')
+    assert assets[('darwin-aarch64', 'updater')].signature == 'SIG_ARM64_REBUILD'
+    assert assets[('darwin-x86_64', 'installer')].download_url.endswith('99.5.0/x64.dmg')
+    assert detail.status == 'published'
+    assert detail.is_latest is False
+    assert (await release_service.get_latest(session, channel='beta')).version == '99.5.1'
 
 
 async def test_prepare_joins_draft_but_rejects_conflicting_version(session: AsyncSession) -> None:

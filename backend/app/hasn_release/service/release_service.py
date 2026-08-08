@@ -83,6 +83,26 @@ def _next_patch_version(versions: list[str]) -> str:
     return f'{highest[0]}.{highest[1]}.{highest[2] + 1}'
 
 
+def _is_rebuild_tag(version: str, release_tag: str | None) -> bool:
+    """release_tag 是否为该版本的不可变重打 tag。"""
+    return bool(
+        re.fullmatch(
+            rf'v{re.escape(version)}-rebuild\.\d+',
+            (release_tag or '').strip(),
+        )
+    )
+
+
+def _next_rebuild_tag(version: str, current_tag: str | None) -> str:
+    """根据当前发布 tag 分配下一个不可变重打 tag。"""
+    match = re.fullmatch(
+        rf'v{re.escape(version)}-rebuild\.(\d+)',
+        (current_tag or '').strip(),
+    )
+    generation = int(match.group(1)) + 1 if match else 1
+    return f'v{version}-rebuild.{generation}'
+
+
 def _ensure_commit_lock_transition(*, tag_status: str, locked_commit: str, confirmed_commit: str) -> None:
     """判定「confirm-tag 能否把批次的锁定 commit 前移到 confirmed_commit」。
 
@@ -252,6 +272,11 @@ class ReleaseService:
             )
         ).scalar_one_or_none()
         if active is not None:
+            if req.replace_existing:
+                raise errors.RequestError(
+                    msg=f'{channel} 频道已有进行中的 {active.version} 批次（{active.release_tag}），'
+                    '请先补齐或作废该批次，再重打已发布版本'
+                )
             # 后来的机器加入既有批次。显式指定了别的版本号时必须报错而不是静默沿用批次版本：
             # 同一批次四平台必须同版本同 commit，想换版本只能先补齐或作废这个批次。
             if requested_version and requested_version != active.version:
@@ -260,6 +285,43 @@ class ReleaseService:
                     f'无法按 {requested_version} 发布；请先补齐该批次，或作废后重新 prepare'
                 )
             return self._to_batch(active)
+
+        if req.replace_existing:
+            if not requested_version:
+                raise errors.RequestError(msg='覆盖已发布版本时必须指定 requested_version')
+            release = (
+                await db.execute(
+                    select(AppRelease).where(
+                        AppRelease.channel == channel,
+                        AppRelease.version == requested_version,
+                    )
+                )
+            ).scalar_one_or_none()
+            if release is None or release.status != 'published':
+                raise errors.RequestError(
+                    msg=f'{channel}/{requested_version} 不是已发布版本，不允许原位覆盖'
+                )
+
+            # 同一源码重试复用已分配的 rebuild tag，避免断点重跑不断增长代次。
+            if (
+                _is_rebuild_tag(release.version, release.release_tag)
+                and (release.source_commit or '').lower() == source_commit
+            ):
+                return self._to_batch(release)
+
+            previous_tag = release.release_tag
+            release.release_tag = _next_rebuild_tag(release.version, previous_tag)
+            release.previous_release_tag = previous_tag
+            release.source_commit = source_commit
+            release.tag_status = 'pending'
+            release.tag_created_time = None
+            release.required_platforms = list(REQUIRED_DESKTOP_PLATFORMS)
+            release.release_commits = []
+            # 同版本重打不改变用户可见更新说明，仅更新构建溯源和资产。
+            release.release_notes_status = 'ready'
+            release.release_notes_error = None
+            await db.flush()
+            return self._to_batch(release)
 
         versions = list(
             (await db.execute(select(AppRelease.version).where(AppRelease.channel == channel))).scalars().all()
@@ -743,7 +805,11 @@ class ReleaseService:
             and release.tag_status == 'ready'
             and release.release_notes_status == 'ready'
         )
-        if ready:
+        if _is_rebuild_tag(release.version, release.release_tag):
+            # 原位重打仅替换本次平台资产：发布可见性和 latest 指针均沿用原值。
+            # 尤其不能因为重打历史版本，就把它重新提升为当前最新版。
+            release.status = 'published'
+        elif ready:
             await db.execute(
                 update(AppRelease)
                 .where(AppRelease.channel == release.channel, AppRelease.id != release.id)
