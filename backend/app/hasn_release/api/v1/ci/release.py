@@ -32,6 +32,18 @@ from backend.database.db import CurrentSessionTransaction
 router = APIRouter()
 
 
+def _required_content_length(request: Request) -> int:
+    """读取流式上传长度；发布产物必须使用已知长度，避免无界请求体。"""
+    raw_value = request.headers.get('content-length', '').strip()
+    try:
+        size = int(raw_value)
+    except ValueError as exc:
+        raise errors.RequestError(msg='上传产物必须提供合法的 Content-Length') from exc
+    if size <= 0:
+        raise errors.RequestError(msg='上传产物 Content-Length 必须大于 0')
+    return size
+
+
 def _verify_ci_bearer(authorization: str | None) -> None:
     secret = (settings.RELEASE_CI_CALLBACK_SECRET or '').strip()
     if not secret:
@@ -106,10 +118,10 @@ async def ci_upload(
     - 返回 CDN https 直链 + sha256 + size，供 CI 组装 ci-callback 的 `ReleaseAssetInput`。
     """
     _verify_ci_bearer(authorization)
-    body = await request.body()
-    data = await release_service.ci_upload_asset(
+    data = await release_service.ci_upload_asset_stream(
         db,
-        data=body,
+        data=request.stream(),
+        size=_required_content_length(request),
         filename=file_name,
         version=version,
         channel=channel,

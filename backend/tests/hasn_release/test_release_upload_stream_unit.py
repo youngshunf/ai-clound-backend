@@ -1,0 +1,59 @@
+"""桌面端发布产物流式上传的回归契约。"""
+
+import hashlib
+import inspect
+
+from collections.abc import AsyncIterator
+
+import pytest
+
+from starlette.requests import Request
+
+from backend.app.hasn_release.api.v1.ci.release import _required_content_length, ci_upload
+from backend.app.hasn_release.service.release_service import _HashingSizedStream
+from backend.common.exception import errors
+
+
+async def _chunks(*values: bytes) -> AsyncIterator[bytes]:  # noqa: RUF029 - 构造真实异步字节流
+    for value in values:
+        yield value
+
+
+@pytest.mark.asyncio
+async def test_hashing_sized_stream_forwards_chunks_and_calculates_sha256() -> None:
+    stream = _HashingSizedStream(_chunks(b'abc', b'', b'def'), 6)
+
+    received = b''.join([chunk async for chunk in stream])
+
+    assert received == b'abcdef'
+    assert stream.received_size == 6
+    assert stream.sha256 == hashlib.sha256(received).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_hashing_sized_stream_rejects_size_mismatch() -> None:
+    stream = _HashingSizedStream(_chunks(b'abc'), 4)
+
+    with pytest.raises(errors.RequestError, match='Content-Length'):
+        _ = [chunk async for chunk in stream]
+
+
+def test_ci_upload_never_buffers_the_whole_request_body() -> None:
+    source = inspect.getsource(ci_upload)
+
+    assert 'request.stream()' in source
+    assert 'request.body()' not in source
+
+
+@pytest.mark.parametrize(
+    ('raw_value', 'expected'),
+    [(b'331761433', 331761433), (b'', None), (b'nope', None), (b'0', None)],
+)
+def test_required_content_length_rejects_unknown_or_empty_bodies(raw_value: bytes, expected: int | None) -> None:
+    request = Request({'type': 'http', 'headers': [(b'content-length', raw_value)]})
+
+    if expected is None:
+        with pytest.raises(errors.RequestError, match='Content-Length'):
+            _required_content_length(request)
+    else:
+        assert _required_content_length(request) == expected

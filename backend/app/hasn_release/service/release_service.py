@@ -21,6 +21,7 @@ import hashlib
 import os
 import re
 
+from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
@@ -62,6 +63,39 @@ _SEMVER_CORE = re.compile(r'^(\d+)\.(\d+)\.(\d+)')
 _RELEASE_NOTES_MAX_CHARS = 500
 _MAX_RELEASE_COMMITS = 5000
 _RELEASE_COMMIT_CHUNK_CHARS = 12000
+
+
+class _HashingSizedStream:
+    """边转发边计算摘要，并校验实际字节数与 Content-Length 一致。"""
+
+    def __init__(self, source: AsyncIterable[bytes], expected_size: int) -> None:
+        self._source = source
+        self.expected_size = expected_size
+        self.received_size = 0
+        self._sha256 = hashlib.sha256()
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[bytes]:
+        async for chunk in self._source:
+            if not chunk:
+                continue
+            self.received_size += len(chunk)
+            if self.received_size > self.expected_size:
+                raise errors.RequestError(msg='上传产物实际大小超过 Content-Length')
+            self._sha256.update(chunk)
+            yield chunk
+        if self.received_size != self.expected_size:
+            raise errors.RequestError(msg='上传产物实际大小与 Content-Length 不一致')
+
+    @property
+    def sha256(self) -> str:
+        return self._sha256.hexdigest()
+
+
+async def _single_chunk(data: bytes) -> AsyncIterator[bytes]:  # noqa: RUF029 - 适配异步上传协议
+    yield data
 
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
@@ -841,7 +875,31 @@ class ReleaseService:
         - 强制 https：桌面端/官网走 ATS，http 直链会被拒（铁律：七牛 CDN 必须 https）。
         - sha256 由服务端据落桶字节现算，回给 CI 与其本地摘要对拍（零 fake，杜绝传输损坏静默）。
         """
-        if not data:
+        return await self.ci_upload_asset_stream(
+            db,
+            data=_single_chunk(data),
+            size=len(data),
+            filename=filename,
+            version=version,
+            channel=channel,
+            release_id=release_id,
+            content_type=content_type,
+        )
+
+    async def ci_upload_asset_stream(
+        self,
+        db: AsyncSession,
+        *,
+        data: AsyncIterable[bytes],
+        size: int,
+        filename: str,
+        version: str,
+        channel: str = 'stable',
+        release_id: int | None = None,
+        content_type: str | None = None,
+    ) -> CiUploadResponse:
+        """把 CI 请求体直接流式转发到公共对象存储，避免大产物驻留 API 内存。"""
+        if size <= 0:
             raise errors.RequestError(msg='上传产物不能为空')
         name = PurePosixPath((filename or '').strip()).name or 'asset.bin'  # 取 basename，杜绝路径穿越
         channel = (channel or 'stable').strip() or 'stable'
@@ -853,21 +911,25 @@ class ReleaseService:
             if release is None or release.version != version or release.channel != channel:
                 raise errors.RequestError(msg='上传目标与云端发布批次不匹配')
         object_key = f'desktop/{channel}/{version}/{name}'
-        ref = await StorageService.upload(
-            db,
-            data,
-            category='release_asset',
-            filename=name,
-            content_type=content_type or 'application/octet-stream',
+        mime = content_type or 'application/octet-stream'
+        storage = await StorageService.get_write_storage(db, access='public')
+        checked_stream = _HashingSizedStream(data, size)
+        ref = await StorageService.upload_stream_to_storage(
+            storage,
+            checked_stream,
+            size=size,
             key=object_key,
+            content_type=mime,
         )
+        if checked_stream.received_size != size:
+            raise errors.RequestError(msg='上传产物实际大小与 Content-Length 不一致')
         if not ref.stable_url.startswith('https://'):
             raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {ref.stable_url}')
         return CiUploadResponse(
             download_url=ref.stable_url,
             file_name=name,
             file_size=ref.size,
-            sha256=hashlib.sha256(data).hexdigest(),
+            sha256=checked_stream.sha256,
             object_key=ref.object_key,
         )
 
