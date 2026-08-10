@@ -1059,13 +1059,21 @@ class ReleaseService:
             raise errors.RequestError(msg='multipart 分片清单不完整或顺序错误')
         storage = await StorageService.get_write_storage(db, access='public')
         await db.rollback()
-        await StorageService.complete_multipart_on_storage(
-            storage,
-            object_key=obj.object_key,
-            upload_id=obj.upload_id,
-            parts=parts,
-        )
-        stat = await StorageService.stat_on_storage(storage, object_key=obj.object_key)
+        # complete_multipart_upload 已在供应商侧成功、但随后 HEAD/响应链路瞬时失败时，
+        # 客户端会用同一会话重试；此时供应商已删除 upload_id。先认领大小完全匹配的
+        # 已完成对象，使完成接口具备幂等性，发布脚本才能在断网后可靠续跑。
+        try:
+            stat = await StorageService.stat_on_storage(storage, object_key=obj.object_key)
+        except Exception:
+            stat = None
+        if stat is None or stat.size != obj.file_size:
+            await StorageService.complete_multipart_on_storage(
+                storage,
+                object_key=obj.object_key,
+                upload_id=obj.upload_id,
+                parts=parts,
+            )
+            stat = await StorageService.stat_on_storage(storage, object_key=obj.object_key)
         if stat.size != obj.file_size:
             raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
         download_url = StorageService.public_url(storage, obj.object_key)

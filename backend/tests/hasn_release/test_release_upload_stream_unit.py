@@ -84,6 +84,14 @@ def test_ci_multipart_contract_rejects_invalid_hash_and_accepts_contiguous_parts
     assert request.parts[0].part_number == 1
 
 
+def test_ci_multipart_complete_is_idempotent_after_provider_session_disappears() -> None:
+    complete_source = inspect.getsource(ReleaseService.ci_multipart_complete)
+    stat_index = complete_source.index('stat_on_storage')
+    complete_index = complete_source.index('complete_multipart_on_storage')
+    assert stat_index < complete_index
+    assert 'stat is None or stat.size != obj.file_size' in complete_source
+
+
 @pytest.mark.parametrize(
     ('raw_value', 'expected'),
     [(b'331761433', 331761433), (b'', None), (b'nope', None), (b'0', None)],
