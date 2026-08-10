@@ -1,6 +1,6 @@
 """桌面端发布 release_service 真实 PG 测试（零 mock）。
 
-覆盖（设计事实源 docs/桌面端发布与自动更新/00 §3–§5）：
+覆盖（设计事实源 docs/产品与技术/技术设计/04-端侧与渠道/桌面端/发布与自动更新/01-总体设计.md §3–§4）：
 - publish：建版本 + 各平台资产、is_latest 置位、get_latest 返回 installer；
 - updater 资产缺 minisign 签名 → 拒收（RequestError）；
 - 非 https CDN 直链 → 拒收；

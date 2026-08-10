@@ -17,7 +17,7 @@
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等；
   ``ensure_catalog_seeded`` 幂等播种 computer_use catalog 行（重复跑不重复插）。
 
-事实源: docs/hasn-node设计文档/23-分身桌面控制Computer-Use/02-分身GUI桌面控制接入设计V2-hasn-mcp统一接入与能力型应用.md §3.1/§3.3/§4.4.1。
+事实源: docs/产品与技术/技术设计/03-产品应用/分身桌面控制/01-总体设计.md §3.1/§3.3/§4.4.1。
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@
           WHERE owner_id=<resolved>（三道隔离防线，设计 §6.3）。
 
 设计事实源：
-- docs/hasn-node设计文档/桌面端第三方IM渠道接入/01-桌面端第三方IM渠道接入总体设计.md §6.1/§6.3/§8.5/§3.3。
+- docs/产品与技术/技术设计/04-端侧与渠道/第三方IM渠道接入/01-渠道接入上移daemon总体设计.md §5.7（云端侧新增工作面）/§7.1（凭据分层）/D10（云端角色）。
 
 仅暴露两个端点（best-effort 跨设备可见性镜像，不提供任何渠道操作代理）：
 - GET  /api/v1/hasn/app/agent-channel-mirrors          当前 owner 跨设备摘要列表

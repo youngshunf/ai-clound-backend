@@ -1,6 +1,6 @@
 """ip2region 离线 IP 归属地解析（零 Mock）。
 
-约束（事实源：docs/hasn-node设计文档/多设备登录与跨设备消息路由/00-设计总览.md §4；
+约束（事实源：docs/产品与技术/技术设计/02-平台能力/身份与权限/设备与Presence/01-设备身份与多设备登录.md §4.2；
 2026-07-14 福仔拍板从 GeoLite2 切换 ip2region——免注册、xdb 数据文件直接进仓库、
 部署零额外步骤、国内 IP 归属地粒度更好「省+市+ISP」）：
 - 只用 lionsoul2014/ip2region 官方 xdb 离线库（py-ip2region binding），**不发任何外部网络请求**。

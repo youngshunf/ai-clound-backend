@@ -1,6 +1,6 @@
 """桌面端发布模块定制 schema（发布/资产/CI 回调/Tauri updater manifest）。
 
-设计事实源：docs/hasn-node设计文档/桌面端发布与自动更新/00 §3–§5。
+设计事实源：docs/产品与技术/技术设计/04-端侧与渠道/桌面端/发布与自动更新/01-总体设计.md §3–§4。
 - 二进制托管七牛 CDN，云端只存元数据 + CDN url（CI/管理端预上传后回传）。
 - updater 资产携 minisign signature；Tauri 客户端持公钥自行验签（云端只存储+下发）。
 """
