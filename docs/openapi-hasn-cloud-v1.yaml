@@ -11,6 +11,22 @@ info:
 
     Runtime-less mode is first-class: message delivery to Human/Owner inbox
     and owned Agent inbox MUST NOT depend on Runtime availability.
+
+    ## 变更记录
+
+    本文件是 `version: 1.0.0-p0` 冻结契约，以下为冻结后发生的**破坏性变更**。
+
+    - **2026-08-10 · 移除 `POST /api/v1/hasn/runtime/report`**（破坏性）。
+      该端点随**云端 Runtime 形态退役**而一并摘除：云端不再部署阉割版 Runtime，
+      改为按订阅部署完整的无头 hasn-node（即主人的第 N 台设备），本地 Runtime 状态
+      不再经此写入端点上报。随该 path 一并移除的还有 `RuntimeReport` tag 与
+      `RuntimeReportRequest`/`RuntimeSummary` schema（二者仅被该端点引用）。
+      服务端写入实现（`save_runtime_report`）已先行摘除，`GET`/`sync/pull` 侧
+      既有 runtime 事件的读取不受影响。
+      事实源：父项目
+      `docs/产品与技术/技术设计/02-平台能力/运营管理面/实施/01-运营管理面建设施工清单.md`。
+      注：本次未 bump `info.version`——该版本号被
+      `backend/tests/hasn/test_s0_s1_sql_contract.py` 断言引用，是否升版另行裁决。
 servers:
   - url: https://api.huanxing.dcfuture.cn
     description: production placeholder
@@ -24,7 +40,6 @@ tags:
   - name: Sandbox
   - name: ChannelBinding
   - name: MessageHub
-  - name: RuntimeReport
   - name: AntiAbuse
 paths:
   /api/v1/hasn/auth/phone/send_code:
@@ -145,26 +160,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyncPushResponse'
-        default:
-          $ref: '#/components/responses/ErrorResponse'
-  /api/v1/hasn/runtime/report:
-    post:
-      tags: [RuntimeReport]
-      summary: Report local Runtime/Binding status summary without private local metadata
-      operationId: hasnRuntimeReport
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RuntimeReportRequest'
-      responses:
-        '200':
-          description: Runtime report accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AckResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /api/v1/hasn/inbox/pull:
@@ -751,37 +746,6 @@ components:
         payload:
           type: object
           additionalProperties: true
-    RuntimeReportRequest:
-      type: object
-      required: [owner_id, node_id, runtime_summaries]
-      properties:
-        owner_id:
-          type: string
-        node_id:
-          type: string
-        runtime_summaries:
-          type: array
-          items:
-            $ref: '#/components/schemas/RuntimeSummary'
-    RuntimeSummary:
-      type: object
-      required: [agent_id, binding_id, runtime_type, status]
-      properties:
-        agent_id:
-          type: string
-        binding_id:
-          type: string
-        runtime_type:
-          type: string
-        status:
-          type: string
-          enum: [missing, offline, online, degraded, failed]
-        adapter_registered:
-          type: boolean
-        handle_available:
-          type: boolean
-        last_seen_at:
-          $ref: '#/components/schemas/Timestamp'
     InboxPullRequest:
       type: object
       required: [owner_id]
