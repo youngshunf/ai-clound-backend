@@ -1,17 +1,12 @@
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
+# --- 管理端（JWT + RBAC）：仅保留 GDPR/DSR 合规面 business.py。 ---
+# codegen 按表生成的 admin CRUD（17 个文件）已整体删除：AI-Native 应用移出平台归属——每个应用经
+# SDK 接入、自选语言、**自建业务运营面**，云端后台不再按表生成运营 CRUD。
+# 合规面（按 email/手机号删除联系人、审计日志、保留期延长、来源黑名单）是平台义务而非应用运营面，
+# 单独立项，本批不动。
 from backend.app.hasn_growth.api.v1.admin.business import router as admin_business_router
-
-# --- 管理端低风险配置/作业面；含 PII 的生成 CRUD 仅保留 codegen 产物，不挂路由。 ---
-from backend.app.hasn_growth.api.v1.admin.lead_collection_job import router as admin_lead_collection_job_router
-from backend.app.hasn_growth.api.v1.admin.lead_export_batch import router as admin_lead_export_batch_router
-from backend.app.hasn_growth.api.v1.admin.lead_firecrawl_request import router as admin_lead_firecrawl_request_router
-
-# --- 管理端（JWT + RBAC） ---
-from backend.app.hasn_growth.api.v1.admin.lead_source_config import router as admin_lead_source_config_router
-from backend.app.hasn_growth.api.v1.admin.opportunity import router as admin_opportunity_router
-from backend.app.hasn_growth.api.v1.admin.playbook import router as admin_playbook_router
 from backend.app.hasn_growth.api.v1.agent.business import router as agent_business_router
 
 # --- 获客漏斗业务面（M3：funnel/outreach/opportunity/report，仅挂 canonical /api/v1/growth/*） ---
@@ -38,28 +33,8 @@ def _build_routers(seg: str) -> tuple[APIRouter, APIRouter, APIRouter, APIRouter
     """为给定前缀段构建四 scope 路由（v1=admin / app / open / agent）。"""
     base = f'{settings.FASTAPI_API_V1_PATH}/{seg}'
 
-    # --- 管理端 API（JWT + RBAC，前缀 base） ---
+    # --- 管理端 API（JWT + RBAC，前缀 base）：只剩 GDPR/DSR 合规面 ---
     v1_ = APIRouter(prefix=base, tags=['AI lead automation source configuration管理'])
-    v1_.include_router(
-        admin_lead_source_config_router,
-        prefix='/lead-source-configs',
-        tags=['AI lead automation source configuration管理-AI lead automation source configuration'],
-    )
-    v1_.include_router(
-        admin_lead_collection_job_router,
-        prefix='/lead/collection/jobs',
-        tags=['AI lead automation collection job-AI lead automation collection job'],
-    )
-    v1_.include_router(
-        admin_lead_firecrawl_request_router,
-        prefix='/lead/firecrawl/requests',
-        tags=['Firecrawl request audit for AI lead automation-Firecrawl request audit for AI lead automation'],
-    )
-    v1_.include_router(
-        admin_lead_export_batch_router,
-        prefix='/lead/export/batchs',
-        tags=['Lead CSV export batch-Lead CSV export batch'],
-    )
     v1_.include_router(admin_business_router, tags=['AI lead automation业务接口'])
 
     # --- 用户端 API（仅 JWT，前缀 base/app） ---
@@ -90,10 +65,6 @@ def _prefix_route_names(router: APIRouter, prefix: str) -> APIRouter:
 # canonical：/api/v1/growth/*
 # （旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13——管理端前端确认全量切 /api/v1/growth/* 后双中心清零）
 v1, app, open_api, agent = _build_routers('growth')
-
-# 不含 PII 的管理配置仍可走生成 CRUD；客户、触达、活动、表单和退订统一走主体隔离的业务面。
-v1.include_router(admin_opportunity_router, prefix='/opportunitys', tags=['获客商机-管理'])
-v1.include_router(admin_playbook_router, prefix='/playbooks', tags=['获客打法模板-管理'])
 
 # 获客漏斗业务面（M3：funnel/outreach/opportunity/report）——仅挂 canonical /api/v1/growth/*
 # owner: /api/v1/growth/app/* ；agent: /api/v1/growth/agent/* ；open: /api/v1/growth/open/*
