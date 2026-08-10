@@ -127,6 +127,11 @@ def _is_rebuild_tag(version: str, release_tag: str | None) -> bool:
     )
 
 
+def _can_join_active_replace(*, requested_version: str, active_version: str) -> bool:
+    """覆盖发布断点续跑只能加入同版本活动批次，不能穿透其它版本。"""
+    return bool(requested_version) and requested_version == active_version
+
+
 def _next_rebuild_tag(version: str, current_tag: str | None) -> str:
     """根据当前发布 tag 分配下一个不可变重打 tag。"""
     match = re.fullmatch(
@@ -307,6 +312,14 @@ class ReleaseService:
         ).scalar_one_or_none()
         if active is not None:
             if req.replace_existing:
+                # 同版本覆盖发布已经建出草稿后，Windows/macOS 的断点续跑仍会携带
+                # replace_existing。目标正是当前活动批次时必须幂等加入；只有试图
+                # 穿透另一个活动版本去重打历史版本才拒绝。
+                if _can_join_active_replace(
+                    requested_version=requested_version,
+                    active_version=active.version,
+                ):
+                    return self._to_batch(active)
                 raise errors.RequestError(
                     msg=f'{channel} 频道已有进行中的 {active.version} 批次（{active.release_tag}），'
                     '请先补齐或作废该批次，再重打已发布版本'
