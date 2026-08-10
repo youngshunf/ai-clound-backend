@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import hmac
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, Path, Query, Request
 
 from backend.app.hasn_release.schema.release import (
     CiCallbackRequest,
+    CiMultipartAbortRequest,
+    CiMultipartCompleteRequest,
+    CiMultipartInitRequest,
+    CiMultipartInitResponse,
+    CiMultipartPartResponse,
     CiUploadResponse,
     ConfirmReleaseTagRequest,
     HeadlessImageDetail,
@@ -30,6 +35,18 @@ from backend.core.conf import settings
 from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter()
+
+
+def _required_content_length(request: Request) -> int:
+    """读取流式上传长度；发布产物必须使用已知长度，避免无界请求体。"""
+    raw_value = request.headers.get('content-length', '').strip()
+    try:
+        size = int(raw_value)
+    except ValueError as exc:
+        raise errors.RequestError(msg='上传产物必须提供合法的 Content-Length') from exc
+    if size <= 0:
+        raise errors.RequestError(msg='上传产物 Content-Length 必须大于 0')
+    return size
 
 
 def _verify_ci_bearer(authorization: str | None) -> None:
@@ -106,10 +123,10 @@ async def ci_upload(
     - 返回 CDN https 直链 + sha256 + size，供 CI 组装 ci-callback 的 `ReleaseAssetInput`。
     """
     _verify_ci_bearer(authorization)
-    body = await request.body()
-    data = await release_service.ci_upload_asset(
+    data = await release_service.ci_upload_asset_stream(
         db,
-        data=body,
+        data=request.stream(),
+        size=_required_content_length(request),
         filename=file_name,
         version=version,
         channel=channel,
@@ -117,6 +134,92 @@ async def ci_upload(
         content_type=request.headers.get('content-type'),
     )
     return response_base.success(data=data)
+
+
+@router.post(
+    '/multipart/init',
+    summary='初始化 CI 发布产物分片上传',
+    name='hasn_release_ci_multipart_init',
+)
+async def ci_multipart_init(
+    db: CurrentSessionTransaction,
+    obj: CiMultipartInitRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[CiMultipartInitResponse]:
+    _verify_ci_bearer(authorization)
+    data = await release_service.ci_multipart_init(db, obj)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/multipart/part',
+    summary='上传一个 CI 发布产物分片',
+    name='hasn_release_ci_multipart_part',
+)
+async def ci_multipart_part(
+    request: Request,
+    db: CurrentSessionTransaction,
+    version: Annotated[str, Query()],
+    file_name: Annotated[str, Query()],
+    file_size: Annotated[int, Query(gt=0)],
+    sha256: Annotated[str, Query(pattern=r'^[0-9a-f]{64}$')],
+    object_key: Annotated[str, Query()],
+    upload_id: Annotated[str, Query()],
+    part_number: Annotated[int, Query(ge=1, le=10_000)],
+    channel: Annotated[str, Query()] = 'stable',
+    release_id: Annotated[int | None, Query(gt=0)] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[CiMultipartPartResponse]:
+    _verify_ci_bearer(authorization)
+    obj = CiMultipartInitRequest(
+        version=version,
+        file_name=file_name,
+        channel=channel,
+        release_id=release_id,
+        file_size=file_size,
+        sha256=sha256,
+        content_type=request.headers.get('content-type') or 'application/octet-stream',
+    )
+    data = await release_service.ci_multipart_upload_part(
+        db,
+        obj=obj,
+        object_key=object_key,
+        upload_id=upload_id,
+        part_number=part_number,
+        data=request.stream(),
+        size=_required_content_length(request),
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/multipart/complete',
+    summary='完成 CI 发布产物分片上传',
+    name='hasn_release_ci_multipart_complete',
+)
+async def ci_multipart_complete(
+    db: CurrentSessionTransaction,
+    obj: CiMultipartCompleteRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[CiUploadResponse]:
+    _verify_ci_bearer(authorization)
+    data = await release_service.ci_multipart_complete(db, obj)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/multipart/abort',
+    summary='终止 CI 发布产物分片上传',
+    name='hasn_release_ci_multipart_abort',
+)
+async def ci_multipart_abort(
+    db: CurrentSessionTransaction,
+    obj: CiMultipartAbortRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Any:
+    _verify_ci_bearer(authorization)
+    await release_service.ci_multipart_abort(db, obj)
+    return response_base.success(data=None)
 
 
 @router.post('/callback', summary='CI 构建完成回调（Bearer CI 密钥）', name='hasn_release_ci_callback')

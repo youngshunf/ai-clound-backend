@@ -20,8 +20,10 @@ import asyncio
 import hashlib
 import os
 import re
+import tempfile
 
-from pathlib import PurePosixPath
+from collections.abc import AsyncIterable, AsyncIterator
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import httpx
@@ -36,6 +38,11 @@ from backend.app.hasn_release.schema.release import (
     REQUIRED_DESKTOP_PLATFORMS,
     BuildDetail,
     CiCallbackRequest,
+    CiMultipartAbortRequest,
+    CiMultipartCompleteRequest,
+    CiMultipartInitRequest,
+    CiMultipartInitResponse,
+    CiMultipartPartResponse,
     CiUploadResponse,
     ConfirmReleaseTagRequest,
     GithubBuildRequest,
@@ -62,6 +69,71 @@ _SEMVER_CORE = re.compile(r'^(\d+)\.(\d+)\.(\d+)')
 _RELEASE_NOTES_MAX_CHARS = 500
 _MAX_RELEASE_COMMITS = 5000
 _RELEASE_COMMIT_CHUNK_CHARS = 12000
+_RELEASE_MULTIPART_PART_BYTES = 8 * 1024 * 1024
+
+
+class _HashingSizedStream:
+    """边转发边计算摘要，并校验实际字节数与 Content-Length 一致。"""
+
+    def __init__(self, source: AsyncIterable[bytes], expected_size: int) -> None:
+        self._source = source
+        self.expected_size = expected_size
+        self.received_size = 0
+        self._sha256 = hashlib.sha256()
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[bytes]:
+        async for chunk in self._source:
+            if not chunk:
+                continue
+            self.received_size += len(chunk)
+            if self.received_size > self.expected_size:
+                raise errors.RequestError(msg='上传产物实际大小超过 Content-Length')
+            self._sha256.update(chunk)
+            yield chunk
+        if self.received_size != self.expected_size:
+            raise errors.RequestError(msg='上传产物实际大小与 Content-Length 不一致')
+
+    @property
+    def sha256(self) -> str:
+        return self._sha256.hexdigest()
+
+
+async def _single_chunk(data: bytes) -> AsyncIterator[bytes]:  # noqa: RUF029 - 适配异步上传协议
+    yield data
+
+
+async def _stage_release_upload(data: AsyncIterable[bytes], size: int) -> tuple[Path, str]:
+    """把慢速请求流有界落盘并返回服务端计算的 SHA-256；失败时不遗留临时文件。"""
+    file_descriptor, raw_path = tempfile.mkstemp(prefix='hasn-release-', suffix='.upload')
+    path = Path(raw_path)
+    file_obj = os.fdopen(file_descriptor, 'wb')
+    checked_stream = _HashingSizedStream(data, size)
+    try:
+        async for chunk in checked_stream:
+            await asyncio.to_thread(file_obj.write, chunk)
+        await asyncio.to_thread(file_obj.flush)
+        await asyncio.to_thread(os.fsync, file_obj.fileno())
+    except Exception:
+        await asyncio.to_thread(file_obj.close)
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+        raise
+    await asyncio.to_thread(file_obj.close)
+    return path, checked_stream.sha256
+
+
+async def _public_release_object_size(download_url: str) -> int | None:
+    """经公共 CDN HEAD 校验已完成对象；七牛写入凭据不一定有 HeadObject 权限。"""
+    try:
+        async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=True) as client:
+            response = await client.head(download_url, headers={'Accept-Encoding': 'identity'})
+            response.raise_for_status()
+        raw_size = response.headers.get('content-length', '').strip()
+        return int(raw_size) if raw_size.isdigit() else None
+    except (httpx.HTTPError, OSError, ValueError):
+        return None
 
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
@@ -91,6 +163,11 @@ def _is_rebuild_tag(version: str, release_tag: str | None) -> bool:
             (release_tag or '').strip(),
         )
     )
+
+
+def _can_join_active_replace(*, requested_version: str, active_version: str) -> bool:
+    """覆盖发布断点续跑只能加入同版本活动批次，不能穿透其它版本。"""
+    return bool(requested_version) and requested_version == active_version
 
 
 def _next_rebuild_tag(version: str, current_tag: str | None) -> str:
@@ -273,6 +350,14 @@ class ReleaseService:
         ).scalar_one_or_none()
         if active is not None:
             if req.replace_existing:
+                # 同版本覆盖发布已经建出草稿后，Windows/macOS 的断点续跑仍会携带
+                # replace_existing。目标正是当前活动批次时必须幂等加入；只有试图
+                # 穿透另一个活动版本去重打历史版本才拒绝。
+                if _can_join_active_replace(
+                    requested_version=requested_version,
+                    active_version=active.version,
+                ):
+                    return self._to_batch(active)
                 raise errors.RequestError(
                     msg=f'{channel} 频道已有进行中的 {active.version} 批次（{active.release_tag}），'
                     '请先补齐或作废该批次，再重打已发布版本'
@@ -612,7 +697,7 @@ class ReleaseService:
 
     # --------- 发布 / 上传（管理端手动 + CI 回调共用核心） ---------
 
-    async def publish(  # noqa: C901
+    async def publish(
         self,
         db: AsyncSession,
         req: PublishReleaseRequest,
@@ -722,7 +807,7 @@ class ReleaseService:
             await db.flush()  # 同上：外层事务自动提交，这里只 flush
         return detail
 
-    async def _submit_batch_assets(  # noqa: C901
+    async def _submit_batch_assets(
         self,
         db: AsyncSession,
         req: CiCallbackRequest,
@@ -841,7 +926,31 @@ class ReleaseService:
         - 强制 https：桌面端/官网走 ATS，http 直链会被拒（铁律：七牛 CDN 必须 https）。
         - sha256 由服务端据落桶字节现算，回给 CI 与其本地摘要对拍（零 fake，杜绝传输损坏静默）。
         """
-        if not data:
+        return await self.ci_upload_asset_stream(
+            db,
+            data=_single_chunk(data),
+            size=len(data),
+            filename=filename,
+            version=version,
+            channel=channel,
+            release_id=release_id,
+            content_type=content_type,
+        )
+
+    async def ci_upload_asset_stream(
+        self,
+        db: AsyncSession,
+        *,
+        data: AsyncIterable[bytes],
+        size: int,
+        filename: str,
+        version: str,
+        channel: str = 'stable',
+        release_id: int | None = None,
+        content_type: str | None = None,
+    ) -> CiUploadResponse:
+        """流式接收 CI 请求体，落临时文件后分片上传公共对象存储。"""
+        if size <= 0:
             raise errors.RequestError(msg='上传产物不能为空')
         name = PurePosixPath((filename or '').strip()).name or 'asset.bin'  # 取 basename，杜绝路径穿越
         channel = (channel or 'stable').strip() or 'stable'
@@ -853,23 +962,178 @@ class ReleaseService:
             if release is None or release.version != version or release.channel != channel:
                 raise errors.RequestError(msg='上传目标与云端发布批次不匹配')
         object_key = f'desktop/{channel}/{version}/{name}'
-        ref = await StorageService.upload(
-            db,
-            data,
-            category='release_asset',
-            filename=name,
-            content_type=content_type or 'application/octet-stream',
-            key=object_key,
-        )
+        mime = content_type or 'application/octet-stream'
+        storage = await StorageService.get_write_storage(db, access='public')
+        # 上传可能持续很久；存储快照与批次校验完成后释放数据库连接，不把连接池槽位
+        # 占到客户端慢速上传和七牛分片上传结束。
+        await db.rollback()
+        staged_path, sha256 = await _stage_release_upload(data, size)
+        staged_file = None
+        try:
+            staged_file = await asyncio.to_thread(staged_path.open, 'rb')
+            ref = await StorageService.upload_public_package_to_storage(
+                storage,
+                staged_file,
+                size=size,
+                key=object_key,
+                content_type=mime,
+            )
+        finally:
+            if staged_file is not None:
+                await asyncio.to_thread(staged_file.close)
+            await asyncio.to_thread(staged_path.unlink, missing_ok=True)
         if not ref.stable_url.startswith('https://'):
             raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {ref.stable_url}')
         return CiUploadResponse(
             download_url=ref.stable_url,
             file_name=name,
             file_size=ref.size,
-            sha256=hashlib.sha256(data).hexdigest(),
+            sha256=sha256,
             object_key=ref.object_key,
         )
+
+    async def ci_multipart_init(
+        self,
+        db: AsyncSession,
+        obj: CiMultipartInitRequest,
+    ) -> CiMultipartInitResponse:
+        """创建由 CI 逐片调用云端接口的对象存储 multipart 会话。"""
+        name, object_key = await self._validate_ci_multipart_target(db, obj)
+        del name
+        storage = await StorageService.get_write_storage(db, access='public')
+        upload_id = await StorageService.create_multipart_on_storage(
+            storage,
+            object_key=object_key,
+            content_type=obj.content_type,
+        )
+        return CiMultipartInitResponse(
+            upload_id=upload_id,
+            object_key=object_key,
+            part_size=_RELEASE_MULTIPART_PART_BYTES,
+        )
+
+    async def ci_multipart_upload_part(
+        self,
+        db: AsyncSession,
+        *,
+        obj: CiMultipartInitRequest,
+        object_key: str,
+        upload_id: str,
+        part_number: int,
+        data: AsyncIterable[bytes],
+        size: int,
+    ) -> CiMultipartPartResponse:
+        """接收一个固定大小分片并立即写入对象存储；同序号重试会覆盖旧分片。"""
+        _, expected_key = await self._validate_ci_multipart_target(db, obj)
+        if object_key != expected_key:
+            raise errors.RequestError(msg='multipart 对象键与发布目标不匹配')
+        part_count = (obj.file_size + _RELEASE_MULTIPART_PART_BYTES - 1) // _RELEASE_MULTIPART_PART_BYTES
+        if part_number < 1 or part_number > part_count:
+            raise errors.RequestError(msg='multipart 分片序号超出文件范围')
+        expected_size = min(
+            _RELEASE_MULTIPART_PART_BYTES,
+            obj.file_size - (part_number - 1) * _RELEASE_MULTIPART_PART_BYTES,
+        )
+        if size != expected_size:
+            raise errors.RequestError(msg='multipart 分片大小与文件边界不匹配')
+        storage = await StorageService.get_write_storage(db, access='public')
+        await db.rollback()
+        staged_path, _ = await _stage_release_upload(data, size)
+        staged_file = None
+        try:
+            staged_file = await asyncio.to_thread(staged_path.open, 'rb')
+            etag = await StorageService.upload_multipart_part_on_storage(
+                storage,
+                object_key=object_key,
+                upload_id=upload_id,
+                part_number=part_number,
+                file=staged_file,
+                size=size,
+            )
+        finally:
+            if staged_file is not None:
+                await asyncio.to_thread(staged_file.close)
+            await asyncio.to_thread(staged_path.unlink, missing_ok=True)
+        return CiMultipartPartResponse(part_number=part_number, etag=etag)
+
+    async def ci_multipart_complete(
+        self,
+        db: AsyncSession,
+        obj: CiMultipartCompleteRequest,
+    ) -> CiUploadResponse:
+        """提交全部分片，校验对象大小并返回与旧上传接口一致的结果。"""
+        name, expected_key = await self._validate_ci_multipart_target(db, obj)
+        if obj.object_key != expected_key:
+            raise errors.RequestError(msg='multipart 对象键与发布目标不匹配')
+        expected_count = (obj.file_size + _RELEASE_MULTIPART_PART_BYTES - 1) // _RELEASE_MULTIPART_PART_BYTES
+        parts = [(part.part_number, part.etag) for part in obj.parts]
+        if len(parts) != expected_count or [number for number, _ in parts] != list(range(1, expected_count + 1)):
+            raise errors.RequestError(msg='multipart 分片清单不完整或顺序错误')
+        storage = await StorageService.get_write_storage(db, access='public')
+        await db.rollback()
+        download_url = StorageService.public_url(storage, obj.object_key)
+        if not download_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {download_url}')
+        # complete_multipart_upload 已在供应商侧成功、但随后 HEAD/响应链路瞬时失败时，
+        # 客户端会用同一会话重试；此时供应商已删除 upload_id。先认领大小完全匹配的
+        # CDN 对象，使完成接口具备幂等性。七牛写入 AK 没有 HeadObject 权限，因此不能
+        # 用 S3 stat；公共 CDN HEAD 同时验证了桌面端最终实际消费的地址。
+        completed_size = await _public_release_object_size(download_url)
+        if completed_size != obj.file_size:
+            await StorageService.complete_multipart_on_storage(
+                storage,
+                object_key=obj.object_key,
+                upload_id=obj.upload_id,
+                parts=parts,
+            )
+            for _ in range(10):
+                completed_size = await _public_release_object_size(download_url)
+                if completed_size == obj.file_size:
+                    break
+                await asyncio.sleep(1)
+        if completed_size != obj.file_size:
+            raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
+        return CiUploadResponse(
+            download_url=download_url,
+            file_name=name,
+            file_size=completed_size,
+            sha256=obj.sha256,
+            object_key=obj.object_key,
+        )
+
+    async def ci_multipart_abort(
+        self,
+        db: AsyncSession,
+        obj: CiMultipartAbortRequest,
+    ) -> None:
+        """终止失败的发布 multipart 会话并清理对象存储残留分片。"""
+        _, expected_key = await self._validate_ci_multipart_target(db, obj)
+        if obj.object_key != expected_key:
+            raise errors.RequestError(msg='multipart 对象键与发布目标不匹配')
+        storage = await StorageService.get_write_storage(db, access='public')
+        await db.rollback()
+        await StorageService.abort_multipart_on_storage(
+            storage,
+            object_key=obj.object_key,
+            upload_id=obj.upload_id,
+        )
+
+    @staticmethod
+    async def _validate_ci_multipart_target(
+        db: AsyncSession,
+        obj: CiMultipartInitRequest,
+    ) -> tuple[str, str]:
+        """校验批次并只由服务端推导对象键，禁止客户端选择任意桶内路径。"""
+        name = PurePosixPath(obj.file_name.strip()).name or 'asset.bin'
+        channel = obj.channel.strip() or 'stable'
+        version = obj.version.strip()
+        if not version:
+            raise errors.RequestError(msg='version 不能为空')
+        if obj.release_id is not None:
+            release = (await db.execute(select(AppRelease).where(AppRelease.id == obj.release_id))).scalar_one_or_none()
+            if release is None or release.version != version or release.channel != channel:
+                raise errors.RequestError(msg='上传目标与云端发布批次不匹配')
+        return name, f'desktop/{channel}/{version}/{name}'
 
     # --------- 官网 / 桌面端消费 ---------
 

@@ -453,6 +453,23 @@ async def test_prepare_replace_rejects_when_channel_has_active_batch(session: As
     assert '进行中' in str(excinfo.value.msg)
 
 
+async def test_prepare_replace_joins_same_version_active_batch(session: AsyncSession) -> None:
+    """同版本覆盖的发布机断点续跑必须复用活动批次，不重复分配或报错。"""
+    await release_service.publish(
+        session,
+        _publish_req('99.4.0', channel='beta'),
+        source='manual',
+    )
+    active = await release_service.prepare_release(session, _prepare_req())
+
+    resumed = await release_service.prepare_release(
+        session,
+        _prepare_req(requested_version=active.version, replace_existing=True),
+    )
+
+    assert resumed == active
+
+
 async def test_rebuild_callback_replaces_only_incoming_platform_and_preserves_latest(
     session: AsyncSession,
 ) -> None:

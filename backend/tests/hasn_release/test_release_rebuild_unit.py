@@ -35,3 +35,12 @@ def test_rebuild_tag_detection_is_exact_for_version() -> None:
     assert is_rebuild('0.3.2', 'v0.3.2-rebuild.1') is True
     assert is_rebuild('0.3.2', 'v0.3.3-rebuild.1') is False
     assert is_rebuild('0.3.2', 'v0.3.2') is False
+
+
+def test_replace_resume_only_joins_same_version_active_batch() -> None:
+    """断点续跑可加入同版本草稿，但不能越过其它活动版本。"""
+    can_join = release_service_module._can_join_active_replace
+
+    assert can_join(requested_version='0.3.2', active_version='0.3.2') is True
+    assert can_join(requested_version='0.3.1', active_version='0.3.2') is False
+    assert can_join(requested_version='', active_version='0.3.2') is False
