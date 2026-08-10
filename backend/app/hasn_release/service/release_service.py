@@ -170,6 +170,20 @@ def _can_join_active_replace(*, requested_version: str, active_version: str) -> 
     return bool(requested_version) and requested_version == active_version
 
 
+def _can_join_published_batch(
+    *,
+    requested_version: str,
+    source_commit: str,
+    published_version: str,
+    published_source_commit: str,
+) -> bool:
+    """同一源码提交继续补平台时复用已发布批次，不重复增加版本号。"""
+    return (
+        source_commit.lower() == published_source_commit.lower()
+        and (not requested_version or requested_version == published_version)
+    )
+
+
 def _next_rebuild_tag(version: str, current_tag: str | None) -> str:
     """根据当前发布 tag 分配下一个不可变重打 tag。"""
     match = re.fullmatch(
@@ -258,7 +272,7 @@ class ReleaseService:
         db: AsyncSession,
         channel: str,
     ) -> list[AppRelease]:
-        """返回公开消费候选：正式最新版 + 已有平台完成的当前草稿批次。"""
+        """返回公开消费候选：正式最新版、平台回退版本及兼容草稿批次。"""
         releases = list(
             (
                 await db.execute(
@@ -278,6 +292,13 @@ class ReleaseService:
             key=lambda release: _semver_tuple(release.version),
             default=None,
         )
+        published_fallbacks = [
+            release
+            for release in published
+            if published_head is not None
+            and release.id != published_head.id
+            and _semver_tuple(release.version) < _semver_tuple(published_head.version)
+        ]
         partial_releases = [
             release
             for release in releases
@@ -287,7 +308,13 @@ class ReleaseService:
             and bool(release.release_tag)
             and bool(release.completed_platforms)
         ]
-        candidates = partial_releases + ([published_head] if published_head is not None else [])
+        # 新版本允许任一平台先发布；把旧正式版也保留为候选，缺席的平台才能继续拿到
+        # 自己上一版的 installer/updater，直到该平台把同一批次补齐。
+        candidates = (
+            partial_releases
+            + ([published_head] if published_head is not None else [])
+            + published_fallbacks
+        )
         return sorted(candidates, key=lambda release: _semver_tuple(release.version), reverse=True)
 
     @staticmethod
@@ -324,7 +351,8 @@ class ReleaseService:
         """创建或加入当前频道唯一的发布批次。
 
         PostgreSQL 事务级 advisory lock 保证两台打包机器并发请求时只增加一次 patch。
-        已有草稿批次时忽略后来机器的 HEAD，统一返回云端锁定的 commit 与 tag。
+        已有草稿批次时忽略后来机器的 HEAD，统一返回云端锁定的 commit 与 tag；首个平台
+        发布后，其它平台按同一 source_commit 继续复用该版本与 tag。
         """
         channel = (req.channel or 'stable').strip()
         if channel not in ('stable', 'beta'):
@@ -370,6 +398,32 @@ class ReleaseService:
                     f'无法按 {requested_version} 发布；请先补齐该批次，或作废后重新 prepare'
                 )
             return self._to_batch(active)
+
+        latest_published_batch = (
+            await db.execute(
+                select(AppRelease)
+                .where(
+                    AppRelease.channel == channel,
+                    AppRelease.status == 'published',
+                    AppRelease.is_latest.is_(True),
+                    AppRelease.release_tag.is_not(None),
+                    AppRelease.source_commit.is_not(None),
+                )
+                .order_by(AppRelease.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if (
+            not req.replace_existing
+            and latest_published_batch is not None
+            and _can_join_published_batch(
+                requested_version=requested_version,
+                source_commit=source_commit,
+                published_version=latest_published_batch.version,
+                published_source_commit=str(latest_published_batch.source_commit),
+            )
+        ):
+            return self._to_batch(latest_published_batch)
 
         if req.replace_existing:
             if not requested_version:
@@ -423,18 +477,20 @@ class ReleaseService:
         else:
             version = _next_patch_version(versions)
         release_tag = f'v{version}'
-        previous = (
-            await db.execute(
-                select(AppRelease)
-                .where(
-                    AppRelease.channel == channel,
-                    AppRelease.status == 'published',
-                    AppRelease.release_tag.is_not(None),
+        previous = latest_published_batch
+        if previous is None:
+            previous = (
+                await db.execute(
+                    select(AppRelease)
+                    .where(
+                        AppRelease.channel == channel,
+                        AppRelease.status == 'published',
+                        AppRelease.release_tag.is_not(None),
+                    )
+                    .order_by(AppRelease.published_time.desc().nullslast(), AppRelease.id.desc())
+                    .limit(1)
                 )
-                .order_by(AppRelease.published_time.desc().nullslast(), AppRelease.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+            ).scalar_one_or_none()
         release = AppRelease(
             version=version,
             channel=channel,
@@ -793,7 +849,7 @@ class ReleaseService:
     async def ci_callback(self, db: AsyncSession, req: CiCallbackRequest) -> ReleaseDetail:
         """CI 构建完成回调。
 
-        新流程携 release_id：按平台幂等 upsert，全部平台完成后原子发布。
+        新流程携 release_id：按平台幂等 upsert，任一平台完成即可发布，其它平台随后补齐。
         旧 CI 未携 release_id 时继续走原发布接口，保证存量 workflow 可用。
         """
         if req.release_id is not None:
@@ -886,7 +942,7 @@ class ReleaseService:
             keys,
         )
         ready = (
-            set(release.required_platforms or []).issubset(release.completed_platforms)
+            bool(release.completed_platforms)
             and release.tag_status == 'ready'
             and release.release_notes_status == 'ready'
         )

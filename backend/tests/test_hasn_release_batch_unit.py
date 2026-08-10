@@ -4,6 +4,7 @@ import pytest
 
 from backend.app.hasn_release.schema.release import REQUIRED_DESKTOP_PLATFORMS
 from backend.app.hasn_release.service.release_service import (
+    _can_join_published_batch,
     _completed_platforms,
     _ensure_commit_lock_transition,
     _next_patch_version,
@@ -81,6 +82,24 @@ def test_completed_platforms_requires_installer_and_updater() -> None:
         },
     )
     assert completed == ['darwin-aarch64', 'windows-x86_64']
+
+
+def test_published_batch_is_reused_only_for_same_source_and_version() -> None:
+    """后续平台可加入同一已发布批次，显式发新版或源码不同则创建下一批。"""
+    common = {
+        'source_commit': 'a' * 40,
+        'published_version': '0.3.3',
+        'published_source_commit': 'A' * 40,
+    }
+    assert _can_join_published_batch(requested_version='', **common) is True
+    assert _can_join_published_batch(requested_version='0.3.3', **common) is True
+    assert _can_join_published_batch(requested_version='0.3.4', **common) is False
+    assert _can_join_published_batch(
+        requested_version='',
+        source_commit='b' * 40,
+        published_version='0.3.3',
+        published_source_commit='a' * 40,
+    ) is False
 
 
 def test_desktop_release_batch_requires_all_supported_platforms() -> None:

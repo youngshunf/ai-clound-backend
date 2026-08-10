@@ -44,7 +44,10 @@ pytestmark = pytest.mark.asyncio
 # 测试版本命名空间（99.x，teardown 按前缀清理，避免污染真实版本）
 _TEST_PREFIX = '99.'
 _CDN = 'https://cdn.test.example/astra'
-_MIGRATION = Path(__file__).resolve().parents[1] / 'sql/hasn_release/migrations/2026-07-29-desktop-release-batch.sql'
+_MIGRATIONS = (
+    Path(__file__).resolve().parents[1] / 'sql/hasn_release/migrations/2026-07-29-desktop-release-batch.sql',
+    Path(__file__).resolve().parents[1] / 'sql/hasn_release/migrations/2026-07-31-headless-image-target.sql',
+)
 
 
 async def _apply_release_batch_migration(session: AsyncSession) -> None:
@@ -54,7 +57,8 @@ async def _apply_release_batch_migration(session: AsyncSession) -> None:
     driver_connection = raw.driver_connection
     if driver_connection is None:
         raise RuntimeError('无法取得 asyncpg driver connection')
-    await driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
+    for migration in _MIGRATIONS:
+        await driver_connection.execute(migration.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -542,6 +546,92 @@ async def test_prepare_joins_draft_but_rejects_conflicting_version(session: Asyn
     with pytest.raises(errors.RequestError) as excinfo:
         await release_service.prepare_release(session, _prepare_req(requested_version='99.9.0'))
     assert first.version in str(excinfo.value.msg)
+
+
+async def test_first_platform_publishes_and_later_platform_reuses_batch(session: AsyncSession) -> None:
+    """平台清单只约束可上传目标；首个平台发布后，其它平台继续复用同一版本与 tag。"""
+    await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
+    batch = await release_service.prepare_release(session, _prepare_req())
+    release = (
+        await session.execute(select(AppRelease).where(AppRelease.id == batch.id))
+    ).scalar_one()
+    release.tag_status = 'ready'
+    release.release_notes_status = 'ready'
+    release.release_notes_md = '首个平台完成即可发布。'
+    await session.flush()
+
+    windows_callback = CiCallbackRequest(
+        version=batch.version,
+        channel='beta',
+        source='github',
+        release_id=batch.id,
+        release_tag=batch.release_tag,
+        assets=[
+            _asset('windows-x86_64', 'installer'),
+            _asset('windows-x86_64', 'updater', sig='SIG_WINDOWS'),
+        ],
+    )
+    windows_detail = await release_service.ci_callback(session, windows_callback)
+    assert windows_detail.status == 'published'
+    assert windows_detail.is_latest is True
+    assert windows_detail.completed_platforms == ['windows-x86_64']
+    latest = await release_service.get_latest(session, channel='beta')
+    assert latest.version == batch.version
+    assert latest.platform_versions == {
+        'darwin-aarch64': '99.5.0',
+        'darwin-x86_64': '99.5.0',
+        'windows-x86_64': batch.version,
+    }
+
+    joined = await release_service.prepare_release(
+        session,
+        _prepare_req(source_commit=batch.source_commit),
+    )
+    assert (joined.id, joined.version, joined.release_tag, joined.status) == (
+        batch.id,
+        batch.version,
+        batch.release_tag,
+        'published',
+    )
+    explicitly_joined = await release_service.prepare_release(
+        session,
+        _prepare_req(
+            source_commit=batch.source_commit,
+            requested_version=batch.version,
+        ),
+    )
+    assert explicitly_joined.id == batch.id
+
+    mac_callback = CiCallbackRequest(
+        version=batch.version,
+        channel='beta',
+        source='github',
+        release_id=batch.id,
+        release_tag=batch.release_tag,
+        assets=[
+            _asset('darwin-aarch64', 'installer'),
+            _asset('darwin-aarch64', 'updater', sig='SIG_MAC'),
+        ],
+    )
+    mac_detail = await release_service.ci_callback(session, mac_callback)
+    assert mac_detail.status == 'published'
+    assert mac_detail.completed_platforms == ['darwin-aarch64', 'windows-x86_64']
+    assert {
+        (asset.platform_target, asset.asset_kind)
+        for asset in mac_detail.assets
+    } == {
+        ('darwin-aarch64', 'installer'),
+        ('darwin-aarch64', 'updater'),
+        ('windows-x86_64', 'installer'),
+        ('windows-x86_64', 'updater'),
+    }
+
+    next_batch = await release_service.prepare_release(
+        session,
+        _prepare_req(source_commit='c' * 40),
+    )
+    assert next_batch.version == '99.5.2'
+    assert next_batch.status == 'draft'
 
 
 async def test_delete_cascades_assets(session: AsyncSession) -> None:
