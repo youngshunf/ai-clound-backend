@@ -102,11 +102,16 @@ RELATION_COMMUNITY_TABLES: frozenset[str] = frozenset({
     'hasn_collections',
     'hasn_comments',
     'hasn_follows',
-    'hasn_group_members',
     'hasn_likes',
     'hasn_posts',
     'hasn_topic_follows',
     'hasn_topics',
+})
+# 刻意不列入 C 类的表：它们是「批次 1 · 内容安全」的读数据源，场景页建成前这些表级页面是运营看到
+# 这些数据的唯一入口，删掉即造成能力空窗。与 hasn_messages / hasn_conversations / hasn_contacts /
+# hasn_suppressed_messages 同理（那几张表本就没有表级菜单）。批次 1 建成场景页后再评估。
+CONTENT_SAFETY_KEEP_TABLES: frozenset[str] = frozenset({
+    'hasn_group_members',
     'hasn_unread_counts',
 })
 
