@@ -87,7 +87,9 @@ def test_openapi_and_error_contracts_are_readable_and_runtime_safe() -> None:
     data = yaml.safe_load(OPENAPI_FILE.read_text(encoding="utf-8"))
     assert data["openapi"] == "3.1.0"
     assert data["info"]["version"] == "1.0.0-p0"
-    assert len(data["paths"]) == 18
+    # 2026-08-10：`POST /api/v1/hasn/runtime/report` 随云端 Runtime 形态退役而摘除，path 数由 18 降为 17
+    assert len(data["paths"]) == 17
+    assert "/api/v1/hasn/runtime/report" not in data["paths"]
     assert all(path.startswith("/api/v1/hasn/") for path in data["paths"])
 
     schemas = data["components"]["schemas"]

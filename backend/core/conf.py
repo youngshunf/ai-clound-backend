@@ -209,11 +209,9 @@ class Settings(BaseSettings):
         'https://astra.dcfuture.cn'  # 前端站点域名，用于生成分享链接等（2026-07-03 起 huanxing→astra）
     )
 
-    # Hermes Runtime（仅后端持有；不得返回给浏览器）
-    HUANXING_HERMES_RUNTIME_BASE_URL: str = ''
-    HUANXING_HERMES_RUNTIME_API_TOKEN: str = ''
-    HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS: float = 10.0
-    HUANXING_HERMES_RUNTIME_ID: str = 'hermes-runtime-local'
+    # 2026-08-10：`HUANXING_HERMES_RUNTIME_*` 四项随云端 Runtime 形态退役删除（云端改为部署
+    # 无头 hasn-node，不再有云端 Runtime 可连）。注意 `HUANXING_HERMES_PLATFORM_LLM_*`（下方）
+    # 是平台模型中转配置，与 Runtime 无关，仍在用，不要一起删。
     HUANXING_CLOUD_INTERNAL_BASE_URL: str = 'http://127.0.0.1:8001'
 
     # 内部 service token（runtime ↔ backend 单向调用，仅 .env 配置，不暴露浏览器）

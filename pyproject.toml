@@ -104,6 +104,10 @@ dev = [
   "pytest-asyncio>=1.3.0",
   "pytest-cov>=7.0.0",
   "pytest-sugar>=1.1.1",
+  # 测试并行化。必须配 `--dist loadfile`：同一文件的用例固定分到同一 worker 进程，
+  # 既拿到多进程并行，又保住「按文件隔离」——应用级 asyncpg/Redis 客户端绑定 session
+  # 事件循环，跨文件共享 worker 会重现连接池跨循环复用的问题。
+  "pytest-xdist>=3.6.1",
   "python-socketio-stubs==5.13.0.12.20250809",
   "types-PyYAML>=6.0.12.20250915",
   "types-croniter>=6.0.0.20250809",

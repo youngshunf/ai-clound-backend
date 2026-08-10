@@ -1,9 +1,12 @@
-"""P0 HASN sync/runtime report service.
+"""P0 HASN sync service。
 
-The service owns the hand-written hasn-node API boundary. Generated CRUD remains
-available for admin inspection, but hasn-node uses these redacted, owner-scoped
-methods instead of generic table CRUD.
+本 service 持有手写的 hasn-node API 边界：hasn-node 用这些脱敏、按 owner 收敛的方法，
+而不是通用表 CRUD；codegen 出的 CRUD 仅供管理端查看。
+
+2026-08-10：Runtime 上报写入链路（`save_runtime_report` / `report_runtime` /
+`_refresh_task_assignments_for_runtime_report`）随云端 Runtime 形态退役一并摘除。
 """
+
 from __future__ import annotations
 
 import json
@@ -21,8 +24,6 @@ from backend.app.hasn.schema.hasn_sync import (
     MemorySyncCursor,
     MemorySyncPullRequest,
     MemorySyncPullResponse,
-    RuntimeReportRequest,
-    RuntimeReportResponse,
     SyncEventRecord,
     SyncPullRequest,
     SyncPullResponse,
@@ -36,7 +37,6 @@ from backend.app.hasn.service._sync_codec import (
     TaskSyncConflictError,
     _advance_memory_cursors,
     _assert_task_revision_not_stale,
-    _assignment_from_runtime_report,
     _coerce_datetime,
     _coerce_dict,
     _contains_private_runtime_key,
@@ -47,11 +47,7 @@ from backend.app.hasn.service._sync_codec import (
     _owner_cursor,
     _parse_owner_cursor,
     _parse_task_cursor,
-    _redact_runtime_summary,
-    _report_id,
     _required_string,
-    _runtime_status_for_storage,
-    _task_assignment_event_payload,
     _task_cursor,
     _task_payload_for_storage,
     _task_run_summary_event_payload,
@@ -59,7 +55,6 @@ from backend.app.hasn.service._sync_codec import (
     _task_run_summary_response_payload,
     _task_storage_row,
     _task_sync_payload,
-    _task_sync_payload_from_row,
 )
 from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
 from backend.app.hasn_sync.ports.dto import SyncEnvelope
@@ -104,7 +99,6 @@ _SYNC_INBOX_EVENTS = SCHEMA_NAMES.sync_table('hasn_sync_inbox_events')
 
 
 class SyncGateway(Protocol):
-    async def save_runtime_report(self, db: AsyncSession, report: dict[str, Any]) -> None: ...
     async def pull_events(
         self, db: AsyncSession, *, owner_id: str, after_revision: int, limit: int
     ) -> list[SyncEventRecord]: ...
@@ -162,75 +156,6 @@ class SqlAlchemySyncGateway:
             .limit(1)
         )
         return result.scalar_one_or_none() is not None
-
-    async def save_runtime_report(self, db: AsyncSession, report: dict[str, Any]) -> None:
-        summary_json = json.dumps(report['summary_json'], ensure_ascii=False, sort_keys=True, default=str)
-        await db.execute(
-            sa.text(
-                """
-                INSERT INTO public.hasn_agent_runtime_reports (
-                    report_id,
-                    owner_id,
-                    agent_hasn_id,
-                    node_id,
-                    runtime_type,
-                    runtime_status,
-                    adapter_registered,
-                    handle_available,
-                    binding_id,
-                    runtime_revision,
-                    summary_json,
-                    last_seen_at,
-                    reported_at,
-                    created_time,
-                    updated_time
-                ) VALUES (
-                    :report_id,
-                    :owner_id,
-                    :agent_hasn_id,
-                    :node_id,
-                    :runtime_type,
-                    :runtime_status,
-                    :adapter_registered,
-                    :handle_available,
-                    :binding_id,
-                    :runtime_revision,
-                    CAST(:summary_json AS jsonb),
-                    :last_seen_at,
-                    :reported_at,
-                    now(),
-                    now()
-                )
-                ON CONFLICT (report_id) DO UPDATE SET
-                    runtime_status = EXCLUDED.runtime_status,
-                    adapter_registered = EXCLUDED.adapter_registered,
-                    handle_available = EXCLUDED.handle_available,
-                    binding_id = EXCLUDED.binding_id,
-                    runtime_revision = EXCLUDED.runtime_revision,
-                    summary_json = EXCLUDED.summary_json,
-                    last_seen_at = EXCLUDED.last_seen_at,
-                    reported_at = EXCLUDED.reported_at,
-                    updated_time = now()
-                """
-            ),
-            {**report, 'summary_json': summary_json},
-        )
-        await self._append_sync_event(
-            db,
-            owner_id=report['owner_id'],
-            hasn_id=report['agent_hasn_id'],
-            event_type='runtime.reported',
-            aggregate_type='runtime',
-            aggregate_id=report['agent_hasn_id'],
-            payload={
-                'agent_id': report['agent_hasn_id'],
-                'node_id': report['node_id'],
-                'runtime_type': report['runtime_type'],
-                'runtime_status': report['runtime_status'],
-                'binding_id': report['binding_id'],
-            },
-        )
-        await self._refresh_task_assignments_for_runtime_report(db, report)
 
     async def pull_events(
         self, db: AsyncSession, *, owner_id: str, after_revision: int, limit: int
@@ -511,113 +436,6 @@ class SqlAlchemySyncGateway:
         )
         return revision
 
-    async def _refresh_task_assignments_for_runtime_report(self, db: AsyncSession, report: dict[str, Any]) -> None:
-        assignment = _assignment_from_runtime_report(report)
-        task_rows = await self._task_rows_for_assignment_refresh(
-            db,
-            owner_id=report['owner_id'],
-            agent_id=report['agent_hasn_id'],
-        )
-        for task in task_rows:
-            task_uuid = str(task.get('task_uuid') or '')
-            if not task_uuid:
-                continue
-            previous = await self._current_assignment(db, owner_id=report['owner_id'], task_uuid=task_uuid)
-            old_node_id = (previous or {}).get('executor_node_id') or ''
-            changed = (
-                previous is None
-                or previous.get('executor_kind') != assignment['executor_kind']
-                or previous.get('executor_node_id') != assignment['executor_node_id']
-                or previous.get('binding_id') != assignment['binding_id']
-                or previous.get('assignment_state') != assignment['assignment_state']
-            )
-            if not changed:
-                continue
-            await self._upsert_current_assignment(
-                db,
-                task_uuid=task_uuid,
-                owner_id=report['owner_id'],
-                agent_id=report['agent_hasn_id'],
-                assignment=assignment,
-            )
-            await self._append_assignment_change_events(
-                db,
-                task=task,
-                assignment=assignment,
-                old_node_id=old_node_id,
-            )
-
-    async def _task_rows_for_assignment_refresh(
-        self,
-        db: AsyncSession,
-        *,
-        owner_id: str,
-        agent_id: str,
-    ) -> list[dict[str, Any]]:
-        result = await db.execute(
-            sa.text(
-                """
-                SELECT
-                    task_uuid,
-                    owner_id,
-                    agent_id,
-                    name,
-                    description,
-                    prompt,
-                    system_prompt,
-                    skill_bundle_ids,
-                    skill_bundle_refs,
-                    skill_ids,
-                    schedule_type,
-                    schedule_config,
-                    schedule_display,
-                    enabled,
-                    state,
-                    continuation_enabled,
-                    enable_subagents,
-                    created_by_kind,
-                    -- 内置任务广播语义（doc19 §9 / D-24）：assignment 变更重放下行事件时一并带出
-                    target_scope,
-                    next_run_at,
-                    run_count,
-                    repeat_times,
-                    repeat_completed,
-                    created_time,
-                    updated_time
-                FROM hasn_task.task
-                WHERE owner_id = :owner_id
-                  AND agent_id = :agent_id
-                  AND task_uuid IS NOT NULL
-                  AND state <> 'deleted'
-                """
-            ),
-            {'owner_id': owner_id, 'agent_id': agent_id},
-        )
-        return [dict(row) for row in result.mappings().all()]
-
-    async def _current_assignment(
-        self,
-        db: AsyncSession,
-        *,
-        owner_id: str,
-        task_uuid: str,
-    ) -> dict[str, Any] | None:
-        result = await db.execute(
-            sa.text(
-                """
-                SELECT executor_kind, executor_node_id, binding_id, assignment_state
-                FROM hasn_task.assignment
-                WHERE owner_id = :owner_id
-                  AND task_uuid = :task_uuid
-                ORDER BY updated_time DESC NULLS LAST, id DESC
-                LIMIT 1
-                """
-            ),
-            {'owner_id': owner_id, 'task_uuid': task_uuid},
-        )
-        row = result.mappings().first()
-        return dict(row) if row is not None else None
-
     async def _upsert_current_assignment(
         self,
         db: AsyncSession,
@@ -674,59 +492,6 @@ class SqlAlchemySyncGateway:
                 **assignment,
             },
         )
-
-    async def _append_assignment_change_events(
-        self,
-        db: AsyncSession,
-        *,
-        task: dict[str, Any],
-        assignment: dict[str, Any],
-        old_node_id: str,
-    ) -> None:
-        new_node_id = assignment['executor_node_id']
-        assignment_payload = _task_assignment_event_payload(task, assignment, old_node_id)
-        await self._append_sync_event(
-            db,
-            owner_id=task['owner_id'],
-            hasn_id=task['agent_id'],
-            event_type='task.assignment_updated',
-            aggregate_type='task',
-            aggregate_id=task['task_uuid'],
-            payload=assignment_payload,
-        )
-        if old_node_id and old_node_id != new_node_id:
-            await self._append_sync_event(
-                db,
-                owner_id=task['owner_id'],
-                hasn_id=task['agent_id'],
-                event_type='task.updated',
-                aggregate_type='task',
-                aggregate_id=task['task_uuid'],
-                payload={
-                    **_task_sync_payload_from_row(task),
-                    'state': 'waiting_for_runtime',
-                    'executor_policy': assignment['executor_kind'],
-                    'executor_node_id': new_node_id,
-                    'assignment_state': assignment['assignment_state'],
-                    'visible_node_ids': [old_node_id],
-                },
-            )
-        if new_node_id:
-            await self._append_sync_event(
-                db,
-                owner_id=task['owner_id'],
-                hasn_id=task['agent_id'],
-                event_type='task.updated',
-                aggregate_type='task',
-                aggregate_id=task['task_uuid'],
-                payload={
-                    **_task_sync_payload_from_row(task),
-                    'executor_policy': assignment['executor_kind'],
-                    'executor_node_id': new_node_id,
-                    'assignment_state': assignment['assignment_state'],
-                    'visible_node_ids': [new_node_id],
-                },
-            )
 
     async def _current_task_revision(
         self,
@@ -1709,39 +1474,6 @@ class HasnSyncService:
         has_more = len(events) > request.max_events
         next_cursors = _advance_memory_cursors(selections, limited)
         return MemorySyncPullResponse(events=limited, next_cursors=next_cursors, has_more=has_more)
-
-    async def report_runtime(
-        self, db: AsyncSession, request: RuntimeReportRequest, *, user_id: int | None = None
-    ) -> RuntimeReportResponse:
-        await self._assert_owner_access(db, owner_id=request.owner_id, user_id=user_id)
-        for summary in request.runtime_summaries:
-            if _contains_private_runtime_key(summary.summary_json):
-                raise errors.RequestError(msg=_PRIVATE_METADATA_ERROR.name, data=_PRIVATE_METADATA_ERROR.model_dump())
-
-        for summary in request.runtime_summaries:
-            await self.gateway.save_runtime_report(
-                db,
-                {
-                    'report_id': _report_id(request.owner_id, request.node_id, summary),
-                    'owner_id': request.owner_id,
-                    'agent_hasn_id': summary.agent_id,
-                    'node_id': request.node_id,
-                    'runtime_type': summary.runtime_type,
-                    'runtime_status': _runtime_status_for_storage(summary.status),
-                    'adapter_registered': summary.adapter_registered,
-                    'handle_available': summary.handle_available,
-                    'binding_id': summary.binding_id,
-                    'runtime_revision': summary.runtime_revision,
-                    'summary_json': _redact_runtime_summary(summary.summary_json),
-                    'last_seen_at': summary.last_seen_at,
-                    'reported_at': timezone.now(),
-                },
-            )
-        return RuntimeReportResponse(
-            accepted=len(request.runtime_summaries),
-            rejected=[],
-            next_cursor=_owner_cursor(request.owner_id, 0),
-        )
 
     async def _assert_owner_access(self, db: AsyncSession, *, owner_id: str, user_id: int | None) -> None:
         if user_id is None:

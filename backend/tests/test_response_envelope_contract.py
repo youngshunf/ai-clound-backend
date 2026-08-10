@@ -25,9 +25,9 @@ from backend.plugin.core import build_final_router
 
 # ---- 真例外（统一信封满足不了，永久保留）----
 _GENUINE = {
-    # OpenAI/Anthropic 兼容代理：外部 SDK / hermes runtime 按原生形状解析，套信封即违反协议
-    # （旧 /api/v1/llm/proxy/* 系列已随 app/llm 自建网关删除——NEWAPI-P6 new-api 解耦）
-    'POST /api/v1/hermes/app/agents/{agent_id}/chat/completions',
+    # OpenAI/Anthropic 兼容代理：外部 SDK 按原生形状解析，套信封即违反协议
+    # （旧 /api/v1/llm/proxy/* 系列已随 app/llm 自建网关删除——NEWAPI-P6 new-api 解耦；
+    #  /api/v1/hermes/app/agents/{agent_id}/chat/completions 已随 app/hermes 整模块删除——2026-08-10）
     # 文件 / YAML / 下载 / 导出（返回二进制或文本文件，非 JSON 业务体）
     'GET /api/v1/client/version/latest-linux.yml',
     'GET /api/v1/client/version/latest-mac.yml',
@@ -75,7 +75,8 @@ _DEBT = {
     'POST /api/v1/hasn/auth/token/refresh',
     'POST /api/v1/hasn/memory/sync/pull',
     'POST /api/v1/hasn/onboarding/ensure',
-    'POST /api/v1/hasn/runtime/report',
+    # 'POST /api/v1/hasn/runtime/report' 已随云端 Runtime 形态退役摘除（2026-08-10），
+    # 由 test_retired_routes_stay_gone 钉死不得复活
     'POST /api/v1/hasn/sync/pull',
     'POST /api/v1/hasn/sync/push',
     # hasn_task 模块（从 app/hasn 拆出）任务定义同步：daemon 侧 .send_json() 配对，同上 hasn/sync 系列
@@ -137,6 +138,39 @@ def test_no_new_non_envelope_routes() -> None:
         '正常业务接口请用 response_model=ResponseModel + return response_base.success(data=...)；\n'
         '确属真例外（OpenAI 兼容代理/文件/重定向/webhook）才加入 KNOWN_NON_ENVELOPE 并注明理由：\n'
         + '\n'.join(f'  - {k}' for k in sorted(new))
+    )
+
+
+def _all_routes() -> set[str]:
+    """装配后的全部路由（`METHOD path`），不区分是否走信封。"""
+    router = build_final_router()
+    found: set[str] = set()
+    for route in router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods:
+            if method in ('HEAD', 'OPTIONS'):
+                continue
+            found.add(f'{method} {route.path}')
+    return found
+
+
+# 已退役、且**不得复活**的路由（删除时连同基线条目一并搬到这里，防有人顺手挂回去）。
+_RETIRED_ROUTES = {
+    # 云端 Runtime 形态退役（2026-08-10）：云端不再部署 Runtime，改为每订阅一个完整的无头
+    # hasn-node，Runtime 脱敏摘要上报写入端点随之摘除（表与历史事件保留，只删写入口）。
+    'POST /api/v1/hasn/runtime/report',
+    # app/hermes 整模块删除（2026-08-10）：Runtime 编排 API 与 OpenAI 兼容代理一并退役。
+    'POST /api/v1/hermes/app/agents/{agent_id}/chat/completions',
+}
+
+
+def test_retired_routes_stay_gone() -> None:
+    """防回归：已退役路由不得再出现在装配后的路由表里。"""
+    revived = _RETIRED_ROUTES & _all_routes()
+    assert not revived, (
+        '以下路由已被显式退役，不应再注册；若确实要恢复，先确认对应形态决策是否回滚，'
+        '再从 _RETIRED_ROUTES 移除：\n' + '\n'.join(f'  - {k}' for k in sorted(revived))
     )
 
 

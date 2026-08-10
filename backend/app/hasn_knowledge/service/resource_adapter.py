@@ -124,16 +124,16 @@ class KbDocResourceAdapter:
         doc_id = _to_int(resource_id)
         if doc_id is None:
             return set()
-        doc = (
+        current_content = (
             await db.execute(
-                sa.select(Document.id, Document.owner_id, Document.content).where(
+                sa.select(Document.content).where(
                     Document.id == doc_id,
                     Document.kind == 'native',
                     Document.deleted_time.is_(None),
                 )
             )
         ).scalar_one_or_none()
-        if doc is None:
+        if current_content is None:
             return set()
         version_contents = (
             await db.execute(
@@ -141,7 +141,7 @@ class KbDocResourceAdapter:
             )
         ).scalars().all()
         referenced: set[str] = set()
-        for content in [doc.content, *version_contents]:
+        for content in [current_content, *version_contents]:
             referenced.update(asset_ids_from_content(content))
         if not referenced:
             return set()

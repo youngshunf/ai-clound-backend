@@ -1,7 +1,7 @@
 """computer_use（分身 GUI 桌面控制 · Computer Use，模块 23 V2）AI-Native 内置 manifest。
 
 设计事实源：
-- docs/hasn-node设计文档/23-分身桌面控制Computer-Use/02-分身GUI桌面控制接入设计V2-hasn-mcp统一接入与能力型应用.md
+- docs/产品与技术/技术设计/03-产品应用/分身桌面控制/01-总体设计.md
   （§3.1 三 scope 表 / §3.3-3.4 安全语义 / §4.4.1 能力型应用 HExt-08 §4.4.1）
 - 16-应用目录与商业化管理统一设计.md（catalog/manifest 四正交概念）
 

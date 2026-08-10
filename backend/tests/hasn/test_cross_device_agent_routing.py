@@ -15,7 +15,7 @@
 本测试驱动真实 `NodeSessionService` 方法，仅在 Redis / WebSocket 基础设施边界
 使用 in-process fake（与已有 test_ws_router_and_route_guard.py 同款约定）。
 
-设计事实源：docs/hasn-node设计文档/多设备登录与跨设备消息路由/00-设计总览.md
+设计事实源：docs/产品与技术/技术设计/02-平台能力/消息与会话/07-跨设备消息路由（本地短路与跨设备选路）.md
 """
 
 from __future__ import annotations

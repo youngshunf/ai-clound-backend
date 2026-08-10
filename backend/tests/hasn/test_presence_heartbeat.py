@@ -7,7 +7,7 @@
   `get_online_map` 判该 agent 离线（僵尸路由不再阻塞他机接管）。
 - `unregister_node`（优雅退出 / 远程登出）删存活键 → 立即离线。
 
-设计事实源：docs/hasn-node设计文档/多设备登录与跨设备消息路由/00-设计总览.md §5。
+设计事实源：docs/产品与技术/技术设计/02-平台能力/身份与权限/设备与Presence/02-Presence心跳与在线三层判定.md §1。
 """
 
 from __future__ import annotations

@@ -9,7 +9,7 @@
   未知时如实写 None；ip_address 为空时不覆盖既有元数据。
 
 真实 PG 部分需 export DATABASE_PORT=15432（指向本地开发 PG）。
-设计事实源：docs/hasn-node设计文档/多设备登录与跨设备消息路由/00-设计总览.md §4
+设计事实源：docs/产品与技术/技术设计/02-平台能力/身份与权限/设备与Presence/01-设备身份与多设备登录.md §4
 """
 
 from __future__ import annotations
