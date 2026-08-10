@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from backend.app.hasn.api.agent_scopes import router as agent_scopes_router
 from backend.app.hasn.api.v1.admin.hasn_agent_capabilities import router as admin_hasn_agent_capabilities_router
-from backend.app.hasn.api.v1.admin.hasn_agent_runtime_reports import router as admin_hasn_agent_runtime_reports_router
 from backend.app.hasn.api.v1.admin.hasn_agents import router as admin_hasn_agents_router
 from backend.app.hasn.api.v1.admin.hasn_app_beta_access import router as admin_hasn_app_beta_access_router
 from backend.app.hasn.api.v1.admin.hasn_app_catalog import router as admin_hasn_app_catalog_router
@@ -149,7 +148,6 @@ v1.include_router(
     prefix='/hasn/node/bindingss',
     tags=['HASN Node Owner Binding 租约-HASN Node Owner Binding 租约'],
 )
-v1.include_router(admin_hasn_agent_runtime_reports_router, prefix='/runtime/reports', tags=['HASN Runtime reports'])
 v1.include_router(admin_hasn_channel_bindings_router, prefix='/channel/bindings', tags=['HASN Channel bindings'])
 v1.include_router(admin_hasn_clients_router, prefix='/clients', tags=['HASN Clients'])
 v1.include_router(admin_hasn_pending_intents_router, prefix='/pending/intents', tags=['HASN Pending intents'])

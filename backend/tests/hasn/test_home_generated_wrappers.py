@@ -253,7 +253,8 @@ SERVICE_CASES = (
 
 GENERATED_API_MODULES = (
     'backend.app.hasn.api.v1.admin.hasn_agent_capabilities',
-    'backend.app.hasn.api.v1.admin.hasn_agent_runtime_reports',
+    # 2026-08-10：`admin.hasn_agent_runtime_reports` 随 Runtime 上报链路退役删除
+    # （表 hasn_agent_runtime_reports 与其 crud/service 仍在，下一发布周期再处理）。
     'backend.app.hasn.api.v1.admin.hasn_audit_log',
     'backend.app.hasn.api.v1.admin.hasn_channel_bindings',
     'backend.app.hasn.api.v1.admin.hasn_clients',

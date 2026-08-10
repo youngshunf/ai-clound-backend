@@ -1,3 +1,12 @@
+"""`hermes_agent` 表模型（2026-08-10 自 `app/hermes` 迁入 `app/newapi`）。
+
+云端 Runtime 形态已退役（云端改为部署无头 hasn-node），原 `app/hermes` 模块整体删除。
+但本表承载 **per-agent 用量归属**：`app/newapi` 的用户端用量接口按 `agent_id` 反查 `user_id`，
+属于计费/用量域而非 Runtime 编排域，故随唯一存活消费方迁到 `app/newapi`。
+
+⚠️ `__tablename__` 保持 `hermes_agent` 不变——迁移只换代码归属，不动物理表，零 migration。
+"""
+
 from datetime import datetime
 
 import sqlalchemy as sa

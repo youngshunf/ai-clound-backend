@@ -1,6 +1,6 @@
 """内部服务健康监控端点（消费 service_registry 目录 + service_health 聚合）。
 
-管理端「内部服务健康」页一次拿到全部内部独立服务（finance/quant/ragflow/hermes/new-api）的死活，
+管理端「内部服务健康」页一次拿到全部内部独立服务（finance/quant/ragflow/new-api）的死活，
 免去逐个 curl。零业务副作用：只做轻量探活。
 """
 

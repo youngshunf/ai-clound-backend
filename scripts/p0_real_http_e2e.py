@@ -105,7 +105,9 @@ def run_flow(base_url: str, evidence: dict[str, Any]) -> None:
         }
     )
 
-    runtime_report = request_json(
+    # Runtime 上报写入端点已随云端 Runtime 形态退役摘除（2026-08-10）。这里走真实 socket
+    # 断言它确实 404——不是「跳过不测」，而是把「端点必须不在」当成一条正向证据落进 evidence。
+    runtime_report_status = request_status(
         base_url,
         "/api/v1/hasn/runtime/report",
         method="POST",
@@ -126,8 +128,8 @@ def run_flow(base_url: str, evidence: dict[str, Any]) -> None:
             ],
         },
     )
-    assert runtime_report["accepted"] == 1
-    evidence["checks"].append({"name": "backend runtime report", "accepted": runtime_report["accepted"]})
+    assert runtime_report_status == 404, f"runtime/report 应已退役返回 404，实得 {runtime_report_status}"
+    evidence["checks"].append({"name": "backend runtime report retired", "status": runtime_report_status})
 
     sync_push = request_json(
         base_url,
@@ -337,6 +339,27 @@ def request_json(
     except HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{method} {path} failed: HTTP {error.code} {detail}") from error
+
+
+def request_status(
+    base_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> int:
+    """只取 HTTP 状态码（用于断言某端点已退役），4xx/5xx 不抛异常。"""
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    request = Request(f"{base_url}{path}", data=body, headers=request_headers, method=method)
+    try:
+        with urlopen(request, timeout=5) as response:
+            return int(response.status)
+    except HTTPError as error:
+        return int(error.code)
 
 
 def find_free_port() -> int:
