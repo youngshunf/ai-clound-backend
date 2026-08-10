@@ -20,7 +20,7 @@ import pytest
 
 from sqlalchemy import delete, select
 
-from backend.app.hermes.model import HermesAgentLlmToken
+from backend.app.newapi.model.hermes_agent_llm_token import HermesAgentLlmToken
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.app.newapi.service import llm_newapi_user_mapping_service as svc
 from backend.common.security.encryption import key_encryption

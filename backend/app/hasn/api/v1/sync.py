@@ -1,4 +1,8 @@
-"""P0 HASN sync/runtime report endpoints."""
+"""P0 HASN sync 端点。
+
+2026-08-10：`POST /api/v1/hasn/runtime/report` 随云端 Runtime 形态退役一并摘除
+（云端不再部署 Runtime，改为每订阅一个完整的无头 hasn-node）。
+"""
 
 from __future__ import annotations
 
@@ -20,8 +24,6 @@ from backend.app.hasn.schema.hasn_sync import (
     MessageHistoryBootstrapPageResponse,
     MessageHistoryBootstrapStartRequest,
     MessageHistoryBootstrapStartResponse,
-    RuntimeReportRequest,
-    RuntimeReportResponse,
     SyncEventRecord,
     SyncPullRequest,
     SyncPullResponse,
@@ -332,15 +334,6 @@ async def pull_memory_sync_events(
 ) -> MemorySyncPullResponse:
     require_owner_identity(request, request_body.owner_id)
     return await hasn_sync_service.pull_memory(db, request_body, user_id=None)
-
-
-@router.post('/runtime/report', summary='Report redacted local Runtime status', dependencies=[DependsJwtAuth])
-async def report_runtime(
-    request: Request,
-    db: CurrentSessionTransaction,
-    request_body: RuntimeReportRequest,
-) -> RuntimeReportResponse:
-    return await hasn_sync_service.report_runtime(db, request_body, user_id=request.user.id)
 
 
 # ─── 会话对象读端点（会话一等实体重构 C1·doc02 §3.2）───

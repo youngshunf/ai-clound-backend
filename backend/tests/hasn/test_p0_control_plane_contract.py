@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from backend.app.hasn.service import hasn_onboarding_service as onboarding_mod
-from backend.common.exception import errors
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTROL_PLANE_CODEGEN_TABLES = (
@@ -42,14 +41,10 @@ def test_onboarding_default_agent_uses_assistant_idempotency_key() -> None:
 
 @dataclass
 class _CapturingSyncGateway:
-    reports: list[dict[str, Any]] = field(default_factory=list)
     sync_events: list[Any] = field(default_factory=list)
     client_events: list[Any] = field(default_factory=list)
     namespace_revisions: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     client_event_revisions: dict[tuple[str, str, str], int] = field(default_factory=dict)
-
-    async def save_runtime_report(self, db: Any, report: dict[str, Any]) -> None:
-        self.reports.append(report)
 
     async def pull_events(self, db: Any, *, owner_id: str, after_revision: int, limit: int) -> list[Any]:
         return [event for event in self.sync_events if event.revision > after_revision][:limit]
@@ -125,8 +120,13 @@ TEST_DB: Any = None
 
 
 @pytest.mark.asyncio
-async def test_runtime_report_accepts_redacted_summary_and_returns_sync_cursor() -> None:
-    from backend.app.hasn.schema.hasn_sync import RuntimeReportRequest, RuntimeSummary, SyncEventRecord, SyncPullRequest
+async def test_sync_pull_still_delivers_runtime_reported_events_after_write_path_retired() -> None:
+    """写入端摘除后，历史 `runtime.reported` 事件的**读端**（sync pull）必须照常可拉。
+
+    2026-08-10 云端 Runtime 形态退役，`report_runtime` / `save_runtime_report` 整条写入链路删除；
+    但 `hasn_agent_runtime_reports` 表与既有 sync 事件都保留，daemon 侧的下行读不能被连坐。
+    """
+    from backend.app.hasn.schema.hasn_sync import SyncEventRecord, SyncPullRequest
     from backend.app.hasn.service.hasn_sync_service import HasnSyncService
 
     gateway = CapturingSyncGateway(
@@ -142,56 +142,29 @@ async def test_runtime_report_accepts_redacted_summary_and_returns_sync_cursor()
     )
     service = HasnSyncService(gateway=gateway)
 
-    report_response = await service.report_runtime(
-        TEST_DB,
-        RuntimeReportRequest(
-            owner_id='h_owner',
-            node_id='n_runtime',
-            runtime_summaries=[
-                RuntimeSummary(
-                    agent_id='a_agent',
-                    binding_id='rb_1',
-                    runtime_type='hermes',
-                    status='online',
-                    adapter_registered=True,
-                    handle_available=True,
-                    summary_json={'capability': 'chat'},
-                )
-            ],
-        ),
-    )
     pull_response = await service.pull(TEST_DB, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:3'))
 
-    assert report_response.accepted == 1
-    assert gateway.reports[0]['summary_json'] == {'capability': 'chat'}
     assert pull_response.next_cursor == 'owner:h_owner:4'
     assert [event.event_id for event in pull_response.events] == ['se_1']
 
 
-@pytest.mark.asyncio
-async def test_runtime_report_rejects_private_runtime_metadata() -> None:
-    from backend.app.hasn.schema.hasn_sync import RuntimeReportRequest, RuntimeSummary
-    from backend.app.hasn.service.hasn_sync_service import HasnSyncService
+def test_runtime_report_write_path_is_retired() -> None:
+    """防回归：Runtime 上报的写入链路已整条摘除（2026-08-10 云端 Runtime 形态退役）。
 
-    service = HasnSyncService(gateway=CapturingSyncGateway())
+    原两条用例断的是「接受脱敏摘要」与「拒绝私有元数据」，都以写入端存在为前提。
+    写入端删除后这里改断三个入口都不在：service 的 `report_runtime`、gateway 实现与
+    Protocol 的 `save_runtime_report`、以及触发任务执行器归属刷新的
+    `_refresh_task_assignments_for_runtime_report`。任一被加回来即红。
 
-    with pytest.raises(errors.RequestError, match='ERR_RUNTIME_PRIVATE_METADATA_REJECTED'):
-        await service.report_runtime(
-            TEST_DB,
-            RuntimeReportRequest(
-                owner_id='h_owner',
-                node_id='n_runtime',
-                runtime_summaries=[
-                    RuntimeSummary(
-                        agent_id='a_agent',
-                        binding_id='rb_1',
-                        runtime_type='hermes',
-                        status='online',
-                        summary_json={'workspace_path': '/private/project'},
-                    )
-                ],
-            ),
-        )
+    注：私有元数据拒绝（`ERR_RUNTIME_PRIVATE_METADATA_REJECTED`）并未失守——
+    sync push 路径仍在用 `_contains_private_runtime_key` 拦截。
+    """
+    from backend.app.hasn.service.hasn_sync_service import HasnSyncService, SqlAlchemySyncGateway, SyncGateway
+
+    assert not hasattr(HasnSyncService, 'report_runtime')
+    assert not hasattr(SqlAlchemySyncGateway, 'save_runtime_report')
+    assert not hasattr(SqlAlchemySyncGateway, '_refresh_task_assignments_for_runtime_report')
+    assert not hasattr(SyncGateway, 'save_runtime_report')
 
 
 @pytest.mark.asyncio

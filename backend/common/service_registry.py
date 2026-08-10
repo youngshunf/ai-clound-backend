@@ -1,6 +1,6 @@
 """service_registry —— 内部独立服务的「约定式服务目录」（单一真相 / 静态服务发现）。
 
-**解决什么**：每加一个内部独立服务（finance / quant / ragflow / hermes / new-api …）就要在
+**解决什么**：每加一个内部独立服务（finance / quant / ragflow / new-api …）就要在
 `conf.py` + `.env` + 各 provider 三处散配 `URL/TOKEN/TIMEOUT`，命名还各不相同
 （finance 用 `FINANCE_SERVICE_*`、quant 用 `QUANT_ENGINE_*`），服务一多就乱、易漏配、易配错文件。
 本模块把每个内部服务**登记一次**（端口 / 健康路径 / 对应 settings 字段），成为唯一目录：
@@ -10,7 +10,7 @@
   prod 留空**（由 provider 归一 ``service_unconfigured``，绝不在 prod 静默连本机掩盖漏配）。
 - **令牌集中派生**：``derive_token`` 服务（finance/quant）若未显式配 token，则从单个 ``master_secret``
   派生 ``HMAC-SHA256(master_secret, 服务名)``（见 ``services_config``），与服务端逐字节一致，
-  两边无需各配。``derive_token=False`` 的服务（ragflow/hermes/newapi）用第三方/外部/bespoke 真实
+  两边无需各配。``derive_token=False`` 的服务（ragflow/newapi）用第三方/外部/bespoke 真实
   鉴权，**绝不派生**。``pooled`` 与 ``derive_token`` 是两个独立维度：newapi 池化但不派生。
 - 结构化部署值与主密钥都在 ``services.toml``（一服务一块，不再散落 .env），事实源见 doc25。
 - :func:`iter_services` / 健康检查消费此目录，给统一管理页「一页看全部内部服务死活」。
@@ -46,9 +46,9 @@ class ServiceSpec:
     timeout_attr: str | None  # settings 中的超时(秒)字段名（None=用 default_timeout）
     health_path: str | None  # 健康检查路径（None=仅做连通性探测，任何 HTTP 响应即视为可达）
     pooled: bool  # True=经 service_http 进程级连接池 + 健康复用池（finance/quant/newapi）；
-    # False=健康用临时 client、其自有 transport 维持原样（ragflow/hermes）
+    # False=健康用临时 client、其自有 transport 维持原样（ragflow）
     derive_token: bool  # True=未显式配 token 时从 master_secret 派生（仅我方自研、两端受控：finance/quant）；
-    # False=有第三方/外部/bespoke 真实鉴权，绝不派生（ragflow/hermes/newapi）
+    # False=有第三方/外部/bespoke 真实鉴权，绝不派生（ragflow/newapi）
     default_timeout: float = 30.0
 
 
@@ -152,7 +152,7 @@ _REGISTRY: dict[str, ServiceSpec] = {
             default_timeout=5.0,
         ),
         # 以下为外部/已部署服务：用各自第三方/bespoke 真实鉴权，绝不派生令牌（derive_token=False）。
-        # ragflow/hermes 自有 transport（RSA / 双向 bespoke token）维持原样，目录登记仅供健康可见。
+        # ragflow 自有 transport（RSA）维持原样，目录登记仅供健康可见。
         ServiceSpec(
             name='ragflow',
             title='RAGFlow 知识库',
@@ -164,21 +164,8 @@ _REGISTRY: dict[str, ServiceSpec] = {
             pooled=False,
             derive_token=False,
         ),
-        # hermes：自研 runtime（固定服务级 Bearer，双向另有 RUNTIME_INTERNAL_TOKEN）。控制面调用
-        # 经 service_endpoint 取连接三元组；health_path='/health'（server.py 在 auth 之前响应 200，无鉴权）。
-        # default_timeout=10 保持 hermes 历史默认（HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS）。
-        ServiceSpec(
-            name='hermes',
-            title='Hermes Runtime',
-            default_port=8765,
-            url_attr='HUANXING_HERMES_RUNTIME_BASE_URL',
-            token_attr='HUANXING_HERMES_RUNTIME_API_TOKEN',
-            timeout_attr='HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS',
-            health_path='/health',
-            pooled=False,
-            derive_token=False,
-            default_timeout=10.0,
-        ),
+        # 2026-08-10：`hermes` 登记随云端 Runtime 形态退役一并删除（云端改为部署无头 hasn-node，
+        # 不再有云端 Runtime 服务可探活）。
         # newapi：池化但不派生——`NewApiAdminClient` 经进程级连接池复用连接，但 token 是外部
         # new-api 系统的真实 admin 密钥，绝不能落入 master 派生分支（故 derive_token=False）。
         # health_path='/status'（base 含 /api → 命中 /api/status，无鉴权）。
@@ -231,7 +218,7 @@ def _resolve_token(spec: ServiceSpec, overrides: dict, name: str) -> str:
     """token：显式 env/settings → services.toml 显式 → 主密钥派生（仅 ``derive_token`` 服务）→ ''。
 
     派生判据是 ``spec.derive_token`` 而非 ``spec.pooled``：newapi 池化（pooled=True）但用外部真实
-    admin 密钥（derive_token=False），绝不能误派生覆盖；ragflow/hermes 两者皆 False。
+    admin 密钥（derive_token=False），绝不能误派生覆盖；ragflow 两者皆 False。
     """
     token = ''
     if spec.token_attr:

@@ -6,7 +6,7 @@
 
 探活策略（按登记的 ``health_path`` 分两类，零业务副作用）：
 - 有 ``health_path``（finance/quant）：GET 健康路径，2xx 且 body.ok != false 视为 up，顺带读 version。
-- 无 ``health_path``（ragflow/hermes/newapi）：GET 基址连通性探测，**任何 HTTP 响应**（含 4xx/5xx）即视为
+- 无 ``health_path``（ragflow/newapi）：GET 基址连通性探测，**任何 HTTP 响应**（含 4xx/5xx）即视为
   reachable=up（自有鉴权不在本探测职责内）；仅连接失败/超时为 down。
 - ``base_url`` 为空：status='unconfigured'，不发网络（prod 漏配在此一眼可见；dev 零配置回落本机不算未配）。
 """

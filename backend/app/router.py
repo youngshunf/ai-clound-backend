@@ -228,17 +228,6 @@ def _load_notification() -> None:
     router.include_router(notification_admin)      # 通知 管理端 API（Admin JWT 只读运维）
 
 
-def _load_hermes() -> None:
-    # Hermes（后台管理 CRUD；用户端 /hermes/app/agents 后续手写编排 API）
-    from backend.app.hermes.api.router import app as hermes_app
-    from backend.app.hermes.api.router import internal as hermes_internal
-    from backend.app.hermes.api.router import v1 as hermes_v1
-
-    router.include_router(hermes_v1)
-    router.include_router(hermes_app)
-    router.include_router(hermes_internal)    # runtime ↔ backend 内部 service token 调用（X-Internal-Token）
-
-
 def _load_hasn_client() -> None:
     # 客户端 companion API（hasn_client 应用，URL /api/v1/app/* 兼容；ADR-15 收编 R2）
     from backend.app.hasn_client.api.router import client_router
@@ -393,7 +382,6 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_copilot': _load_hasn_copilot,
     'hasn_publish': _load_hasn_publish,
     'notification': _load_notification,
-    'hermes': _load_hermes,
     'hasn_client': _load_hasn_client,
     'hasn_creator': _load_hasn_creator,
     'hasn_designsystem': _load_hasn_designsystem,

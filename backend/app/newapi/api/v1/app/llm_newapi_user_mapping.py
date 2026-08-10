@@ -14,7 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Request
 from sqlalchemy import select
 
-from backend.app.hermes.model import HermesAgent
+from backend.app.newapi.model.hermes_agent import HermesAgent
 from backend.app.newapi.schema.llm_newapi_user_mapping import (
     NewApiMappingInfo,
     NewApiQuotaInfo,

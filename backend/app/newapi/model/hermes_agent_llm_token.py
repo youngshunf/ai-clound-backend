@@ -1,3 +1,13 @@
+"""`hermes_agent_llm_token` 表模型（2026-08-10 自 `app/hermes` 迁入 `app/newapi`）。
+
+云端 Runtime 形态已退役（云端改为部署无头 hasn-node），原 `app/hermes` 模块整体删除。
+但本表是 **Agent 级 LLM 凭据租约存储**：`app/newapi` 的 `NewapiService` 在此签发/查询/撤销
+每个分身独立的 new-api relay token，属于 LLM 计费域而非 Runtime 编排域，故随唯一存活消费方
+迁到 `app/newapi`。
+
+⚠️ `__tablename__` 保持 `hermes_agent_llm_token` 不变——迁移只换代码归属，不动物理表，零 migration。
+"""
+
 from datetime import datetime
 
 import sqlalchemy as sa

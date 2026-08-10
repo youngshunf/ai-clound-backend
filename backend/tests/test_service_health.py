@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
-    """/v1/healthz → 200 {ok,version}；/health → 200 {service,status}（hermes 形态，无 ok 键）；其它 → 404。"""
+    """/v1/healthz → 200 {ok,version}；/health → 200 {service,status}（无 ok 键的形态）；其它 → 404。"""
 
     def do_GET(self) -> None:
         if self.path == '/v1/healthz':
@@ -39,8 +39,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif self.path == '/health':
-            # hermes-runtime /health：无 ok 键、status='ok'（auth 之前响应 200）。
-            body = b'{"service": "huanxing-hermes-runtime", "status": "ok"}'
+            # `/health` 形态：无 ok 键、status='ok'（服务在 auth 之前就响应 200）。
+            body = b'{"service": "huanxing-hosting-agent", "status": "ok"}'
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -125,16 +125,18 @@ async def test_reachable_non_pooled_any_http(
 
 
 @pytest.mark.asyncio
-async def test_hermes_up_via_health_path(monkeypatch: pytest.MonkeyPatch, health_server: int) -> None:
-    """hermes（health_path='/health'，pooled=False）：真实 200 /health → status=up。
+async def test_health_path_without_ok_key_is_up(monkeypatch: pytest.MonkeyPatch, health_server: int) -> None:
+    """health_path='/health' 且响应体无 ``ok`` 键（hosting 形态）：真实 200 → status=up。
 
-    hermes /health 无 ``ok`` 键（status='ok'），健康判据 ``resp.is_success and body.ok != False``
-    对其成立（``None != False``），故 up；探活用临时 client（非池），不污染连接池。
+    判据是 ``resp.is_success and body.ok != False``，``None != False`` 成立故 up——
+    这条守的是「服务只回 {service,status} 不回 ok 时不能被误判为 down」。
+
+    （原用例打的是已退役的 hermes；2026-08-10 云端 Runtime 形态下线后改由 hosting 承接同一形态。）
     """
-    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_BASE_URL', f'http://127.0.0.1:{health_server}')
-    monkeypatch.delenv('HUANXING_HERMES_RUNTIME_API_TOKEN', raising=False)
+    monkeypatch.setenv('HOSTING_AGENT_URL', f'http://127.0.0.1:{health_server}')
+    monkeypatch.delenv('HOSTING_AGENT_TOKEN', raising=False)
 
-    report = await check_service_health(get_service_spec('hermes'))
+    report = await check_service_health(get_service_spec('hosting'))
 
     assert report.status == 'up'
     assert report.detail == 'ok'
@@ -167,4 +169,6 @@ async def test_check_all_returns_one_per_service(monkeypatch: pytest.MonkeyPatch
     assert all(isinstance(r, ServiceHealthReport) for r in reports)
     assert all(r.status == 'unconfigured' for r in reports)
     names = {r.name for r in reports}
-    assert {'finance', 'quant', 'ragflow', 'hermes', 'newapi'} <= names
+    assert {'finance', 'quant', 'ragflow', 'newapi'} <= names
+    # 云端 Runtime 形态已退役（2026-08-10）：hermes 不再登记，健康页也不该再出现这一条
+    assert 'hermes' not in names

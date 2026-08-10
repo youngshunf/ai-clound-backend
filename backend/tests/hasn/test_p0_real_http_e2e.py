@@ -653,7 +653,6 @@ class FakeOnboardingGateway:
 
 @dataclass
 class InMemorySyncGateway:
-    reports: list[dict[str, Any]] = field(default_factory=list)
     run_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
     client_events: list[Any] = field(default_factory=list)
     sync_events: list[Any] = field(default_factory=list)
@@ -702,55 +701,6 @@ class InMemorySyncGateway:
         event_id = f'se_memory_{revision}'
         return revision, event_id
 
-    async def save_runtime_report(self, _db: Any, report: dict[str, Any]) -> None:
-        self.reports.append(report)
-        assignment = _fake_assignment_from_runtime_report(report)
-        for task_id, task in list(self.task_records.items()):
-            if task.get('owner_id') != report['owner_id'] or task.get('agent_id') != report['agent_hasn_id']:
-                continue
-            previous = self.assignments.get(task_id)
-            old_node_id = str((previous or {}).get('executor_node_id') or '')
-            if previous == assignment:
-                continue
-            self.assignments[task_id] = dict(assignment)
-            self._append_event(
-                event_type='task.assignment_updated',
-                payload={
-                    **task,
-                    'task_uuid': task_id,
-                    'executor_kind': assignment['executor_kind'],
-                    'executor_policy': assignment['executor_kind'],
-                    'executor_node_id': assignment['executor_node_id'],
-                    'binding_id': assignment['binding_id'],
-                    'assignment_state': assignment['assignment_state'],
-                    'previous_executor_node_id': old_node_id or None,
-                    'visible_node_ids': [assignment['executor_node_id']] if assignment['executor_node_id'] else [],
-                },
-            )
-            if old_node_id and old_node_id != assignment['executor_node_id']:
-                self._append_event(
-                    event_type='task.updated',
-                    payload={
-                        **task,
-                        'state': 'waiting_for_runtime',
-                        'executor_policy': assignment['executor_kind'],
-                        'executor_node_id': assignment['executor_node_id'],
-                        'assignment_state': assignment['assignment_state'],
-                        'visible_node_ids': [old_node_id],
-                    },
-                )
-            if assignment['executor_node_id']:
-                self._append_event(
-                    event_type='task.updated',
-                    payload={
-                        **task,
-                        'executor_policy': assignment['executor_kind'],
-                        'executor_node_id': assignment['executor_node_id'],
-                        'assignment_state': assignment['assignment_state'],
-                        'visible_node_ids': [assignment['executor_node_id']],
-                    },
-                )
-
     async def pull_events(self, _db: Any, *, owner_id: str, after_revision: int, limit: int) -> list[Any]:
         from backend.app.hasn.schema.hasn_sync import SyncEventRecord
 
@@ -761,14 +711,6 @@ class InMemorySyncGateway:
             and not event.event_type.startswith('task.')
             and event.event_type != 'task_run.summary_reported'
         ]
-        if self.reports and not events:
-            events.append(SyncEventRecord(
-                event_id='se_runtime_reported',
-                event_type='runtime.reported',
-                revision=max(after_revision + 1, 1),
-                created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
-                payload={'owner_id': owner_id, 'reports': len(self.reports), 'limit': limit},
-            ))
         return events[:limit]
 
     async def pull_memory_events(
@@ -945,30 +887,6 @@ class InMemorySyncGateway:
 
     def _latest_revision(self) -> int:
         return max((event.revision for event in self.sync_events), default=0)
-
-
-def _fake_assignment_from_runtime_report(report: dict[str, Any]) -> dict[str, Any]:
-    summary = dict(report.get('summary_json') or {})
-    dispatchable = (
-        report.get('runtime_status') == 'online'
-        and report.get('adapter_registered', True)
-        and report.get('handle_available', True)
-        and report.get('node_id')
-    )
-    if not dispatchable:
-        return {
-            'executor_kind': 'unresolved',
-            'executor_node_id': '',
-            'binding_id': report.get('binding_id'),
-            'assignment_state': 'unresolved',
-        }
-    is_cloud = bool(summary.get('cloud_runtime_host')) or summary.get('runtime_host') == 'cloud'
-    return {
-        'executor_kind': 'cloud_runtime_host' if is_cloud else 'local_node',
-        'executor_node_id': report['node_id'],
-        'binding_id': report.get('binding_id'),
-        'assignment_state': 'assigned',
-    }
 
 
 def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
@@ -1311,7 +1229,7 @@ async def _fake_mcp_log_tool_call(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-def test_p0_real_http_flow_covers_auth_onboarding_and_runtime_report(
+def test_p0_real_http_flow_covers_auth_onboarding_and_retired_runtime_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = TestClient(make_app(monkeypatch))
@@ -1365,6 +1283,8 @@ def test_p0_real_http_flow_covers_auth_onboarding_and_runtime_report(
     # 不再是旧的聚合 'hasn.tool'。断言核心云端 App 命名空间确被检索到。
     assert {'hasn.community', 'hasn.message'} <= mcp_source_namespaces
 
+    # 防回归（2026-08-10）：Runtime 上报写入端点随云端 Runtime 形态退役已摘除，
+    # 打过去必须是 404「路由不存在」，而不是 200/403/422（后三者都说明端点又被挂了回来）。
     runtime_report = client.post(
         '/api/v1/hasn/runtime/report',
         headers=auth,
@@ -1384,8 +1304,7 @@ def test_p0_real_http_flow_covers_auth_onboarding_and_runtime_report(
             ],
         },
     )
-    assert runtime_report.status_code == 200
-    assert runtime_report.json()['accepted'] == 1
+    assert runtime_report.status_code == 404, runtime_report.text
 
     capabilities = client.post(
         '/api/v1/ai-native/runtime/capabilities',
@@ -1509,7 +1428,13 @@ def test_sync_push_rejects_owner_not_bound_to_authenticated_user(monkeypatch: py
     assert sync_gateway.client_events == []
 
 
-def test_runtime_report_rejects_owner_not_bound_to_authenticated_user(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_report_endpoint_is_retired(monkeypatch: pytest.MonkeyPatch) -> None:
+    """防回归：`POST /api/v1/hasn/runtime/report` 已随云端 Runtime 形态退役摘除（2026-08-10）。
+
+    原用例断的是「owner 与登录用户不匹配 → 403」。端点整条摘掉后该越权面消失，
+    这里改断「路由不存在」：任何 body（含越权 owner_id）都只能拿到 404，且 sync gateway
+    上不能再有 `save_runtime_report` 这个写入口。若有人把端点挂回来，本用例立刻红。
+    """
     app, sync_gateway = make_sync_auth_app(monkeypatch, user_id=7)
     client = TestClient(app)
 
@@ -1531,8 +1456,8 @@ def test_runtime_report_rejects_owner_not_bound_to_authenticated_user(monkeypatc
         },
     )
 
-    assert response.status_code == 403
-    assert sync_gateway.reports == []
+    assert response.status_code == 404, response.text
+    assert not hasattr(sync_gateway, 'save_runtime_report')
 
 
 def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:

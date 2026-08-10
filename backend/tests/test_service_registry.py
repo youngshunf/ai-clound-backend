@@ -163,28 +163,16 @@ def test_newapi_pooled_but_not_derived(monkeypatch: pytest.MonkeyPatch) -> None:
     assert token != hmac.new(b'master-xyz', b'newapi', hashlib.sha256).hexdigest()
 
 
-def test_hermes_endpoint_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """hermes 经 service_endpoint 解析连接三元组：dev 回落 8765、默认超时 10、env 覆盖、token 不派生。"""
-    for key in ('HUANXING_HERMES_RUNTIME_BASE_URL', 'HUANXING_HERMES_RUNTIME_API_TOKEN', 'HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS'):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(settings, 'HUANXING_HERMES_RUNTIME_BASE_URL', '', raising=False)
-    monkeypatch.setattr(settings, 'HUANXING_HERMES_RUNTIME_API_TOKEN', '', raising=False)
-    monkeypatch.setattr(settings, 'HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS', 10, raising=False)
-    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
-    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')  # 即便有主密钥也不派生
+def test_hermes_service_is_retired_from_registry() -> None:
+    """防回归：云端 Runtime 形态已退役，`hermes` 不得再出现在服务目录里（2026-08-10）。
 
-    ep = service_endpoint('hermes')
-    assert ep.base_url == 'http://127.0.0.1:8765'  # dev 零配置回落约定端口
-    assert ep.timeout == pytest.approx(10.0)  # default_timeout=10（hermes 历史默认）
-    assert not ep.token  # derive_token=False → 不派生
-
-    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_BASE_URL', 'http://hermes.internal:9999/')
-    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_API_TOKEN', 'svc-tok')
-    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS', '25')
-    ep2 = service_endpoint('hermes')
-    assert ep2.base_url == 'http://hermes.internal:9999'  # env 覆盖 + 去尾斜杠
-    assert ep2.token == 'svc-tok'
-    assert ep2.timeout == pytest.approx(25.0)
+    云端不再部署 Hermes Runtime（改为每订阅一个完整的无头 hasn-node 容器），因此既没有
+    可探活的 hermes 端点，也不应再从 `HUANXING_HERMES_RUNTIME_*` 解析连接三元组。
+    若有人把登记加回来，本用例即红——先确认形态是否真的回滚，再改这里。
+    """
+    assert 'hermes' not in {s.name for s in iter_services()}
+    with pytest.raises(KeyError):
+        get_service_spec('hermes')
 
 
 def test_ragflow_endpoint_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,19 +196,17 @@ def test_ragflow_endpoint_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_registry_catalog_complete() -> None:
     """目录登记了全部已知内部服务，且 pooled / derive_token 两维度取值符合 doc25 决策矩阵。"""
     names = {s.name for s in iter_services()}
-    assert {'finance', 'quant', 'ragflow', 'hermes', 'newapi'} <= names
-    # pooled：finance/quant/newapi 走连接池 + 健康复用池；ragflow/hermes 用临时 client
+    assert {'finance', 'quant', 'ragflow', 'newapi'} <= names
+    # pooled：finance/quant/newapi 走连接池 + 健康复用池；ragflow 用临时 client
     assert get_service_spec('finance').pooled is True
     assert get_service_spec('quant').pooled is True
     assert get_service_spec('newapi').pooled is True
     assert get_service_spec('ragflow').pooled is False
-    assert get_service_spec('hermes').pooled is False
     # derive_token：仅我方自研、两端受控的 finance/quant 派生；其余用真实/第三方鉴权，绝不派生
     assert get_service_spec('finance').derive_token is True
     assert get_service_spec('quant').derive_token is True
     assert get_service_spec('newapi').derive_token is False
     assert get_service_spec('ragflow').derive_token is False
-    assert get_service_spec('hermes').derive_token is False
 
 
 def test_unknown_service_raises() -> None:
