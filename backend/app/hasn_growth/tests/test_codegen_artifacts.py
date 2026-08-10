@@ -5,6 +5,14 @@ ROOT = Path(__file__).resolve().parents[4]
 # 采集子域收编（设计 07 §5.0）：app/lead_automation → app/hasn_growth，
 # 10 表 SET SCHEMA hasn_growth + 去前缀；Python 文件名/类名保留 lead_*（churn 控制，表名才是隔离边界）。
 # canonical 路由前缀 /api/v1/growth/*；旧 /api/v1/lead-automation/* 薄转发过渡（M8 退役）。
+#
+# 【admin 面断言已整体反转 —— 防回归守卫】
+# 运营面不再由 codegen 按表生成，见运营管理面设计：AI-Native 应用移出平台归属，每个应用经 SDK
+# 接入、自选语言、**自建业务运营面**，云端后台不再承载应用的 admin CRUD。原本断言
+# `api/v1/admin/{table}.py` **必须存在**的约 20 余条，现已反转为**必须不存在**——以后谁再跑
+# codegen 把这些文件生成回来，本测试直接红，逼其删除而不是悄悄合入。
+# 唯一例外是 `api/v1/admin/business.py`：它是 GDPR/DSR 合规面（按 email/手机号删除联系人、审计
+# 日志、保留期延长、来源黑名单），属平台义务而非应用运营面，单独立项，相关断言保持原样不反转。
 
 
 def test_codegen_generated_all_crud_model_schema_api_files() -> None:
@@ -31,7 +39,9 @@ def test_codegen_generated_all_crud_model_schema_api_files() -> None:
         assert (app_root / f'schema/{table}.py').exists()
         assert (app_root / f'crud/crud_{table}.py').exists()
         assert (app_root / f'service/{table}_service.py').exists()
-        assert (app_root / f'api/v1/admin/{table}.py').exists()
+        # 反转断言：codegen admin CRUD 已整体删除，运营面不再由 codegen 按表生成
+        # （见运营管理面设计；应用自建运营面）。再次生成回来即视为回归。
+        assert not (app_root / f'api/v1/admin/{table}.py').exists(), table
         # 用户与 Agent 业务面已收口到 growth.py；仅仍具 owner 隔离语义的后台任务/导出批次
         # 保留生成路由，其余采集流水表禁止重新暴露通用写面。
         for scope in ('app', 'agent'):
@@ -108,14 +118,18 @@ _GROWTH_TABLES = (
 
 
 def test_m2_seven_new_tables_codegen_artifacts_exist() -> None:
-    """7 张新表 codegen 产物：model/schema/crud/service + admin API（业务 app/agent/open 留 M3 手写）。"""
+    """7 张新表 codegen 产物：只保留 model/schema/crud/service（数据层仍被业务面复用）。
+
+    admin API 断言已反转为「必须不存在」：运营面不再由 codegen 按表生成，见运营管理面设计
+    ——AI-Native 应用移出平台归属，每个应用经 SDK 接入、自选语言、自建业务运营面。
+    """
     app_root = ROOT / 'backend/app/hasn_growth'
     for table in _GROWTH_TABLES:
         assert (app_root / f'model/{table}.py').exists(), table
         assert (app_root / f'schema/{table}.py').exists(), table
         assert (app_root / f'crud/crud_{table}.py').exists(), table
         assert (app_root / f'service/{table}_service.py').exists(), table
-        assert (app_root / f'api/v1/admin/{table}.py').exists(), table
+        assert not (app_root / f'api/v1/admin/{table}.py').exists(), table
 
 
 def test_m2_new_business_tables_have_no_generic_app_agent_open_crud() -> None:
@@ -180,15 +194,23 @@ def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
 
 
 def test_sensitive_admin_codegen_crud_is_not_mounted() -> None:
-    """高风险生成 CRUD 只保留 codegen 产物，不挂路由绕过脱敏、主体隔离和专用审计。"""
+    """codegen 按表生成的 admin CRUD 一律不得进入路由表。
+
+    原本 opportunity / playbook 两张「不含 PII」的表还挂着生成 CRUD，断言它们**必须挂载**；
+    现已随其余 admin 面一并删除，断言相应反转为**不得出现在路由表里**——运营面不再由 codegen
+    按表生成，见运营管理面设计（应用经 SDK 接入、自建业务运营面）。
+    v1 上只应剩 GDPR/DSR 合规面 business.py 的端点。
+    """
     import backend.app.hasn_growth.api.router as growth_router_mod
 
     from backend.app.hasn_growth.api.router import v1
 
     v1_paths = {getattr(r, 'path', '') for r in v1.routes}
-    assert any(p == '/api/v1/growth/opportunitys' for p in v1_paths)
-    assert any(p == '/api/v1/growth/playbooks' for p in v1_paths)
-    sensitive_prefixes = (
+    # 反转：这两条曾被要求「必须挂载」，现在必须消失
+    assert not any(p == '/api/v1/growth/opportunitys' for p in v1_paths)
+    assert not any(p == '/api/v1/growth/playbooks' for p in v1_paths)
+    retired_prefixes = (
+        # 原「高风险、刻意不挂路由」的生成 CRUD——依然不得出现
         '/api/v1/growth/lead/raw/records',
         '/api/v1/growth/lead/contacts',
         '/api/v1/growth/lead/contact/sources',
@@ -200,8 +222,17 @@ def test_sensitive_admin_codegen_crud_is_not_mounted() -> None:
         '/api/v1/growth/activitys',
         '/api/v1/growth/form-submissions',
         '/api/v1/growth/optout-records',
+        # 本批新退役：低风险配置/作业面的生成 CRUD 同样随 admin 面整体下线
+        '/api/v1/growth/opportunitys',
+        '/api/v1/growth/playbooks',
+        '/api/v1/growth/lead-source-configs',
+        '/api/v1/growth/lead/collection/jobs',
+        '/api/v1/growth/lead/firecrawl/requests',
+        '/api/v1/growth/lead/export/batchs',
     )
-    assert all(not any(path.startswith(prefix) for path in v1_paths) for prefix in sensitive_prefixes)
+    assert all(not any(path.startswith(prefix) for path in v1_paths) for prefix in retired_prefixes)
+    # 合规面（GDPR/DSR）单独立项、本批不动：/admin/* 端点必须仍在
+    assert any(p.startswith('/api/v1/growth/admin/') for p in v1_paths), v1_paths
     # M8 退役：legacy_* 符号已删除，旧 /api/v1/lead-automation/* 转发面整体清零（双中心归一）
     assert not hasattr(growth_router_mod, 'legacy_v1')
     assert not any('lead-automation' in p for p in v1_paths)

@@ -2,9 +2,6 @@ from fastapi import APIRouter
 
 from backend.core.conf import settings
 
-# --- 管理端（JWT + RBAC） ---
-from backend.app.hasn_project.api.v1.admin.hasn_project import router as admin_hasn_project_router
-from backend.app.hasn_project.api.v1.admin.hasn_project_milestone import router as admin_hasn_project_milestone_router
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn_project.api.v1.app.hasn_project import router as app_hasn_project_router
 from backend.app.hasn_project.api.v1.app.hasn_project_milestone import router as app_hasn_project_milestone_router
@@ -22,11 +19,14 @@ from backend.app.hasn_project.api.v1.open.hasn_project_milestone import router a
 
 # ========================================
 # 管理端 API（JWT + RBAC）·前缀 /api/v1/project
+#
+# codegen admin CRUD 已下线：AI-Native 应用移出平台归属——每个应用经 SDK 接入、自选语言、
+# **自建业务运营面**，云端后台不再按表生成运营 CRUD。
+# 空的 v1 予以保留：本模块的 v1 本就未装载进主路由（_load_hasn_project 只挂 app 面），
+# 留空壳只为不改动本文件其余三面的对称结构。
+# service/crud/model 全部保留——api/v1/agent/* 与 api/v1/open/* 仍在 import 复用。
 # ========================================
 v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/project', tags=['平台项目（doc38）管理'])
-
-v1.include_router(admin_hasn_project_router, prefix='/projects', tags=['平台项目（doc38）管理'])
-v1.include_router(admin_hasn_project_milestone_router, prefix='/milestones', tags=['平台项目里程碑（doc38 §12.3）管理'])
 
 # ========================================
 # 用户端 API（仅 JWT）·前缀 /api/v1/project/app
