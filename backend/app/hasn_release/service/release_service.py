@@ -20,9 +20,10 @@ import asyncio
 import hashlib
 import os
 import re
+import tempfile
 
 from collections.abc import AsyncIterable, AsyncIterator
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import httpx
@@ -96,6 +97,25 @@ class _HashingSizedStream:
 
 async def _single_chunk(data: bytes) -> AsyncIterator[bytes]:  # noqa: RUF029 - 适配异步上传协议
     yield data
+
+
+async def _stage_release_upload(data: AsyncIterable[bytes], size: int) -> tuple[Path, str]:
+    """把慢速请求流有界落盘并返回服务端计算的 SHA-256；失败时不遗留临时文件。"""
+    file_descriptor, raw_path = tempfile.mkstemp(prefix='hasn-release-', suffix='.upload')
+    path = Path(raw_path)
+    file_obj = os.fdopen(file_descriptor, 'wb')
+    checked_stream = _HashingSizedStream(data, size)
+    try:
+        async for chunk in checked_stream:
+            await asyncio.to_thread(file_obj.write, chunk)
+        await asyncio.to_thread(file_obj.flush)
+        await asyncio.to_thread(os.fsync, file_obj.fileno())
+    except Exception:
+        await asyncio.to_thread(file_obj.close)
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+        raise
+    await asyncio.to_thread(file_obj.close)
+    return path, checked_stream.sha256
 
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
@@ -659,7 +679,7 @@ class ReleaseService:
 
     # --------- 发布 / 上传（管理端手动 + CI 回调共用核心） ---------
 
-    async def publish(  # noqa: C901
+    async def publish(
         self,
         db: AsyncSession,
         req: PublishReleaseRequest,
@@ -769,7 +789,7 @@ class ReleaseService:
             await db.flush()  # 同上：外层事务自动提交，这里只 flush
         return detail
 
-    async def _submit_batch_assets(  # noqa: C901
+    async def _submit_batch_assets(
         self,
         db: AsyncSession,
         req: CiCallbackRequest,
@@ -911,7 +931,7 @@ class ReleaseService:
         release_id: int | None = None,
         content_type: str | None = None,
     ) -> CiUploadResponse:
-        """把 CI 请求体直接流式转发到公共对象存储，避免大产物驻留 API 内存。"""
+        """流式接收 CI 请求体，落临时文件后分片上传公共对象存储。"""
         if size <= 0:
             raise errors.RequestError(msg='上传产物不能为空')
         name = PurePosixPath((filename or '').strip()).name or 'asset.bin'  # 取 basename，杜绝路径穿越
@@ -926,23 +946,31 @@ class ReleaseService:
         object_key = f'desktop/{channel}/{version}/{name}'
         mime = content_type or 'application/octet-stream'
         storage = await StorageService.get_write_storage(db, access='public')
-        checked_stream = _HashingSizedStream(data, size)
-        ref = await StorageService.upload_stream_to_storage(
-            storage,
-            checked_stream,
-            size=size,
-            key=object_key,
-            content_type=mime,
-        )
-        if checked_stream.received_size != size:
-            raise errors.RequestError(msg='上传产物实际大小与 Content-Length 不一致')
+        # 上传可能持续很久；存储快照与批次校验完成后释放数据库连接，不把连接池槽位
+        # 占到客户端慢速上传和七牛分片上传结束。
+        await db.rollback()
+        staged_path, sha256 = await _stage_release_upload(data, size)
+        staged_file = None
+        try:
+            staged_file = await asyncio.to_thread(staged_path.open, 'rb')
+            ref = await StorageService.upload_public_package_to_storage(
+                storage,
+                staged_file,
+                size=size,
+                key=object_key,
+                content_type=mime,
+            )
+        finally:
+            if staged_file is not None:
+                await asyncio.to_thread(staged_file.close)
+            await asyncio.to_thread(staged_path.unlink, missing_ok=True)
         if not ref.stable_url.startswith('https://'):
             raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {ref.stable_url}')
         return CiUploadResponse(
             download_url=ref.stable_url,
             file_name=name,
             file_size=ref.size,
-            sha256=checked_stream.sha256,
+            sha256=sha256,
             object_key=ref.object_key,
         )
 

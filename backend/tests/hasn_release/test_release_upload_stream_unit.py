@@ -10,7 +10,7 @@ import pytest
 from starlette.requests import Request
 
 from backend.app.hasn_release.api.v1.ci.release import _required_content_length, ci_upload
-from backend.app.hasn_release.service.release_service import _HashingSizedStream
+from backend.app.hasn_release.service.release_service import ReleaseService, _HashingSizedStream, _stage_release_upload
 from backend.common.exception import errors
 
 
@@ -38,11 +38,32 @@ async def test_hashing_sized_stream_rejects_size_mismatch() -> None:
         _ = [chunk async for chunk in stream]
 
 
+@pytest.mark.asyncio
+async def test_stage_release_upload_writes_real_tempfile_and_calculates_sha256() -> None:
+    content = b'abcdef'
+    path, sha256 = await _stage_release_upload(_chunks(b'abc', b'def'), len(content))
+    try:
+        assert path.read_bytes() == content
+        assert sha256 == hashlib.sha256(content).hexdigest()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_ci_upload_never_buffers_the_whole_request_body() -> None:
     source = inspect.getsource(ci_upload)
 
     assert 'request.stream()' in source
     assert 'request.body()' not in source
+
+
+def test_release_upload_stages_then_uses_public_package_multipart_path() -> None:
+    stage_source = inspect.getsource(_stage_release_upload)
+    service_source = inspect.getsource(ReleaseService.ci_upload_asset_stream)
+
+    assert 'tempfile.mkstemp' in stage_source
+    assert 'upload_public_package_to_storage' in service_source
+    assert 'upload_stream_to_storage' not in service_source
+    assert 'staged_path.unlink' in service_source
 
 
 @pytest.mark.parametrize(
