@@ -38,6 +38,11 @@ from backend.app.hasn_release.schema.release import (
     REQUIRED_DESKTOP_PLATFORMS,
     BuildDetail,
     CiCallbackRequest,
+    CiMultipartAbortRequest,
+    CiMultipartCompleteRequest,
+    CiMultipartInitRequest,
+    CiMultipartInitResponse,
+    CiMultipartPartResponse,
     CiUploadResponse,
     ConfirmReleaseTagRequest,
     GithubBuildRequest,
@@ -64,6 +69,7 @@ _SEMVER_CORE = re.compile(r'^(\d+)\.(\d+)\.(\d+)')
 _RELEASE_NOTES_MAX_CHARS = 500
 _MAX_RELEASE_COMMITS = 5000
 _RELEASE_COMMIT_CHUNK_CHARS = 12000
+_RELEASE_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 
 
 class _HashingSizedStream:
@@ -973,6 +979,139 @@ class ReleaseService:
             sha256=sha256,
             object_key=ref.object_key,
         )
+
+    async def ci_multipart_init(
+        self,
+        db: AsyncSession,
+        obj: CiMultipartInitRequest,
+    ) -> CiMultipartInitResponse:
+        """创建由 CI 逐片调用云端接口的对象存储 multipart 会话。"""
+        name, object_key = await self._validate_ci_multipart_target(db, obj)
+        del name
+        storage = await StorageService.get_write_storage(db, access='public')
+        upload_id = await StorageService.create_multipart_on_storage(
+            storage,
+            object_key=object_key,
+            content_type=obj.content_type,
+        )
+        return CiMultipartInitResponse(
+            upload_id=upload_id,
+            object_key=object_key,
+            part_size=_RELEASE_MULTIPART_PART_BYTES,
+        )
+
+    async def ci_multipart_upload_part(
+        self,
+        db: AsyncSession,
+        *,
+        obj: CiMultipartInitRequest,
+        object_key: str,
+        upload_id: str,
+        part_number: int,
+        data: AsyncIterable[bytes],
+        size: int,
+    ) -> CiMultipartPartResponse:
+        """接收一个固定大小分片并立即写入对象存储；同序号重试会覆盖旧分片。"""
+        _, expected_key = await self._validate_ci_multipart_target(db, obj)
+        if object_key != expected_key:
+            raise errors.RequestError(msg='multipart 对象键与发布目标不匹配')
+        part_count = (obj.file_size + _RELEASE_MULTIPART_PART_BYTES - 1) // _RELEASE_MULTIPART_PART_BYTES
+        if part_number < 1 or part_number > part_count:
+            raise errors.RequestError(msg='multipart 分片序号超出文件范围')
+        expected_size = min(
+            _RELEASE_MULTIPART_PART_BYTES,
+            obj.file_size - (part_number - 1) * _RELEASE_MULTIPART_PART_BYTES,
+        )
+        if size != expected_size:
+            raise errors.RequestError(msg='multipart 分片大小与文件边界不匹配')
+        storage = await StorageService.get_write_storage(db, access='public')
+        await db.rollback()
+        staged_path, _ = await _stage_release_upload(data, size)
+        staged_file = None
+        try:
+            staged_file = await asyncio.to_thread(staged_path.open, 'rb')
+            etag = await StorageService.upload_multipart_part_on_storage(
+                storage,
+                object_key=object_key,
+                upload_id=upload_id,
+                part_number=part_number,
+                file=staged_file,
+                size=size,
+            )
+        finally:
+            if staged_file is not None:
+                await asyncio.to_thread(staged_file.close)
+            await asyncio.to_thread(staged_path.unlink, missing_ok=True)
+        return CiMultipartPartResponse(part_number=part_number, etag=etag)
+
+    async def ci_multipart_complete(
+        self,
+        db: AsyncSession,
+        obj: CiMultipartCompleteRequest,
+    ) -> CiUploadResponse:
+        """提交全部分片，校验对象大小并返回与旧上传接口一致的结果。"""
+        name, expected_key = await self._validate_ci_multipart_target(db, obj)
+        if obj.object_key != expected_key:
+            raise errors.RequestError(msg='multipart 对象键与发布目标不匹配')
+        expected_count = (obj.file_size + _RELEASE_MULTIPART_PART_BYTES - 1) // _RELEASE_MULTIPART_PART_BYTES
+        parts = [(part.part_number, part.etag) for part in obj.parts]
+        if len(parts) != expected_count or [number for number, _ in parts] != list(range(1, expected_count + 1)):
+            raise errors.RequestError(msg='multipart 分片清单不完整或顺序错误')
+        storage = await StorageService.get_write_storage(db, access='public')
+        await db.rollback()
+        await StorageService.complete_multipart_on_storage(
+            storage,
+            object_key=obj.object_key,
+            upload_id=obj.upload_id,
+            parts=parts,
+        )
+        stat = await StorageService.stat_on_storage(storage, object_key=obj.object_key)
+        if stat.size != obj.file_size:
+            raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
+        download_url = StorageService.public_url(storage, obj.object_key)
+        if not download_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {download_url}')
+        return CiUploadResponse(
+            download_url=download_url,
+            file_name=name,
+            file_size=stat.size,
+            sha256=obj.sha256,
+            object_key=obj.object_key,
+        )
+
+    async def ci_multipart_abort(
+        self,
+        db: AsyncSession,
+        obj: CiMultipartAbortRequest,
+    ) -> None:
+        """终止失败的发布 multipart 会话并清理对象存储残留分片。"""
+        _, expected_key = await self._validate_ci_multipart_target(db, obj)
+        if obj.object_key != expected_key:
+            raise errors.RequestError(msg='multipart 对象键与发布目标不匹配')
+        storage = await StorageService.get_write_storage(db, access='public')
+        await db.rollback()
+        await StorageService.abort_multipart_on_storage(
+            storage,
+            object_key=obj.object_key,
+            upload_id=obj.upload_id,
+        )
+
+    @staticmethod
+    async def _validate_ci_multipart_target(
+        db: AsyncSession,
+        obj: CiMultipartInitRequest,
+    ) -> tuple[str, str]:
+        """校验批次并只由服务端推导对象键，禁止客户端选择任意桶内路径。"""
+        name = PurePosixPath(obj.file_name.strip()).name or 'asset.bin'
+        channel = obj.channel.strip() or 'stable'
+        version = obj.version.strip()
+        if not version:
+            raise errors.RequestError(msg='version 不能为空')
+        if obj.release_id is not None:
+            release = (await db.execute(select(AppRelease).where(AppRelease.id == obj.release_id))).scalar_one_or_none()
+            if release is None or release.version != version or release.channel != channel:
+                raise errors.RequestError(msg='上传目标与云端发布批次不匹配')
+        return name, f'desktop/{channel}/{version}/{name}'
 
     # --------- 官网 / 桌面端消费 ---------
 

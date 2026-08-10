@@ -10,6 +10,7 @@ import pytest
 from starlette.requests import Request
 
 from backend.app.hasn_release.api.v1.ci.release import _required_content_length, ci_upload
+from backend.app.hasn_release.schema.release import CiMultipartCompleteRequest, CiMultipartInitRequest
 from backend.app.hasn_release.service.release_service import ReleaseService, _HashingSizedStream, _stage_release_upload
 from backend.common.exception import errors
 
@@ -64,6 +65,23 @@ def test_release_upload_stages_then_uses_public_package_multipart_path() -> None
     assert 'upload_public_package_to_storage' in service_source
     assert 'upload_stream_to_storage' not in service_source
     assert 'staged_path.unlink' in service_source
+
+
+def test_ci_multipart_contract_rejects_invalid_hash_and_accepts_contiguous_parts() -> None:
+    with pytest.raises(ValueError, match='sha256'):
+        CiMultipartInitRequest(version='0.3.2', file_name='setup.exe', file_size=10, sha256='bad')
+
+    request = CiMultipartCompleteRequest(
+        version='0.3.2',
+        file_name='setup.exe',
+        release_id=4,
+        file_size=10,
+        sha256='a' * 64,
+        upload_id='upload-id',
+        object_key='desktop/stable/0.3.2/setup.exe',
+        parts=[{'part_number': 1, 'etag': 'etag-1'}],
+    )
+    assert request.parts[0].part_number == 1
 
 
 @pytest.mark.parametrize(

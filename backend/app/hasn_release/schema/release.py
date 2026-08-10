@@ -192,6 +192,55 @@ class CiUploadResponse(SchemaBase):
     object_key: str = Field(description='对象存储 key（溯源用）')
 
 
+class CiMultipartInitRequest(SchemaBase):
+    """初始化桌面发布产物分片上传。"""
+
+    version: str
+    file_name: str
+    channel: str = 'stable'
+    release_id: int | None = Field(default=None, gt=0)
+    file_size: int = Field(gt=0)
+    sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    content_type: str = 'application/octet-stream'
+
+
+class CiMultipartInitResponse(SchemaBase):
+    """分片上传会话与固定分片大小。"""
+
+    upload_id: str
+    object_key: str
+    part_size: int
+
+
+class CiMultipartPartResponse(SchemaBase):
+    """已写入对象存储的单个分片。"""
+
+    part_number: int
+    etag: str
+
+
+class CiMultipartCompletedPart(SchemaBase):
+    """完成 multipart 会话所需的分片 ETag。"""
+
+    part_number: int = Field(ge=1, le=10_000)
+    etag: str = Field(min_length=1, max_length=256)
+
+
+class CiMultipartCompleteRequest(CiMultipartInitRequest):
+    """提交全部分片并生成公共 CDN 对象。"""
+
+    upload_id: str = Field(min_length=1, max_length=2048)
+    object_key: str = Field(min_length=1, max_length=1024)
+    parts: list[CiMultipartCompletedPart] = Field(min_length=1, max_length=10_000)
+
+
+class CiMultipartAbortRequest(CiMultipartInitRequest):
+    """终止 multipart 会话所需的最小信息。"""
+
+    upload_id: str = Field(min_length=1, max_length=2048)
+    object_key: str = Field(min_length=1, max_length=1024)
+
+
 class SetLatestRequest(SchemaBase):
     """置为最新 / 回滚入参"""
 
