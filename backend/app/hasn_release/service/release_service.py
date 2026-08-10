@@ -124,6 +124,18 @@ async def _stage_release_upload(data: AsyncIterable[bytes], size: int) -> tuple[
     return path, checked_stream.sha256
 
 
+async def _public_release_object_size(download_url: str) -> int | None:
+    """经公共 CDN HEAD 校验已完成对象；七牛写入凭据不一定有 HeadObject 权限。"""
+    try:
+        async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=True) as client:
+            response = await client.head(download_url, headers={'Accept-Encoding': 'identity'})
+            response.raise_for_status()
+        raw_size = response.headers.get('content-length', '').strip()
+        return int(raw_size) if raw_size.isdigit() else None
+    except (httpx.HTTPError, OSError, ValueError):
+        return None
+
+
 def _semver_tuple(version: str) -> tuple[int, int, int]:
     """取 semver 主体 (major, minor, patch)，忽略 -beta/+build 后缀；非法回落 (0,0,0)。"""
     m = _SEMVER_CORE.match((version or '').strip().lstrip('vV'))
@@ -1059,30 +1071,32 @@ class ReleaseService:
             raise errors.RequestError(msg='multipart 分片清单不完整或顺序错误')
         storage = await StorageService.get_write_storage(db, access='public')
         await db.rollback()
+        download_url = StorageService.public_url(storage, obj.object_key)
+        if not download_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {download_url}')
         # complete_multipart_upload 已在供应商侧成功、但随后 HEAD/响应链路瞬时失败时，
         # 客户端会用同一会话重试；此时供应商已删除 upload_id。先认领大小完全匹配的
-        # 已完成对象，使完成接口具备幂等性，发布脚本才能在断网后可靠续跑。
-        try:
-            stat = await StorageService.stat_on_storage(storage, object_key=obj.object_key)
-        except Exception:
-            stat = None
-        if stat is None or stat.size != obj.file_size:
+        # CDN 对象，使完成接口具备幂等性。七牛写入 AK 没有 HeadObject 权限，因此不能
+        # 用 S3 stat；公共 CDN HEAD 同时验证了桌面端最终实际消费的地址。
+        completed_size = await _public_release_object_size(download_url)
+        if completed_size != obj.file_size:
             await StorageService.complete_multipart_on_storage(
                 storage,
                 object_key=obj.object_key,
                 upload_id=obj.upload_id,
                 parts=parts,
             )
-            stat = await StorageService.stat_on_storage(storage, object_key=obj.object_key)
-        if stat.size != obj.file_size:
+            for _ in range(10):
+                completed_size = await _public_release_object_size(download_url)
+                if completed_size == obj.file_size:
+                    break
+                await asyncio.sleep(1)
+        if completed_size != obj.file_size:
             raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
-        download_url = StorageService.public_url(storage, obj.object_key)
-        if not download_url.startswith('https://'):
-            raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {download_url}')
         return CiUploadResponse(
             download_url=download_url,
             file_name=name,
-            file_size=stat.size,
+            file_size=completed_size,
             sha256=obj.sha256,
             object_key=obj.object_key,
         )
