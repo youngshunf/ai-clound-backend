@@ -367,28 +367,29 @@ def test_codegen_templates_keep_generated_output_importable() -> None:
     assert 'create{{ class_name }}Api(data: any)' in ts_api_template
 
 
-def test_generated_frontend_api_paths_match_registered_backend_prefixes() -> None:
-    # M1 收编：管理端前端 api 前缀切到 canonical /api/v1/growth/*
-    # 兼容主 clone 与 `.worktrees/<任务>` 两种布局，找不到真实前端仓必须失败。
+def test_frontend_lead_automation_api_surface_is_retired() -> None:
+    """断言前端不再持有 lead_automation 的管理端 api 层（防回归）。
+
+    原断言校验这批 `.ts` 的前缀已切到 canonical `/api/v1/growth/*`。2026-08-10 批次 0 之后
+    整个 lead_automation 管理面（后端 admin CRUD + 前端页面与 api）已随「AI-Native 应用自建
+    运营面」裁决删除，该校验失去对象。反转为「不得重新出现」，与本文件其余断言一致。
+
+    仓定位不再以 `api/lead_automation` 是否存在为判据——那正是要断言不存在的东西，用它定位
+    会让守卫在删除后静默空转。改以 `src/api` 目录定位，仍然「找不到真实前端仓必须失败」。
+    """
     frontend_api_root = next(
         (
-            parent / 'hasn-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
+            parent / 'hasn-cloud-frontend/apps/web-antdv-next/src/api'
             for parent in (ROOT, *ROOT.parents)
-            if (parent / 'hasn-cloud-frontend/apps/web-antdv-next/src/api/lead_automation').is_dir()
+            if (parent / 'hasn-cloud-frontend/apps/web-antdv-next/src/api').is_dir()
         ),
         None,
     )
-    assert frontend_api_root is not None, '未找到真实 hasn-cloud-frontend 仓，无法校验跨仓 API 前缀'
-    for path in frontend_api_root.glob('*.ts'):
-        text = path.read_text(encoding='utf-8')
-        assert '/api/v1/lead_automation/' not in text
-        assert '/api/v1/growth/' in text
-        assert 'export interface Lead' in text
-        assert 'export interface Lead' in text and '{\n  id: number;' in text
-        assert 'Params {\n  id: number;' not in text
-        assert 'CreateParams {\n  id: number;' not in text
-        assert 'ListResult {\n  id: number;' not in text
-
-    source_config_api = (frontend_api_root / 'lead_source_config.ts').read_text(encoding='utf-8')
-    assert '/api/v1/growth/lead-source-configs' in source_config_api
-    assert '/api/v1/growth/lead/source/configs' not in source_config_api
+    assert frontend_api_root is not None, '未找到真实 hasn-cloud-frontend 仓，无法校验跨仓 API 面'
+    assert not (frontend_api_root / 'lead_automation').exists(), (
+        'lead_automation 管理端 api 层已随批次 0 删除，不得重新生成'
+    )
+    # lead_source_config.ts 随 lead_automation 目录一并删除，原 canonical 前缀断言同样失去对象。
+    assert not (frontend_api_root / 'lead_source_config.ts').exists(), (
+        'lead_source_config.ts 已随批次 0 删除，不得重新生成'
+    )
