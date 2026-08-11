@@ -596,7 +596,8 @@ async def test_first_platform_publishes_and_later_platform_reuses_batch(session:
     explicitly_joined = await release_service.prepare_release(
         session,
         _prepare_req(
-            source_commit=batch.source_commit,
+            # 首个平台发布后 main 可以继续前进；明确指定旧批次版本时仍应检出冻结 tag 补平台。
+            source_commit='c' * 40,
             requested_version=batch.version,
         ),
     )

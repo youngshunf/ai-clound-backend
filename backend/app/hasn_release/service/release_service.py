@@ -177,11 +177,10 @@ def _can_join_published_batch(
     published_version: str,
     published_source_commit: str,
 ) -> bool:
-    """同一源码提交继续补平台时复用已发布批次，不重复增加版本号。"""
-    return (
-        source_commit.lower() == published_source_commit.lower()
-        and (not requested_version or requested_version == published_version)
-    )
+    """复用已发布批次：自动模式要求同提交，显式版本则以冻结 tag 为准。"""
+    if requested_version:
+        return requested_version == published_version
+    return source_commit.lower() == published_source_commit.lower()
 
 
 def _next_rebuild_tag(version: str, current_tag: str | None) -> str:
@@ -352,7 +351,8 @@ class ReleaseService:
 
         PostgreSQL 事务级 advisory lock 保证两台打包机器并发请求时只增加一次 patch。
         已有草稿批次时忽略后来机器的 HEAD，统一返回云端锁定的 commit 与 tag；首个平台
-        发布后，其它平台按同一 source_commit 继续复用该版本与 tag。
+        发布后，其它平台可按同一 source_commit 自动复用；若 main 已前进，则显式指定该版本，
+        仍返回批次冻结的 commit 与 tag 构建，不把新提交混入旧版本。
         """
         channel = (req.channel or 'stable').strip()
         if channel not in ('stable', 'beta'):
