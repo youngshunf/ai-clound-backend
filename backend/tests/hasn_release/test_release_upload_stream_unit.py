@@ -93,6 +93,15 @@ def test_ci_multipart_complete_is_idempotent_after_provider_session_disappears()
     assert 'stat_on_storage' not in complete_source
 
 
+def test_ci_multipart_complete_verifies_stored_bytes_sha256() -> None:
+    complete_source = inspect.getsource(ReleaseService.ci_multipart_complete)
+
+    assert 'StorageService.sha256_on_storage' in complete_source
+    assert 'stored_size != obj.file_size' in complete_source
+    assert 'stored_sha256 != obj.sha256' in complete_source
+    assert 'sha256=stored_sha256' in complete_source
+
+
 @pytest.mark.parametrize(
     ('raw_value', 'expected'),
     [(b'331761433', 331761433), (b'', None), (b'nope', None), (b'0', None)],

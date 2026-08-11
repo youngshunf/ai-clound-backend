@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 import io
+import inspect
 
 from typing import Any
 
 import pytest
+
+from botocore.exceptions import ClientError
 
 from backend.common.exception import errors
 from backend.plugin.s3.model import S3Storage
@@ -58,6 +61,21 @@ def test_package_upload_timeout_scales_past_the_half_hour_ceiling() -> None:
     assert file_ops._package_upload_timeout(four_gib) == pytest.approx(four_gib / (100 * 1024))
 
 
+def test_missing_multipart_session_maps_to_stable_conflict() -> None:
+    missing = ClientError(
+        {'Error': {'Code': 'NoSuchUpload', 'Message': 'The specified upload does not exist'}},
+        'UploadPart',
+    )
+
+    with pytest.raises(errors.ConflictError, match='S3_MULTIPART_NOT_ACTIVE'):
+        file_ops._raise_if_multipart_session_missing(missing)
+
+    other = ClientError({'Error': {'Code': 'AccessDenied', 'Message': 'denied'}}, 'UploadPart')
+    file_ops._raise_if_multipart_session_missing(other)
+    assert '_raise_if_multipart_session_missing' in inspect.getsource(file_ops.upload_multipart_part)
+    assert '_raise_if_multipart_session_missing' in inspect.getsource(file_ops.complete_multipart_upload)
+
+
 @pytest.mark.asyncio
 async def test_large_package_uses_chunked_upload_not_single_put(monkeypatch: pytest.MonkeyPatch) -> None:
     """超过分片阈值的包必须走 put_stream_v2，且分片大小为 4 MiB。"""
@@ -91,11 +109,13 @@ async def test_large_package_uses_chunked_upload_not_single_put(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_upload_token_is_not_insert_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """不得加 insertOnly：同 key 异内容的残包必须还能被覆盖修复。
+async def test_upload_token_allows_provider_detected_mime_and_overwrite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不得锁 MIME 或 insertOnly，大小与服务端摘要校验才是制品包完整性边界。
 
     「跳过重复上传」由调用方在上传前以服务端复算摘要判定；若这里锁成 insert-only，
     上一次中断留下的残包每次重试都拿到 614，却仍指向坏字节，永远修不好。
+    七牛会把 ``.tar.gz`` 探测为 ``application/x-gzip``；若凭证锁成调用方声明的
+    ``application/octet-stream``，合法桌面 updater 会被 provider 以 403 拒绝。
     """
     captured: dict[str, Any] = {}
 
@@ -124,7 +144,8 @@ async def test_upload_token_is_not_insert_only(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert 'insertOnly' not in captured['policy']
-    # 大小与 MIME 仍必须锁死，避免上传成与声明不符的对象。
+    assert 'mimeLimit' not in captured['policy']
+    # 大小仍必须锁死；摘要由发布服务在完成后复算并对拍。
     assert captured['policy']['fsizeMin'] == size
     assert captured['policy']['fsizeLimit'] == size
 

@@ -155,6 +155,14 @@ async def create_multipart_upload(
         raise errors.ServerError(msg=f'S3 multipart 初始化失败: {type(exc).__name__}: {exc!s}') from exc
 
 
+def _raise_if_multipart_session_missing(error: Exception) -> None:
+    """把供应商已清理的 multipart 会话映射为客户端可恢复的稳定冲突。"""
+    response = getattr(error, 'response', None)
+    detail = response.get('Error', {}) if isinstance(response, dict) else {}
+    if detail.get('Code') == 'NoSuchUpload':
+        raise errors.ConflictError(msg='S3_MULTIPART_NOT_ACTIVE') from error
+
+
 async def upload_multipart_part(
     s3_storage: S3Storage,
     object_key: str,
@@ -190,6 +198,7 @@ async def upload_multipart_part(
     try:
         return await asyncio.to_thread(upload)
     except Exception as exc:
+        _raise_if_multipart_session_missing(exc)
         log.exception(f'S3 multipart 分片上传失败: {type(exc).__name__}: {exc!r}')
         raise errors.ServerError(msg=f'S3 multipart 分片上传失败: {type(exc).__name__}: {exc!s}') from exc
 
@@ -221,6 +230,7 @@ async def complete_multipart_upload(
     try:
         await asyncio.to_thread(complete)
     except Exception as exc:
+        _raise_if_multipart_session_missing(exc)
         log.exception(f'S3 multipart 完成失败: {type(exc).__name__}: {exc!r}')
         raise errors.ServerError(msg=f'S3 multipart 完成失败: {type(exc).__name__}: {exc!s}') from exc
 
@@ -657,11 +667,13 @@ async def write_public_package_stream(
 
     prefix = _public_prefix(s3_storage.prefix)
     provider_key = '/'.join(part for part in (prefix, clean_path) if part)
-    # 只锁大小与 MIME，不锁 insert-only：同 key 异内容的残包必须能被覆盖修复。
+    # 只锁精确大小，不锁 MIME 与 insert-only：七牛会按文件内容重新探测 MIME，
+    # 桌面 updater 的 .tar.gz 会从 application/octet-stream 变成 application/x-gzip；
+    # 若凭证锁死调用方声明值，合法制品会被 provider 以 403 拒绝。
+    # 同 key 异内容的残包也必须能被覆盖修复，完整性由发布服务复算 SHA-256 保证。
     policy = {
         'fsizeMin': size,
         'fsizeLimit': size,
-        'mimeLimit': content_type,
         'returnBody': '{"key":$(key),"hash":$(etag),"size":$(fsize)}',
     }
     token = Auth(s3_storage.access_key, s3_storage.secret_key).upload_token(

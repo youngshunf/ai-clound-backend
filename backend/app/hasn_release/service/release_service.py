@@ -1131,11 +1131,19 @@ class ReleaseService:
         if not download_url.startswith('https://'):
             raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {download_url}')
         # complete_multipart_upload 已在供应商侧成功、但随后 HEAD/响应链路瞬时失败时，
-        # 客户端会用同一会话重试；此时供应商已删除 upload_id。先认领大小完全匹配的
-        # CDN 对象，使完成接口具备幂等性。七牛写入 AK 没有 HeadObject 权限，因此不能
-        # 用 S3 stat；公共 CDN HEAD 同时验证了桌面端最终实际消费的地址。
+        # 客户端会用同一会话重试；此时供应商已删除 upload_id。先认领大小与 SHA-256
+        # 都匹配的对象，使完成接口具备幂等性；同大小异内容必须覆盖修复。
+        # 七牛写入 AK 没有 HeadObject 权限，因此不能用 S3 stat；公共 CDN HEAD 同时
+        # 验证了桌面端最终实际消费的地址。
         completed_size = await _public_release_object_size(download_url)
-        if completed_size != obj.file_size:
+        stored_sha256: str | None = None
+        stored_size = completed_size
+        if completed_size == obj.file_size:
+            stored_sha256, stored_size = await StorageService.sha256_on_storage(
+                storage,
+                object_key=obj.object_key,
+            )
+        if stored_size != obj.file_size or stored_sha256 != obj.sha256:
             await StorageService.complete_multipart_on_storage(
                 storage,
                 object_key=obj.object_key,
@@ -1147,13 +1155,21 @@ class ReleaseService:
                 if completed_size == obj.file_size:
                     break
                 await asyncio.sleep(1)
-        if completed_size != obj.file_size:
-            raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
+            if completed_size != obj.file_size:
+                raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
+            stored_sha256, stored_size = await StorageService.sha256_on_storage(
+                storage,
+                object_key=obj.object_key,
+            )
+        if stored_size != obj.file_size:
+            raise errors.ServerError(msg='multipart 落桶对象大小与本地文件不一致')
+        if stored_sha256 != obj.sha256:
+            raise errors.ServerError(msg='multipart 落桶对象 SHA-256 与本地文件不一致')
         return CiUploadResponse(
             download_url=download_url,
             file_name=name,
-            file_size=completed_size,
-            sha256=obj.sha256,
+            file_size=stored_size,
+            sha256=stored_sha256,
             object_key=obj.object_key,
         )
 
