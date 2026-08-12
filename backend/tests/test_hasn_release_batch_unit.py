@@ -84,22 +84,33 @@ def test_completed_platforms_requires_installer_and_updater() -> None:
     assert completed == ['darwin-aarch64', 'windows-x86_64']
 
 
-def test_published_batch_is_reused_only_for_same_source_and_version() -> None:
-    """后续平台可加入同一已发布批次，显式发新版或源码不同则创建下一批。"""
+def test_published_batch_is_reused_until_all_platforms_complete() -> None:
+    """源码前进不影响补平台；所有要求平台完成后才允许自动创建下一批。"""
     common = {
-        'source_commit': 'a' * 40,
         'published_version': '0.3.3',
-        'published_source_commit': 'A' * 40,
+        'required_platforms': ['darwin-aarch64', 'windows-x86_64'],
     }
-    assert _can_join_published_batch(requested_version='', **common) is True
-    assert _can_join_published_batch(requested_version='0.3.3', **common) is True
-    assert _can_join_published_batch(requested_version='0.3.4', **common) is False
     assert _can_join_published_batch(
         requested_version='',
-        source_commit='b' * 40,
-        published_version='0.3.3',
-        published_source_commit='a' * 40,
+        completed_platforms=['windows-x86_64'],
+        **common,
+    ) is True
+    assert _can_join_published_batch(
+        requested_version='',
+        completed_platforms=['darwin-aarch64', 'windows-x86_64'],
+        **common,
     ) is False
+
+
+def test_explicit_version_reuses_matching_published_tag() -> None:
+    """显式指定当前发布版本时始终复用其冻结 tag，不受平台完成度影响。"""
+    common = {
+        'published_version': '0.3.3',
+        'required_platforms': ['darwin-aarch64', 'windows-x86_64'],
+        'completed_platforms': ['darwin-aarch64', 'windows-x86_64'],
+    }
+    assert _can_join_published_batch(requested_version='0.3.3', **common) is True
+    assert _can_join_published_batch(requested_version='0.3.4', **common) is False
 
 
 def test_desktop_release_batch_requires_all_supported_platforms() -> None:

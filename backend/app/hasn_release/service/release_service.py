@@ -173,14 +173,14 @@ def _can_join_active_replace(*, requested_version: str, active_version: str) -> 
 def _can_join_published_batch(
     *,
     requested_version: str,
-    source_commit: str,
     published_version: str,
-    published_source_commit: str,
+    required_platforms: list[str],
+    completed_platforms: list[str],
 ) -> bool:
-    """复用已发布批次：自动模式要求同提交，显式版本则以冻结 tag 为准。"""
+    """复用已发布批次：自动模式等平台补齐，显式版本以冻结 tag 为准。"""
     if requested_version:
         return requested_version == published_version
-    return source_commit.lower() == published_source_commit.lower()
+    return not set(required_platforms).issubset(completed_platforms)
 
 
 def _next_rebuild_tag(version: str, current_tag: str | None) -> str:
@@ -351,8 +351,8 @@ class ReleaseService:
 
         PostgreSQL 事务级 advisory lock 保证两台打包机器并发请求时只增加一次 patch。
         已有草稿批次时忽略后来机器的 HEAD，统一返回云端锁定的 commit 与 tag；首个平台
-        发布后，其它平台可按同一 source_commit 自动复用；若 main 已前进，则显式指定该版本，
-        仍返回批次冻结的 commit 与 tag 构建，不把新提交混入旧版本。
+        发布后，无论 main 是否前进，其它平台都继续复用冻结 tag。全部要求平台完成后，
+        下一次自动 prepare 才分配新 patch；显式指定当前版本时仍复用该版本冻结 tag。
         """
         channel = (req.channel or 'stable').strip()
         if channel not in ('stable', 'beta'):
@@ -418,9 +418,9 @@ class ReleaseService:
             and latest_published_batch is not None
             and _can_join_published_batch(
                 requested_version=requested_version,
-                source_commit=source_commit,
                 published_version=latest_published_batch.version,
-                published_source_commit=str(latest_published_batch.source_commit),
+                required_platforms=list(latest_published_batch.required_platforms or []),
+                completed_platforms=list(latest_published_batch.completed_platforms or []),
             )
         ):
             return self._to_batch(latest_published_batch)

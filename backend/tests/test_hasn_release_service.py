@@ -33,6 +33,7 @@ from backend.app.hasn_release.schema.release import (
     GithubBuildRequest,
     PrepareReleaseRequest,
     PublishReleaseRequest,
+    REQUIRED_DESKTOP_PLATFORMS,
     ReleaseAssetInput,
 )
 from backend.app.hasn_release.service.release_service import release_service
@@ -549,7 +550,7 @@ async def test_prepare_joins_draft_but_rejects_conflicting_version(session: Asyn
 
 
 async def test_first_platform_publishes_and_later_platform_reuses_batch(session: AsyncSession) -> None:
-    """平台清单只约束可上传目标；首个平台发布后，其它平台继续复用同一版本与 tag。"""
+    """所有要求平台补齐前始终复用同一版本，补齐后下一次才增加 patch。"""
     await release_service.publish(session, _publish_req('99.5.0', channel='beta'), source='manual')
     batch = await release_service.prepare_release(session, _prepare_req())
     release = (
@@ -627,9 +628,35 @@ async def test_first_platform_publishes_and_later_platform_reuses_batch(session:
         ('windows-x86_64', 'updater'),
     }
 
-    next_batch = await release_service.prepare_release(
+    source_advanced = await release_service.prepare_release(
         session,
         _prepare_req(source_commit='c' * 40),
+    )
+    assert (source_advanced.id, source_advanced.version, source_advanced.release_tag) == (
+        batch.id,
+        batch.version,
+        batch.release_tag,
+    )
+
+    remaining_callback = CiCallbackRequest(
+        version=batch.version,
+        channel='beta',
+        source='github',
+        release_id=batch.id,
+        release_tag=batch.release_tag,
+        assets=[
+            _asset('darwin-x86_64', 'installer'),
+            _asset('darwin-x86_64', 'updater', sig='SIG_MAC_X64'),
+            _asset('linux-x86_64', 'installer'),
+            _asset('linux-x86_64', 'updater', sig='SIG_LINUX'),
+        ],
+    )
+    completed = await release_service.ci_callback(session, remaining_callback)
+    assert completed.completed_platforms == sorted(REQUIRED_DESKTOP_PLATFORMS)
+
+    next_batch = await release_service.prepare_release(
+        session,
+        _prepare_req(source_commit=batch.source_commit),
     )
     assert next_batch.version == '99.5.2'
     assert next_batch.status == 'draft'
