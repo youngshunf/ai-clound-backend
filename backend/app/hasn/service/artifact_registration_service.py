@@ -19,6 +19,7 @@ from backend.app.hasn.model import (
     HasnArtifacts,
 )
 from backend.app.hasn.schema.artifact_contract import ArtifactMutation
+from backend.common.exception import errors
 from backend.common.log import log
 
 
@@ -39,9 +40,24 @@ class ArtifactRegistrationService:
         return f'{prefix}_{uuid4().hex}'
 
     @staticmethod
-    def _uuid_or_none(value: str | None) -> UUID | None:
-        """将可选 UUID 字符串转换为数据库值，非法值明确拒绝。"""
-        return UUID(value) if value else None
+    def _uuid_or_none(value: str | None, *, field: str) -> UUID | None:
+        """将可选 UUID 字符串转换为数据库值，非法值明确拒绝为 400。
+
+        **必须是 4xx 而不是让 `UUID()` 的 `ValueError` 裸奔成 500**：这几列在库里都是 `uuid` 类型，
+        值不合法是**调用方的永久性契约错误**，重试一万次也是同样的拒绝。而 daemon 的产物登记
+        outbox 按「4xx 死信、5xx 退避重试」分流（`artifact_outbox.rs::is_retryable`），报 500 等于
+        谎称「服务端暂时不可用」，把一条注定失败的请求放大成满 `MAX_ATTEMPTS` 次重试风暴——
+        2026-08-12 生产实际发生过：daemon 把工作会话关联键 `work_session:{id}` 当 conversation_id
+        发来，产生 216 次 500。
+
+        `field` 进错误消息：登记入参在服务端不落盘，不点名字段和值就只能靠翻 opera_log 反查。
+        """
+        if not value:
+            return None
+        try:
+            return UUID(value)
+        except ValueError as exc:
+            raise errors.RequestError(msg=f'{field} 不是云端权威 UUID：{value[:80]!r}') from exc
 
     @staticmethod
     def _artifact_key(mutation: ArtifactMutation) -> str:
@@ -220,7 +236,7 @@ class ArtifactRegistrationService:
                 local_entry_kind=mutation.local_entry_kind,
                 node_id=mutation.node_id,
                 session_id=mutation.work_session_id,
-                project_id=self._uuid_or_none(mutation.project_id),
+                project_id=self._uuid_or_none(mutation.project_id, field='project_id'),
                 source_tool=mutation.source_tool,
                 source_app_id=mutation.source_app_id,
                 source_kind=mutation.source_kind,
@@ -265,7 +281,7 @@ class ArtifactRegistrationService:
                         HasnArtifacts.session_id,
                     ),
                     # 项目关联只进不退：无项目上下文的后续更新不得抹去已显式挂靠的当前态。
-                    'project_id': func.coalesce(self._uuid_or_none(mutation.project_id), HasnArtifacts.project_id),
+                    'project_id': func.coalesce(self._uuid_or_none(mutation.project_id, field='project_id'), HasnArtifacts.project_id),
                     'source_tool': mutation.source_tool,
                     'source_app_id': mutation.source_app_id,
                     'source_kind': mutation.source_kind,
@@ -290,7 +306,7 @@ class ArtifactRegistrationService:
                 owner_hasn_id=mutation.owner_hasn_id,
                 agent_hasn_id=mutation.agent_hasn_id,
                 work_session_id=mutation.work_session_id,
-                project_id=self._uuid_or_none(mutation.project_id),
+                project_id=self._uuid_or_none(mutation.project_id, field='project_id'),
                 action=mutation.action,
                 source_kind=mutation.source_kind,
                 source_tool=mutation.source_tool,
@@ -299,7 +315,7 @@ class ArtifactRegistrationService:
                 tool_call_id=mutation.tool_call_id,
                 source_event_id=mutation.source_event_id,
                 idempotency_key=contribution_key,
-                conversation_id=self._uuid_or_none(mutation.conversation_id),
+                conversation_id=self._uuid_or_none(mutation.conversation_id, field='conversation_id'),
                 message_id=mutation.message_id,
                 meta_data=mutation.metadata,
             )

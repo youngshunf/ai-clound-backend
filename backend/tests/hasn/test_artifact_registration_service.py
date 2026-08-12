@@ -622,6 +622,57 @@ async def test_body_artifact_without_dispatch_falls_back_to_content_key_not_rand
             await db.rollback()
 
 
+async def test_illegal_uuid_columns_reject_as_4xx_not_500() -> None:
+    """非 UUID 的 conversation_id / project_id 必须是 4xx 契约错误，绝不能让 500 触发重试风暴。
+
+    回归（2026-08-12 生产）：daemon 把工作会话关联键 `work_session:{id}` 当 conversation_id 发来，
+    `UUID(value)` 的 ValueError 裸奔成 500；daemon outbox 按「4xx 死信、5xx 退避重试」分流
+    （`artifact_outbox.rs::is_retryable`），于是一条**注定失败**的请求被放大成满 MAX_ATTEMPTS 次
+    重试，生产累计 216 次 500。报 4xx 才让调用方一次就判死信。
+    """
+    owner = _id('owner')
+    agent = _id('agent')
+
+    def mutation(**overrides: str) -> ArtifactMutation:
+        payload = {
+            'owner_hasn_id': owner,
+            'agent_hasn_id': agent,
+            'action': 'create',
+            'source_kind': 'platform_tool',
+            'artifact_kind': 'image',
+            'asset_id': _id('ast'),
+            'title': '能力市场.png',
+        }
+        payload.update(overrides)
+        return ArtifactMutation.model_validate(payload)
+
+    async with async_db_session() as db:
+        try:
+            # 事故原样：工作会话关联键进了 conversation_id。
+            with pytest.raises(errors.RequestError) as excinfo:
+                await artifact_registration_service.register(
+                    db, mutation(conversation_id='work_session:sess_01KZTKBC5X2R3NYGXSTRRBQYE1')
+                )
+            # 错误消息要点名字段与值，否则排错只能去翻 opera_log 反查入参。
+            assert 'conversation_id' in excinfo.value.msg
+            assert 'work_session' in excinfo.value.msg
+
+            await db.rollback()
+            # project_id 走同一个转换函数，同样不得 500。
+            with pytest.raises(errors.RequestError) as project_exc:
+                await artifact_registration_service.register(db, mutation(project_id='not-a-uuid'))
+            assert 'project_id' in project_exc.value.msg
+
+            await db.rollback()
+            # 合法 UUID 与缺省值必须照常放行——收紧不能误伤正常登记。
+            ok = await artifact_registration_service.register(
+                db, mutation(conversation_id=str(uuid4()), project_id=str(uuid4()))
+            )
+            assert ok.artifact_id
+        finally:
+            await db.rollback()
+
+
 async def test_soft_deleted_artifact_revives_on_reregister() -> None:
     """软删后的同一对象被分身再次写入时必须复活，否则参与记录会在一条隐形产物上累积。"""
     owner = _id('owner')
