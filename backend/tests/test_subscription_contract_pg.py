@@ -165,6 +165,31 @@ async def test_monthly_contract_is_exactly_one_thirty_day_cycle(user_id) -> None
     assert events[0].credit_amount is not None
 
 
+async def test_paid_contract_does_not_rewrite_zero_max_agents(user_id) -> None:
+    """目录异常值 0 必须原样进入合同，交给目录守卫报错，不能静默变成 1。"""
+    seed = CatalogSeed()
+    async with async_db_session.begin() as db:
+        await seed.seed_tier(
+            db,
+            tier_name='pro',
+            credits_per_cycle=1000,
+            max_agents=0,
+            storage_bytes=_PRO_STORAGE_BYTES,
+            sort_order=10,
+        )
+    try:
+        contract = await _activate(user_id, 'pro', 'monthly')
+        assert contract.max_agents == 0
+    finally:
+        async with async_db_session.begin() as db:
+            await db.execute(text('DELETE FROM hasn_billing.credit_grant_event WHERE user_id = :u'), {'u': user_id})
+            await db.execute(
+                text('DELETE FROM hasn_billing.user_subscription WHERE app_code = :a AND user_id = :u'),
+                {'a': _APP_CODE, 'u': user_id},
+            )
+            await seed.restore(db)
+
+
 async def test_yearly_contract_is_twelve_thirty_day_cycles(user_id) -> None:
     """年付合同 = 12 个连续 30 天周期 = 360 天（不是 365 天自然年）。"""
     contract = await _activate(user_id, 'pro', 'yearly')

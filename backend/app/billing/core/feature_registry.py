@@ -15,8 +15,26 @@ feature_key 是付费墙判定的稳定标识，贯穿三处：
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.billing.model.billing_plan import BillingPlan
+
+TIER_OFFERING_KEY = 'llm:tier'
+TIER_FEATURE_KEYS: frozenset[str] = frozenset({'每月积分', '云存储', '分身数量', '客服支持'})
+ACTIVE_TIER_PLAN_KEYS: frozenset[str] = frozenset({
+    'free',
+    'lite',
+    'lite_yearly',
+    'pro',
+    'pro_yearly',
+    'max',
+    'max_yearly',
+    'ultra',
+    'ultra_yearly',
+})
 
 # 固定 feature_key：全局唯一，无实例后缀
 FIXED_FEATURE_KEYS: frozenset[str] = frozenset({
@@ -51,6 +69,108 @@ def is_registered(feature_key: str) -> bool:
 def validate_feature_keys(feature_keys: list[str]) -> list[str]:
     """批量校验一组 feature_key，返回其中未注册的（违规）列表。"""
     return [fk for fk in feature_keys if not is_registered(fk)]
+
+
+def _storage_feature_label(storage_bytes: object) -> str | None:
+    """把二进制存储配额格式化为定价卡片文案。"""
+    if isinstance(storage_bytes, bool) or not isinstance(storage_bytes, int) or storage_bytes <= 0:
+        return None
+    tib = 1024**4
+    gib = 1024**3
+    if storage_bytes % tib == 0:
+        return f'{storage_bytes // tib} TB'
+    if storage_bytes % gib == 0:
+        return f'{storage_bytes // gib} GB'
+    return None
+
+
+def validate_tier_plan_payload(*, plan_key: str, quota_json: dict | None, display_json: dict | None) -> list[str]:
+    """校验单条订阅 plan 的卡片权益与实际配额一致。"""
+    quota = quota_json if isinstance(quota_json, dict) else {}
+    display = display_json if isinstance(display_json, dict) else {}
+    features = display.get('features')
+    prefix = f'plan={plan_key!r}'
+    if not isinstance(features, dict):
+        return [f'{prefix} display_json.features 缺失或不是对象']
+
+    violations: list[str] = []
+    feature_keys = set(features)
+    if feature_keys != TIER_FEATURE_KEYS:
+        missing = sorted(TIER_FEATURE_KEYS - feature_keys)
+        extra = sorted(feature_keys - TIER_FEATURE_KEYS)
+        violations.append(f'{prefix} features 键不合法: missing={missing} extra={extra}')
+
+    try:
+        quota_credits = Decimal(str(quota.get('credits_per_cycle')))
+        feature_credits = Decimal(str(features.get('每月积分')))
+    except (InvalidOperation, TypeError, ValueError):
+        violations.append(f'{prefix} 每月积分不是可比较数值')
+    else:
+        if feature_credits != quota_credits:
+            violations.append(f'{prefix} 每月积分漂移: features={feature_credits} quota={quota_credits}')
+
+    expected_storage = _storage_feature_label(quota.get('storage_bytes'))
+    if expected_storage is None:
+        violations.append(f'{prefix} storage_bytes 必须是正整数 GiB/TiB')
+    elif features.get('云存储') != expected_storage:
+        violations.append(f'{prefix} 云存储漂移: features={features.get("云存储")!r} quota={expected_storage!r}')
+
+    max_agents = quota.get('max_agents')
+    if isinstance(max_agents, bool) or not isinstance(max_agents, int) or max_agents == 0 or max_agents < -1:
+        violations.append(f'{prefix} max_agents 必须是正整数或 -1')
+    else:
+        expected_agents: int | str = '不限' if max_agents == -1 else max_agents
+        if features.get('分身数量') != expected_agents:
+            violations.append(f'{prefix} 分身数量漂移: features={features.get("分身数量")!r} quota={expected_agents!r}')
+    return violations
+
+
+async def validate_tier_catalog_consistency(db: AsyncSession) -> list[str]:
+    """校验上架订阅目录的稳定档位集合、周期与权益卡片。"""
+    plans = (
+        (
+            await db.execute(
+                select(BillingPlan).where(
+                    BillingPlan.offering_key == TIER_OFFERING_KEY,
+                    BillingPlan.status == 'active',
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    violations: list[str] = []
+    actual_keys = {plan.plan_key for plan in plans}
+    if actual_keys != ACTIVE_TIER_PLAN_KEYS:
+        violations.append(
+            '上架档位集合漂移: '
+            f'missing={sorted(ACTIVE_TIER_PLAN_KEYS - actual_keys)} '
+            f'extra={sorted(actual_keys - ACTIVE_TIER_PLAN_KEYS)}'
+        )
+
+    for plan in plans:
+        base_key = plan.plan_key.removesuffix('_yearly')
+        expected_cycle = 'year' if plan.plan_key.endswith('_yearly') else 'month'
+        expected_count = 12 if expected_cycle == 'year' else (None if plan.plan_key == 'free' else 1)
+        quota = plan.quota_json if isinstance(plan.quota_json, dict) else {}
+        if quota.get('tier') != base_key:
+            violations.append(f'plan={plan.plan_key!r} quota_json.tier 应为 {base_key!r}')
+        if plan.cycle != expected_cycle:
+            violations.append(f'plan={plan.plan_key!r} cycle 应为 {expected_cycle!r}')
+        if quota.get('cycle_seconds') != 2_592_000:
+            violations.append(f'plan={plan.plan_key!r} cycle_seconds 应为 2592000')
+        if quota.get('cycle_count') != expected_count:
+            violations.append(f'plan={plan.plan_key!r} cycle_count 应为 {expected_count!r}')
+        if quota.get('wallet_overflow') is not True:
+            violations.append(f'plan={plan.plan_key!r} wallet_overflow 应为 true')
+        violations.extend(
+            validate_tier_plan_payload(
+                plan_key=plan.plan_key,
+                quota_json=plan.quota_json,
+                display_json=plan.display_json,
+            )
+        )
+    return violations
 
 
 async def validate_offering_consistency(db: AsyncSession) -> list[str]:

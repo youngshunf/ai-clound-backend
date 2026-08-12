@@ -589,6 +589,11 @@ async def register_hasn_agent(
             'already_exists': True,
         }
 
+    # 所有公开、WS、引导和内置分身创建都汇入此处；在幂等检查之后统一执行配额门禁。
+    from backend.app.hasn.service.hasn_agents_service import assert_agent_creation_allowed
+
+    await assert_agent_creation_allowed(db, owner_id=owner_hasn_id, user_id=owner.user_id)
+
     # 生成身份
     agent_hasn_id = f'a_{uuid.uuid4().hex[:20]}'  # Core/02 §2.1: ^a_[a-z0-9]{16,22}$（同 human 修正）
     agent_star_id = f'{owner.star_id}#{agent_name}'

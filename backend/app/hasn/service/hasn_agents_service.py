@@ -3,6 +3,7 @@ import re
 import string
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,65 @@ DEFAULT_AGENT_NAME_SEPARATOR = '·'
 # 主人尚未设昵称时的手机号掩码兜底（见 get_or_create_phone_user: f'{phone[:3]}****{phone[-4:]}'）。
 # onboarding 在登录路径建分身时若主人未设昵称，后缀会被烙进这个掩码 → 需在设昵称/登录时刷新。
 PHONE_MASK_NICKNAME_RE = re.compile(r'^\d{3}\*{4}\d{4}$')
+
+
+@dataclass(slots=True, frozen=True)
+class AgentQuotaUsage:
+    """创建分身前的权威配额快照。"""
+
+    max_agents: int
+    current_agents: int
+
+
+async def assert_agent_creation_allowed(
+    db: AsyncSession, *, owner_id: str, user_id: int, app_code: str = 'huanxing'
+) -> AgentQuotaUsage:
+    """按当前生效合同校验分身数量，并用事务锁串行同主人并发创建。"""
+    import sqlalchemy as sa
+
+    from backend.app.billing.model.user_subscription import UserSubscription
+    from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES
+
+    await db.execute(
+        sa.text('SELECT pg_advisory_xact_lock(hashtextextended(:owner_id, 0))'),
+        {'owner_id': owner_id},
+    )
+    max_agents = (
+        await db.execute(
+            sa
+            .select(UserSubscription.max_agents)
+            .where(
+                UserSubscription.app_code == app_code,
+                UserSubscription.user_id == user_id,
+                UserSubscription.status.in_(CURRENT_CONTRACT_STATUSES),
+            )
+            .order_by(UserSubscription.contract_start_at.desc().nullslast(), UserSubscription.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    effective_limit = int(max_agents) if max_agents is not None else 1
+    current_agents = int(
+        (
+            await db.execute(
+                sa.select(sa.func.count(HasnAgents.id)).where(
+                    HasnAgents.owner_id == owner_id,
+                    HasnAgents.deleted_at.is_(None),
+                    sa.func.coalesce(HasnAgents.status, '') != 'deleted',
+                )
+            )
+        ).scalar_one()
+    )
+    usage = AgentQuotaUsage(max_agents=effective_limit, current_agents=current_agents)
+    if effective_limit != -1 and current_agents >= effective_limit:
+        raise errors.ForbiddenError(
+            msg=f'当前套餐最多可创建 {effective_limit} 个分身，请升级套餐后重试',
+            data={
+                'error_code': 'agent_quota_exceeded',
+                'max_agents': effective_limit,
+                'current_agents': current_agents,
+            },
+        )
+    return usage
 
 
 def compute_default_agent_display_name(*, owner_nickname: str | None, profession: str | None) -> str:
@@ -1556,6 +1616,7 @@ class HasnAgentsService:
         :param user_id: 用户 ID
         :return: Agent 信息及 JWT
         """
+        await assert_agent_creation_allowed(db, owner_id=obj.owner_id, user_id=user_id)
         await hasn_agents_dao.create(db, obj)
         from backend.app.hasn.service.hasn_relation_command_outbox_service import (
             hasn_relation_command_outbox_service,

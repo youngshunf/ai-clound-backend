@@ -130,7 +130,7 @@ class CreditGrantService:
             subscription_end_date=None,
             status='active',
             auto_renew=False,
-            max_agents=tier.max_agents or 1,
+            max_agents=tier.max_agents,
             contract_no=contract_no,
             contract_start_at=now,
             contract_end_at=None,

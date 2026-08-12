@@ -153,7 +153,7 @@ class SubscriptionContractService:
             # auto_renew 只表示「是否尝试创建下一张续费订单」，不代表自动发额度：
             # 没有新订单支付成功，就不会有下一份合同，更不会有新周期额度。
             auto_renew=bool((getattr(order, 'extra_data', None) or {}).get('auto_renew', True)),
-            max_agents=tier.max_agents or 1,
+            max_agents=tier.max_agents,
             contract_no=contract_no,
             offering_key=(getattr(order, 'offering_ref', None) or {}).get('offering_key'),
             plan_key=(getattr(order, 'offering_ref', None) or {}).get('plan_key'),

@@ -48,6 +48,10 @@ _WF_MIGRATION_CHAIN = (
     '2026-07-29-workflow-template-source-release.sql',
 )
 
+_TIER_REDEFINE_MIGRATION = (
+    Path(__file__).resolve().parent.parent / 'sql' / 'billing' / 'migrations' / '2026-08-12-tier-five-plan-redefine.sql'
+)
+
 
 async def _ensure_workflow_template_table() -> None:
     """幂等 bootstrap：确保 hasn_task.workflow_template 表在位（独立 asyncpg 连接执行 DDL，自动提交）。"""
@@ -76,6 +80,9 @@ async def sess() -> AsyncIterator[AsyncSession]:
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     s = async_sessionmaker(engine, expire_on_commit=False)()
     try:
+        connection = await s.connection()
+        raw_connection = await connection.get_raw_connection()
+        await raw_connection.driver_connection.execute(_TIER_REDEFINE_MIGRATION.read_text(encoding='utf-8'))
         yield s
     finally:
         # 全程只 flush 不 commit，rollback 即隔离（构造的悬挂 catalog 行不落库）。
@@ -90,6 +97,104 @@ async def test_offering_feature_keys_all_registered(sess: AsyncSession) -> None:
     """全库 offering.feature_key 均已注册（种子 + 存量合规）。"""
     violations = await feature_registry.validate_offering_consistency(sess)
     assert violations == [], f'存在未注册 feature_key 的 offering: {violations}'
+
+
+async def test_llm_tier_catalog_matches_five_plan_policy(sess: AsyncSession) -> None:
+    """订阅目录只有五个稳定档位，卡片数字权益与配额一致。"""
+    violations = await feature_registry.validate_tier_catalog_consistency(sess)
+    assert violations == [], f'订阅档位目录与定档事实源不一致: {violations}'
+
+
+async def test_llm_tier_feature_guard_detects_quota_drift() -> None:
+    """守卫自证：卡片写 5000 积分、实际只发 2000 时必须报错。"""
+    violations = feature_registry.validate_tier_plan_payload(
+        plan_key='max',
+        quota_json={
+            'credits_per_cycle': '2000.00000',
+            'storage_bytes': 536870912000,
+            'max_agents': 10,
+        },
+        display_json={
+            'features': {
+                '每月积分': 5000,
+                '云存储': '500 GB',
+                '分身数量': 10,
+                '客服支持': '优先支持',
+            }
+        },
+    )
+    assert any('每月积分' in item for item in violations)
+
+
+async def test_five_plan_migration_is_idempotent_and_exact() -> None:
+    """真实 PostgreSQL 事务内连跑两次迁移，验证五档与旧键退役。"""
+    import asyncpg
+
+    dsn = SQLALCHEMY_DATABASE_URL.render_as_string(hide_password=False).replace(
+        'postgresql+asyncpg://', 'postgresql://'
+    )
+    try:
+        conn = await asyncpg.connect(dsn)
+    except Exception as exc:
+        pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
+
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        sql = _TIER_REDEFINE_MIGRATION.read_text(encoding='utf-8')
+        await conn.execute(sql)
+        await conn.execute(sql)
+
+        active_monthly = await conn.fetch(
+            """
+            SELECT plan_key,
+                   price_amount::text,
+                   quota_json->>'credits_per_cycle' AS credits_per_cycle,
+                   display_json->>'display_name' AS display_name
+              FROM hasn_billing.billing_plan
+             WHERE offering_key = 'llm:tier'
+               AND status = 'active'
+               AND right(plan_key, 7) <> '_yearly'
+             ORDER BY sort_order, plan_key
+            """
+        )
+        assert [row['plan_key'] for row in active_monthly] == ['free', 'lite', 'pro', 'max', 'ultra']
+        assert [row['display_name'] for row in active_monthly] == [
+            '免费版',
+            '轻享版',
+            '专业版',
+            '高级版',
+            '旗舰版',
+        ]
+        assert [row['price_amount'] for row in active_monthly] == [
+            '0.00',
+            '49.00',
+            '99.00',
+            '299.00',
+            '699.00',
+        ]
+        assert [row['credits_per_cycle'] for row in active_monthly] == [
+            '100.00000',
+            '500.00000',
+            '1200.00000',
+            '4000.00000',
+            '10000.00000',
+        ]
+
+        old_active = await conn.fetchval(
+            """
+            SELECT count(*)
+              FROM hasn_billing.billing_plan
+             WHERE offering_key = 'llm:tier'
+               AND status = 'active'
+               AND (plan_key = ANY(ARRAY['advanced', 'flagship'])
+                    OR plan_key = ANY(ARRAY['advanced_yearly', 'flagship_yearly']))
+            """
+        )
+        assert old_active == 0
+    finally:
+        await tx.rollback()
+        await conn.close()
 
 
 # ── 守卫 2：catalog sku_ref 悬挂检测 ──

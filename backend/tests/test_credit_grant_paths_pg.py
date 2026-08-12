@@ -126,6 +126,33 @@ async def test_free_contract_uses_thirty_day_cycle_without_commercial_expiry(use
     assert events[0].payload['cycle_count'] is None
 
 
+async def test_free_contract_does_not_rewrite_zero_max_agents(user_id) -> None:
+    """目录异常值 0 必须原样进入合同，不能被 ``or 1`` 静默篡改并掩盖配置故障。"""
+    seed = CatalogSeed()
+    async with async_db_session.begin() as db:
+        await seed.seed_tier(
+            db,
+            tier_name='free',
+            credits_per_cycle=100,
+            monthly_price=0,
+            yearly_price=None,
+            max_agents=0,
+        )
+    try:
+        async with async_db_session.begin() as db:
+            contract = await credit_grant_service.ensure_free_contract(db, user_id=user_id, app_code=_APP_CODE)
+        assert contract is not None
+        assert contract.max_agents == 0
+    finally:
+        async with async_db_session.begin() as db:
+            await db.execute(text('DELETE FROM hasn_billing.credit_grant_event WHERE user_id = :u'), {'u': user_id})
+            await db.execute(
+                text('DELETE FROM hasn_billing.user_subscription WHERE app_code = :a AND user_id = :u'),
+                {'a': _APP_CODE, 'u': user_id},
+            )
+            await seed.restore(db)
+
+
 async def test_free_grant_after_revocation_is_not_blocked_by_old_key(user_id) -> None:
     """免费额度撤销后重新授予必须真实到账。
 
