@@ -12,6 +12,7 @@ from backend.app.hasn_release.service.release_service import (
     _should_generate_release_notes,
 )
 from backend.common.exception import errors
+from backend.core.conf import Settings
 
 
 def test_next_patch_version_uses_highest_allocated_version() -> None:
@@ -120,3 +121,14 @@ def test_desktop_release_batch_requires_all_supported_platforms() -> None:
         'windows-x86_64',
         'linux-x86_64',
     )
+
+
+def test_release_github_repo_default_points_at_the_current_repo_name() -> None:
+    """发布仓名默认值必须跟着仓库改名走，否则 confirm-tag 会去错仓查 tag。
+
+    2026-08-12 实测：默认值停在改名前的 `youngshunf/hasn-node`，新的同名仓一被创建，
+    GitHub 的改名重定向当场失效并改指新仓，confirm-tag 于是在空仓里查不到 release tag，
+    四个平台全部卡在 400『远端 release tag 尚不存在』。断言的是**类默认值**而非
+    `settings.RELEASE_GITHUB_REPO`，后者会被本机 .env 覆盖、测不出源码里的漂移。
+    """
+    assert Settings.model_fields['RELEASE_GITHUB_REPO'].default == 'youngshunf/hasn-node-demo'

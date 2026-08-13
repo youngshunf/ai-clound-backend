@@ -223,7 +223,11 @@ class Settings(BaseSettings):
     RELEASE_CI_CALLBACK_SECRET: str = ''
     # 管理端「从 GitHub 自动构建」触发 workflow_dispatch 所需（三者齐才真触发，缺则仅排队记录）
     RELEASE_GITHUB_TOKEN: str = ''  # GitHub PAT（repo + actions:write）
-    RELEASE_GITHUB_REPO: str = 'youngshunf/hasn-node'  # owner/repo
+    # owner/repo；confirm-tag 核验 release tag 也读它。**必须写全当前真实仓名**：
+    # GitHub 的仓库改名重定向会在同名新仓被创建的那一刻失效并改指新仓，此处曾写旧名
+    # `youngshunf/hasn-node`，新 hasn-node 仓一建，confirm-tag 就去空仓查 tag，
+    # 稳定复现「远端 release tag 尚不存在」400，四个平台谁都发不了版。
+    RELEASE_GITHUB_REPO: str = 'youngshunf/hasn-node-demo'
     RELEASE_GITHUB_WORKFLOW: str = (
         'release-desktop.yml'  # workflow 文件名或 id（对齐 .github/workflows/release-desktop.yml）
     )
