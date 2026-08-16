@@ -51,6 +51,12 @@ _WF_MIGRATION_CHAIN = (
 _TIER_REDEFINE_MIGRATION = (
     Path(__file__).resolve().parent.parent / 'sql' / 'billing' / 'migrations' / '2026-08-12-tier-five-plan-redefine.sql'
 )
+# 分身数量上调（free 20 / lite 30 / pro 50 / max 100）。必须跟在定档迁移**之后**跑：
+# 定档迁移可重跑且会把配额写回旧值，顺序反了目录就退回 1/2/5/10。
+_TIER_AGENT_QUOTA_MIGRATION = (
+    Path(__file__).resolve().parent.parent / 'sql' / 'billing' / 'migrations' / '2026-08-15-tier-agent-quota-raise.sql'
+)
+_TIER_MIGRATION_CHAIN = (_TIER_REDEFINE_MIGRATION, _TIER_AGENT_QUOTA_MIGRATION)
 
 
 async def _ensure_workflow_template_table() -> None:
@@ -82,7 +88,13 @@ async def sess() -> AsyncIterator[AsyncSession]:
     try:
         connection = await s.connection()
         raw_connection = await connection.get_raw_connection()
-        await raw_connection.driver_connection.execute(_TIER_REDEFINE_MIGRATION.read_text(encoding='utf-8'))
+        # ⚠️ 走裸 asyncpg 连接是为了能跑多语句 + DO 块（SQLAlchemy 的 asyncpg 方言用预处理协议，
+        # 多语句会报错）。代价是它**绕过了 session 的事务，按自动提交落库**——所以这两份迁移是对
+        # 本地库的**幂等 bootstrap**（与下面 _ensure_workflow_template_table 同一性质），不会被
+        # teardown 的 rollback 撤销。它们写的正是订阅目录的目标状态，收敛到目标即预期；
+        # 用例自己构造的探针行仍走 session，rollback 后不落库。
+        for migration in _TIER_MIGRATION_CHAIN:
+            await raw_connection.driver_connection.execute(migration.read_text(encoding='utf-8'))
         yield s
     finally:
         # 全程只 flush 不 commit，rollback 即隔离（构造的悬挂 catalog 行不落库）。
@@ -192,6 +204,111 @@ async def test_five_plan_migration_is_idempotent_and_exact() -> None:
             """
         )
         assert old_active == 0
+    finally:
+        await tx.rollback()
+        await conn.close()
+
+
+async def test_tier_agent_quota_raise_is_idempotent_and_backfills_contracts() -> None:
+    """真实 PostgreSQL 事务内连跑两次上调迁移：目录改到 20/30/50/100，存量生效合同同批回填。"""
+    import asyncpg
+
+    dsn = SQLALCHEMY_DATABASE_URL.render_as_string(hide_password=False).replace(
+        'postgresql+asyncpg://', 'postgresql://'
+    )
+    try:
+        conn = await asyncpg.connect(dsn)
+    except Exception as exc:
+        pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
+
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        # 先落回定档基线（1/2/5/10），再跑上调——顺序即生产的应用顺序。
+        await conn.execute(_TIER_REDEFINE_MIGRATION.read_text(encoding='utf-8'))
+        # 造两份仍卡在旧配额的生效合同：只改目录不回填合同的话，它们会一直被门禁按旧上限拒绝。
+        stale_id = await conn.fetchval(
+            """
+            INSERT INTO hasn_billing.user_subscription
+                (user_id, tier, status, max_agents, plan_snapshot, billing_cycle_start, billing_cycle_end)
+            VALUES (-9001, 'free', 'active', 1, '{"tier": "free", "max_agents": 1}'::jsonb, now(), now())
+            RETURNING id
+            """
+        )
+        # 实测存在的漂移形态：档位是 pro，配额却停在列默认值 1（建合同时没写档位配额）。
+        # 按「该档自己的旧默认值 5」对号入座会漏掉它 —— 卡片写 50、门禁仍拦 1。
+        drifted_id = await conn.fetchval(
+            """
+            INSERT INTO hasn_billing.user_subscription
+                (user_id, tier, status, max_agents, billing_cycle_start, billing_cycle_end)
+            VALUES (-9002, 'pro', 'active', 1, now(), now())
+            RETURNING id
+            """
+        )
+        # admin 手工设过的自定义值（不在退役默认值集合里）不许被覆盖。
+        custom_id = await conn.fetchval(
+            """
+            INSERT INTO hasn_billing.user_subscription
+                (user_id, tier, status, max_agents, billing_cycle_start, billing_cycle_end)
+            VALUES (-9003, 'pro', 'active', 7, now(), now())
+            RETURNING id
+            """
+        )
+
+        sql = _TIER_AGENT_QUOTA_MIGRATION.read_text(encoding='utf-8')
+        await conn.execute(sql)
+        await conn.execute(sql)
+
+        # 月付五档：配额与卡片数字同步改，且两者一致（feature_registry 守卫的同一条口径）。
+        monthly = await conn.fetch(
+            """
+            SELECT plan_key,
+                   (quota_json->>'max_agents')::int AS max_agents,
+                   display_json->'features'->>'分身数量' AS card_agents
+              FROM hasn_billing.billing_plan
+             WHERE offering_key = 'llm:tier'
+               AND status = 'active'
+               AND right(plan_key, 7) <> '_yearly'
+             ORDER BY sort_order, plan_key
+            """
+        )
+        assert [row['plan_key'] for row in monthly] == ['free', 'lite', 'pro', 'max', 'ultra']
+        assert [row['max_agents'] for row in monthly] == [20, 30, 50, 100, -1]
+        assert [row['card_agents'] for row in monthly] == ['20', '30', '50', '100', '不限']
+
+        # 年付档按 quota_json.tier 一并命中——只改月付会让年付用户买到旧配额。
+        yearly = await conn.fetch(
+            """
+            SELECT plan_key, (quota_json->>'max_agents')::int AS max_agents
+              FROM hasn_billing.billing_plan
+             WHERE offering_key = 'llm:tier'
+               AND status = 'active'
+               AND right(plan_key, 7) = '_yearly'
+             ORDER BY sort_order, plan_key
+            """
+        )
+        assert [row['max_agents'] for row in yearly] == [30, 50, 100, -1]
+
+        # 存量合同：配额列与购买快照都上调（配额是购买时固化的，漏一处就是卡片写 20、门禁拦 1）。
+        contract = await conn.fetchrow(
+            """
+            SELECT max_agents, plan_snapshot->>'max_agents' AS snapshot_agents
+              FROM hasn_billing.user_subscription
+             WHERE id = $1
+            """,
+            stale_id,
+        )
+        assert contract['max_agents'] == 20
+        assert contract['snapshot_agents'] == '20'
+
+        # 档位与配额不匹配的漂移合同按**档位**回填到 50，不因为「1 不是 pro 的旧默认值」而漏掉。
+        assert await conn.fetchval(
+            'SELECT max_agents FROM hasn_billing.user_subscription WHERE id = $1', drifted_id
+        ) == 50
+        # admin 自定义值原样保留（只上调退役默认值，不接管运营的手工限额）。
+        assert await conn.fetchval(
+            'SELECT max_agents FROM hasn_billing.user_subscription WHERE id = $1', custom_id
+        ) == 7
     finally:
         await tx.rollback()
         await conn.close()
