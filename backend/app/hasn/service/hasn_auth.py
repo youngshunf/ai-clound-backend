@@ -481,6 +481,7 @@ async def register_hasn_agent(
     memory_md: str | None = None,
     profession: str | None = None,
     builtin_agent_key: str | None = None,
+    runtime_type: str | None = None,
 ) -> dict[str, Any]:
     """
     为已有 Human 注册新 Agent 的 HASN 身份
@@ -494,6 +495,9 @@ async def register_hasn_agent(
       description: Agent 描述
       capabilities: A2A AgentCard 兼容能力列表
       avatar: CDN 头像 URL
+      runtime_type: 主人选定的运行时大脑（hermes/claude_code/codex）；None=未指定，
+        节点侧对 None 回落 hermes。**不要在这里替 None 补默认值**——补了就等于把
+        "主人没选"写成"主人选了 hermes"，节点再也分不出这两种情况
 
     返回: {agent: HasnAgents, agent_key: str | None, already_exists: bool}
     """
@@ -629,6 +633,7 @@ async def register_hasn_agent(
         role=role or 'specialist',
         profession=profession,
         builtin_agent_key=builtin_agent_key,
+        runtime_type=runtime_type,
         description=description,
         capabilities=capabilities,
         template_id=template_id,

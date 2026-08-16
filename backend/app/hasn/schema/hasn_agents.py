@@ -82,6 +82,12 @@ class AgentSnapshot(SchemaBase):
     type: str = Field(default='desktop', description='Agent 类型')
     # 读模型保留（daemon read-through 需要）；云端沙箱形态已随 H8 退役，取值恒为 local。
     runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue)；云端形态已退役')
+    # 主人选定的大脑（节点自动绑定据此选绑定类型）。None = 未指定（本字段上线前的存量分身），
+    # 节点对 None 回落 hermes；**不要在序列化时替 None 补 'hermes'**，那会让节点分不出
+    # "主人选了 hermes" 和 "主人没选过"。与节点 `agents.runtime_type` 同名同义。
+    runtime_type: str | None = Field(
+        None, description='主人选定的运行时大脑 (hermes/claude_code/codex)；None=未指定'
+    )
     role: str = Field(default='specialist', description='Agent 角色')
     profession: str | None = Field(None, description='领域专家头衔（如「金融专家」）')
     builtin_agent_key: str | None = Field(
@@ -314,6 +320,12 @@ class UpdateAgentBindingRequest(SchemaBase):
 
     binding_node_id: str = Field(description='绑定的 node ID')
     binding_status: str = Field(description='binding 状态 (unbound/binding/bound/failed)')
+    # 主人**显式**激活某条绑定时随报（换大脑走的就是这条路），据此把云端权威改成新选择。
+    # 只有主人驱动的激活才带这个字段；节点自动绑定的激活恒不带 —— 否则自动绑定会把它自己
+    # 猜出来的类型写成"主人的选择"，权威当场失真。
+    runtime_type: str | None = Field(
+        None, description='主人选定的运行时大脑 (hermes/claude_code/codex)；缺省表示本次不改动权威'
+    )
 
 
 class AgentHeartbeatRequest(SchemaBase):

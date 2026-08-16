@@ -525,6 +525,10 @@ class SqlAlchemyAgentProfileGateway:
             agents_md=payload.get('agents_md'),
             user_md=payload.get('user_md'),
             memory_md=payload.get('memory_md'),
+            # 主人选定的大脑：`_merge_agent_create_payload` 已按「请求 > 模板默认 > hermes」
+            # 定好值。此前这个键算出来就丢了（从没传下来、表里也没有这一列），节点的自动绑定
+            # 因此只能一律猜 hermes，把向导刚建好的 codex 绑定顶掉。
+            runtime_type=payload.get('runtime_type'),
         )
         agent = result['agent']
         # 只用非 None 值覆盖，避免幂等命中已有 Agent 时把已存的 profile 字段清空。
@@ -1314,16 +1318,18 @@ class HasnAgentProfileService:
             raise errors.RequestError(msg=f'ERR_HASN_AGENT_BINDING_STATUS_INVALID:{request.binding_status}')
 
         now_unix = int(tz.now().timestamp())
-        await db.execute(
-            sa
-            .update(HasnAgents)
-            .where(HasnAgents.hasn_id == hasn_id)
-            .values(
-                binding_node_id=request.binding_node_id,
-                binding_status=request.binding_status,
-                binding_updated_at=now_unix,
-            )
-        )
+        values: dict[str, Any] = {
+            'binding_node_id': request.binding_node_id,
+            'binding_status': request.binding_status,
+            'binding_updated_at': now_unix,
+        }
+        # 换大脑：主人显式激活某条绑定时才带 runtime_type，据此改写云端权威。
+        # 缺省（None）表示本次不动权威 —— 节点的自动绑定走的正是这条缺省路径。
+        if request.runtime_type is not None:
+            if request.runtime_type not in _ALLOWED_RUNTIME_TYPES:
+                raise errors.RequestError(msg=f'ERR_HASN_AGENT_RUNTIME_TYPE_INVALID:{request.runtime_type}')
+            values['runtime_type'] = request.runtime_type
+        await db.execute(sa.update(HasnAgents).where(HasnAgents.hasn_id == hasn_id).values(**values))
         await db.refresh(agent)
         return _agent_snapshot(agent)
 
@@ -1464,6 +1470,21 @@ async def _resolve_skill_display(
     return display
 
 
+def _normalize_runtime_type(value: str | None) -> str:
+    """把创建入参的大脑类型收敛到闭集，未指定回落 hermes。
+
+    创建路径**允许**回落——向导本来就默认选中唤星 Runtime，"没传"等价于"选了 hermes"。
+    这与 `_agent_snapshot` 读侧的规则相反：读侧遇到 NULL 必须原样透出（存量行确实没选过，
+    补默认值就是把"不知道"写成"知道"）。两处规则不同是有意的，别顺手抹平。
+    """
+    if value is None or not value.strip():
+        return 'hermes'
+    normalized = value.strip()
+    if normalized not in _ALLOWED_RUNTIME_TYPES:
+        raise errors.RequestError(msg=f'ERR_HASN_AGENT_RUNTIME_TYPE_INVALID:{normalized}')
+    return normalized
+
+
 def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any | None) -> dict[str, Any]:
     template_skills = getattr(template, 'default_skills', None)
     skills = request.skills if request.skills is not None else template_skills
@@ -1492,7 +1513,11 @@ def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any 
         'memory_md': request.memory_md
         if request.memory_md is not None
         else getattr(template, 'default_memory_md', None),
-        'runtime_type': request.runtime_type or getattr(template, 'default_runtime_type', None) or 'hermes',
+        # 主人选定的大脑：请求 > 模板默认 > hermes。新建分身恒有显式值（向导默认就选 hermes），
+        # 因此库里的 NULL 只可能来自本列上线前的存量行。
+        'runtime_type': _normalize_runtime_type(
+            request.runtime_type or getattr(template, 'default_runtime_type', None)
+        ),
         # 运行位置（H8 收窄）：云端沙箱形态已退役，恒 local；请求体不再携带该字段。
         'runtime_location': 'local',
         'node_id': request.node_id,
@@ -1507,6 +1532,9 @@ _SLUG_RE = re.compile(r'^[a-z][a-z0-9_-]{0,63}$')
 # 云端 hasn_agents.status 的允许值集合：业务态 + 生命周期态合并落同一列。
 _ALLOWED_STATUS_VALUES: frozenset[str] = frozenset({'active', 'disabled', 'revoked', 'archived', 'deleted'})
 _ALLOWED_BINDING_STATUS_VALUES: frozenset[str] = frozenset({'unbound', 'binding', 'bound', 'failed'})
+# 主人可选的运行时大脑。写死成闭集而不是自由字符串：节点的自动绑定按它选绑定类型，
+# 收进来一个节点不认识的值，等于让分身永远绑不上而云端还显示"已选"。
+_ALLOWED_RUNTIME_TYPES: frozenset[str] = frozenset({'hermes', 'claude_code', 'codex'})
 
 
 def _resolve_agent_slug(request: CloudCreateAgentRequest, template: Any | None) -> str:
@@ -1538,6 +1566,8 @@ def _agent_snapshot(agent: Any) -> AgentSnapshot:
         avatar=getattr(agent, 'avatar', None),
         type=getattr(agent, 'type', 'desktop') or 'desktop',
         runtime_location=getattr(agent, 'runtime_location', 'local') or 'local',
+        # 不加 `or 'hermes'`：NULL 必须原样透出，节点靠它区分"没选过"与"选了 hermes"。
+        runtime_type=getattr(agent, 'runtime_type', None),
         role=getattr(agent, 'role', 'specialist') or 'specialist',
         profession=getattr(agent, 'profession', None),
         builtin_agent_key=getattr(agent, 'builtin_agent_key', None),

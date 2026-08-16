@@ -38,6 +38,15 @@ class HasnAgents(Base):
         default='local',
         comment='运行位置 (local:本地:blue)；云端沙箱形态已随 H8 退役，写入恒 local，列保留供存量行读取',
     )
+    # 主人选定的大脑，节点侧自动绑定的唯一权威依据。与节点 `agents.runtime_type`、绑定表
+    # `runtime_type` 同名同义（治理契约 R14：同一概念跨仓零字段转换）。
+    # NULL = 未指定（本列上线前创建的存量分身）——节点对 NULL 维持回落 hermes 的既有行为；
+    # 禁止给存量行凭空回填 'hermes'，那是把"不知道"写成"知道"。
+    runtime_type: Mapped[str | None] = mapped_column(
+        sa.String(30),
+        default=None,
+        comment='主人选定的运行时大脑类型 (hermes:唤星Runtime:green/claude_code:Claude Code:purple/codex:Codex:blue)；NULL=未指定',
+    )
     type: Mapped[str] = mapped_column(
         sa.String(20),
         default='',
