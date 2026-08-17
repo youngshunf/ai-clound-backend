@@ -1,9 +1,14 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
+
+# 上架状态的封闭取值。**只用于写入面**（Create/Update），不下沉到基类——
+# 基类同时是 GetHasnAppCatalogDetail 的父类，给它加枚举会让存量脏行在**读取**时 500。
+CatalogStatus = Literal['published', 'disabled', 'draft']
 
 
 class HasnAppCatalogSchemaBase(SchemaBase):
@@ -50,9 +55,16 @@ class HasnAppCatalogSchemaBase(SchemaBase):
 class CreateHasnAppCatalogParam(HasnAppCatalogSchemaBase):
     """创建AI-Native 应用目录（云端权威）参数"""
 
+    # 写入面收窄到三值，见 CatalogStatus。裸 str 时任何字符串都能落库，而
+    # status != 'published' 会让应用从 list_published_catalog 消失——即从应用中心、
+    # 工作台、分身工具面同时静默不见，且全程不报错。
+    status: CatalogStatus = Field(description='上架状态 (published:已上架:green/disabled:已下架:gray/draft:草稿:orange)')
+
 
 class UpdateHasnAppCatalogParam(HasnAppCatalogSchemaBase):
     """更新AI-Native 应用目录（云端权威）参数"""
+
+    status: CatalogStatus = Field(description='上架状态 (published:已上架:green/disabled:已下架:gray/draft:草稿:orange)')
 
 
 class UpdateHasnAppCatalogConfigParam(SchemaBase):

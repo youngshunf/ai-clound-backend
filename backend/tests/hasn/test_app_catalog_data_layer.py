@@ -21,6 +21,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 
 from fastapi import FastAPI, Request
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
@@ -32,12 +33,14 @@ from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.schema.hasn_app_catalog import (
     CreateHasnAppCatalogParam,
     DeleteHasnAppCatalogParam,
+    GetHasnAppCatalogDetail,
     UpdateHasnAppCatalogParam,
 )
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded, sweep_expired_entitlements
 from backend.app.hasn.service.hasn_app_catalog_service import hasn_app_catalog_service
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
+from backend.common.security.rbac import rbac_verify
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 
 pytestmark = pytest.mark.asyncio
@@ -105,9 +108,17 @@ async def env():
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
 
+    async def _rbac_bypass() -> None:
+        """写端点（POST/PUT）挂着 DependsRBAC，测试库里没有角色菜单数据会被它先拦掉。
+
+        只旁路 RBAC 这一层，body 校验照常跑——否则拿到的会是 403 而不是要验的 422。
+        同挂的 ``RequestPermission`` 不需要旁路：它只往 ctx 里写权限标识，自己不拒绝。
+        """
+
     _APP.dependency_overrides[get_db] = _yield_session
     _APP.dependency_overrides[get_db_transaction] = _yield_session
     _APP.dependency_overrides[DependsJwtAuth.dependency] = _auth_inject
+    _APP.dependency_overrides[rbac_verify] = _rbac_bypass
 
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')
     try:
@@ -289,3 +300,54 @@ async def test_admin_catalog_list_and_detail_http(env) -> None:
     assert detail['name'] == 'HTTP 列表测试'
     assert detail['access_type'] == 'free'
     assert detail['scope'] == ['personal']
+
+
+# ============================ 上架状态写入面枚举校验 ============================
+
+
+async def test_catalog_status_write_params_reject_foreign_dict_values() -> None:
+    """写入面 status 只收 published/disabled/draft，别的模块的状态值一律 422（不落库）。
+
+    背景：管理端的「上架状态」下拉曾绑到共享字典 ``hasn_status``——``fba codegen`` 把每张
+    ``hasn_*`` 表的 ``status`` 列都往同一个 type_code 里塞值，累计约 50 个取值（联系人的
+    ``connected``、绑定的 ``bound``、消息的 ``accepted``…）。管理端已改本地三值常量，但写入面
+    当时是裸 ``str``，绕过 UI 直接调 API 仍能把 ``accepted`` 写进 ``status``；而
+    ``list_published_catalog`` 只选 ``published``，于是应用从应用中心、工作台、分身工具面同时
+    静默消失且不报错。本测试钉死那道校验。
+    """
+    app_id = f'enum_{_uid()}'
+
+    # 三个合法值都必须通过（收窄不能误伤正常上下架）。
+    for ok in ('published', 'disabled', 'draft'):
+        assert CreateHasnAppCatalogParam(**_catalog_kwargs(app_id, status=ok)).status == ok
+        assert UpdateHasnAppCatalogParam(**_catalog_kwargs(app_id, status=ok)).status == ok
+
+    # 其它模块塞进 hasn_status 的取值一律拒收——含最危险的 accepted（「已接收」，来自联系人/
+    # 内测申请域），它在下拉里紧挨着「已上架」。
+    for foreign in ('accepted', 'connected', 'bound', 'active', 'pending', '1', '0', ''):
+        with pytest.raises(ValidationError):
+            CreateHasnAppCatalogParam(**_catalog_kwargs(app_id, status=foreign))
+        with pytest.raises(ValidationError):
+            UpdateHasnAppCatalogParam(**_catalog_kwargs(app_id, status=foreign))
+
+    # 读取面**不得**跟着收窄：详情模型仍是裸 str，否则存量脏行会在 GET 时 500
+    # （校验的位置本身就是这条测试要守的东西）。
+    detail_status = GetHasnAppCatalogDetail.model_fields['status'].annotation
+    assert detail_status is str, '详情模型的 status 必须保持裸 str，收窄只允许发生在写入面'
+
+
+async def test_admin_catalog_create_rejects_foreign_status_over_http(env) -> None:
+    """同一道收窄要在**真实 HTTP** 上兑现：外来状态值 422，合法值照常落库。
+
+    只验 schema 类不够——校验挂在端点入参上，走 ASGI 才能证明它没被中间件/依赖顺序绕过。
+    """
+    app_id = f'httpenum_{_uid()}'
+
+    bad = await env.client.post(_CATALOG, json=_catalog_kwargs(app_id, status='accepted'))
+    assert bad.status_code == 422, f'外来状态值应被入参校验拦下，实际 {bad.status_code}: {bad.text}'
+    assert 'status' in bad.text, f'422 应指名 status 字段，便于管理员定位：{bad.text}'
+
+    # 收窄不能误伤正常下架：同一条链路上 disabled 必须通到底并真的落库。
+    _data(await env.client.post(_CATALOG, json=_catalog_kwargs(app_id, status='disabled')))
+    row = (await env.session.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id == app_id))).scalars().one()
+    assert row.status == 'disabled'
