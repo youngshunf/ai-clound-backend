@@ -57,16 +57,27 @@ DEFAULT_PLATFORM_CONFIG: dict = {
             'image_edit_models': ['qwen-image-2.0', 'wan2.7-image', 'qwen-image-2.0-pro'],
             'tts_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
             'stt_models': ['qwen3-asr-flash'],
-            # 2026-08-02 实测：下列三个在 llm.dcfuture.cn 逐个提交并轮询到真出片。
             # modality 必须声明——happyhorse / wan2.6 都是图生视频专用，把文生视频请求发给
             # 它们必然失败**且仍预扣配额**；dialect 必须声明——阿里系 i2v 只认 480P/720P/1080P
             # 档位，发 1280x720 会被上游拒绝（Input should be '1080P','720P' or '480P'），
             # 而 agnes 这类 OpenAI 兼容渠道反过来要 宽x高。方言靠模型名猜不出来（happyhorse
             # 看不出是阿里通义万相），所以一律显式写。
+            #
+            # ⚠️ **验收判据是「文件真的下载下来」，不是「轮询到 SUCCESS」**。此处原注释写
+            # 「2026-08-02 实测下列三个逐个提交并轮询到真出片」，但 agnes-video-v2.0 其实
+            # 从来没出过片：它提交成功、轮询到 SUCCESS、上游还按 89 秒计了费，最后一步
+            # 下载却拿回 200 + Content-Type: video/mp4 + 22 字节 {"detail":"Not Found"}。
+            # 根因在上游 api.agnes-ai.cn 内部转发的 LiteLLM 路由字段 model_id 为空，取不到
+            # 文件；拿它自报的真实 video_id 也换不出文件（一律 Task not found），我们这侧
+            # 绕不过去，故 2026-08-17 摘除。等上游修好并**验到出片文件落地**再加回。
+            #
+            # 摘除后文生视频没有候选，daemon 会如实报「没有可用的视频模型候选」——这是
+            # 预期行为：快速失败远好过让主人等 90 秒、白付一次配额再拿到失败。
+            # 图生视频这两个不受影响：它们的出片是阿里 OSS 直链，不走网关的
+            # /v1/videos/{task_id}/content 代理端点。
             'video_models': [
                 {'name': 'happyhorse-1.1-i2v', 'modality': 'image_to_video', 'dialect': 'ali'},
                 {'name': 'wan2.6-i2v-flash', 'modality': 'image_to_video', 'dialect': 'ali'},
-                {'name': 'agnes-video-v2.0', 'modality': 'text_to_video', 'dialect': 'openai'},
             ],
         },
         # 应用专属配置（如 film 视频引擎 5 类模型 + 引擎包 manifest）已迁出 PDC，改由
