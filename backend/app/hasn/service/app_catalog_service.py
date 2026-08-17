@@ -1793,6 +1793,21 @@ def merge_access(owner_access: dict, enterprise_access: dict | None) -> dict:
     return owner_access
 
 
+# APPDEMO-1：发布阶段 → 分身工具面是否隐身。**这里是唯一判定处**——云端网关与本地 hasn-mcp
+# 都只消费 access['tools_hidden']，不各自读 release_phase 再判一遍（那就是 doc21 §2.3 已证过的
+# 规则漂移，两侧会各自演化）。
+#
+# 目前只有 `demo` 命中：演示阶段的应用页面用的是静态原型稿，没有真实后端可调；分身若还能搜到
+# 它的工具，调用必然失败或写出假数据，纯浪费轮次。内测两档（beta_full/beta_gray）**不在此列**
+# ——它们的用途正是让内测者连同分身一起真实试用，隐掉工具等于废掉内测。
+_TOOLS_HIDDEN_PHASES: frozenset[str] = frozenset({'demo'})
+
+
+def tools_hidden_for_phase(release_phase: str | None) -> bool:
+    """该发布阶段是否对分身隐藏本应用的全部工具（未知阶段保守按 False，不误伤既有应用）。"""
+    return (release_phase or 'ga') in _TOOLS_HIDDEN_PHASES
+
+
 def check_purchasable_by(catalog: HasnAppCatalog, *, buyer: str) -> None:
     """下单/试用前校验 ``purchasable_by``（doc04 §5/P1-4），拦无意义下单。违反抛 RequestError。
 
@@ -1831,6 +1846,7 @@ async def resolve_app_access(  # noqa: C901 有意的分支式准入门（status
       免费/订阅制（access_type=free/tier，无 seats_total）**不过席位**，approved 成员直接放行。
     """
     subject_id = subject_id or owner_hasn_id
+    tools_hidden = tools_hidden_for_phase(catalog.release_phase)
 
     def _access(
         *,
@@ -1848,6 +1864,9 @@ async def resolve_app_access(  # noqa: C901 有意的分支式准入门（status
             'price': _price_payload(catalog) if requires == 'purchase' else None,
             'trial_available': trial_available,
             'entitlement_expires_at': (entitlement_expires_at.isoformat() if entitlement_expires_at else None),
+            # APPDEMO-1：与 allowed 正交的「分身工具面是否隐身」。演示阶段的应用**人能打开**
+            # （allowed 照常为 True），但分身搜不到也调不动它的工具——见 tools_hidden_for_phase。
+            'tools_hidden': tools_hidden,
         }
 
     if catalog.status != 'published':

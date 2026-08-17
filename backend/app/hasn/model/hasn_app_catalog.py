@@ -58,10 +58,13 @@ class HasnAppCatalog(Base):
     )
     # APPBETA-1：发布阶段（内测）+ 自定义角标。release_phase 与 status（上架/下架）正交：
     # 内测是「发布阶段」不是「上架状态」，灰度/全量内测应用仍需 status='published' 才进列表。
+    # APPDEMO-1 增加 demo（演示）：应用中心照常可见可点开，页面渲染静态高保真原型稿，
+    # 且该应用全部工具对分身隐身（判定在 app_catalog_service.tools_hidden_for_phase，
+    # 经 access['tools_hidden'] 下发给云端网关与本地 hasn-mcp 两个工具面）。
     release_phase: Mapped[str] = mapped_column(
         sa.String(16),
         default='ga',
-        comment='发布阶段 (ga:正式:green/beta_full:全量内测:blue/beta_gray:灰度内测:orange)',
+        comment='发布阶段 (ga:正式:green/beta_full:全量内测:blue/beta_gray:灰度内测:orange/demo:演示:purple)',
     )
     badge_text: Mapped[str | None] = mapped_column(
         sa.String(32), default=None, comment='自定义角标文字（如 热门/推荐/限免；空=无角标）'

@@ -86,6 +86,9 @@ async def resolve_merged_app_access(
             'price': None,
             'trial_available': False,
             'entitlement_expires_at': None,
+            # 这条分支是**手写**的 access dict，不走 resolve_app_access 的 _access()——
+            # 漏了 tools_hidden 会让演示阶段的纯企业应用在个人空间下把工具漏给分身。
+            'tools_hidden': app_catalog_service.tools_hidden_for_phase(cat.release_phase),
         }
     return app_catalog_service.merge_access(owner_access, enterprise_access)
 

@@ -237,6 +237,61 @@ async def test_beta_full_not_gated(db) -> None:
     assert access['reason'] == 'free'
 
 
+# ============================ APPDEMO-1：演示阶段 ============================
+
+
+async def test_demo_phase_allows_owner_but_hides_agent_tools(db) -> None:
+    """演示阶段：**人照常准入**（点得开、看原型稿），但准入里带 tools_hidden=True。
+
+    这一条钉的是本特性的正交性——把演示做成「准入被拒」会让应用中心变成锁定卡、
+    主人根本进不去演示页；只隐工具面才是要的语义。
+    """
+    cat = _catalog(f'demo_{_uid()}', release_phase='demo', access_type='free')
+    db.add(cat)
+    await db.flush()
+    owner = await _seed_owner(db)
+
+    access = await app_catalog_service.resolve_app_access(db, catalog=cat, owner_hasn_id=owner)
+    assert access['allowed'] is True, '演示应用主人必须能打开，否则看不到演示页'
+    assert access['reason'] == 'free'
+    assert access['tools_hidden'] is True, '演示应用的工具必须对分身隐身'
+
+
+async def test_non_demo_phases_do_not_hide_tools(db) -> None:
+    """ga 与内测两档都不隐工具——内测就是要连分身一起真实试用。"""
+    owner = await _seed_owner(db)
+    for phase in ('ga', 'beta_full'):
+        cat = _catalog(f'{phase}_{_uid()}', release_phase=phase, access_type='free')
+        db.add(cat)
+        await db.flush()
+        access = await app_catalog_service.resolve_app_access(db, catalog=cat, owner_hasn_id=owner)
+        assert access['tools_hidden'] is False, f'{phase} 不该隐藏工具'
+
+
+async def test_demo_phase_carries_tools_hidden_even_when_denied(db) -> None:
+    """演示 + 付费墙未通过：拒绝路径的 access 同样要带 tools_hidden。
+
+    `_access()` 是所有分支的共同出口，漏在某一条分支上就会出现「同一个应用有时隐有时不隐」。
+    """
+    cat = _catalog(f'demopaid_{_uid()}', release_phase='demo', access_type='purchase', price_amount=10)
+    db.add(cat)
+    await db.flush()
+    owner = await _seed_owner(db)
+
+    access = await app_catalog_service.resolve_app_access(db, catalog=cat, owner_hasn_id=owner)
+    assert access['allowed'] is False
+    assert access['reason'] == 'need_purchase'
+    assert access['tools_hidden'] is True
+
+
+async def test_manifest_emits_demo_release_phase(db) -> None:
+    """manifest 要把 demo 阶段透给客户端——WebUI 据它决定渲染原型稿而不是真实页。"""
+    cat = _catalog(f'demomani_{_uid()}', release_phase='demo')
+    db.add(cat)
+    await db.flush()
+    assert app_catalog_service.catalog_to_manifest(cat)['release_phase'] == 'demo'
+
+
 # ============================ 角标 + 发布阶段（catalog_to_manifest） ============================
 
 

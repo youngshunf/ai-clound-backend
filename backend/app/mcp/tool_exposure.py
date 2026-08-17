@@ -62,6 +62,11 @@ REASON_OWNER_DENIED = 'owner_denied'  # G5：owner 三态 deny（维持现状 de
 # 与本地 hasn-mcp `crates/hasn-mcp/src/app_gate.rs::HIDDEN_REASONS` 必须保持同一张表。
 LIFECYCLE_HIDDEN_REASONS: frozenset[str] = frozenset({'disabled', 'need_beta', 'beta_pending'})
 
+# APPDEMO-1：演示阶段应用的隐身 reason。与上面三个不同，它**不是**准入被拒（那些应用
+# `allowed=True`、人照常打开），而是「这个应用当前没有真实后端可调」，所以只对工具面隐身。
+# 判定源是云端 `app_catalog_service.tools_hidden_for_phase`，本模块只消费 access['tools_hidden']。
+REASON_DEMO_PHASE = 'demo_phase'
+
 
 @dataclass(frozen=True)
 class ExposureDecision:
@@ -171,6 +176,12 @@ class ToolExposurePolicy:
         if not app_id:
             return None
         access = (getattr(agent_context, 'app_access_by_id', None) or {}).get(app_id)
+        # APPDEMO-1：演示阶段先判，且**与 allowed 无关**——演示应用是 allowed=True 的
+        # （主人照常打开看原型稿），若放在下面的 not allowed 分支里就永远命不中。
+        if access is not None and access.get('tools_hidden'):
+            return ExposureDecision(
+                ACTION_HIDDEN, gate=GATE_ENTITLEMENT, reason=REASON_DEMO_PHASE, app_id=app_id
+            )
         if access is not None and not access.get('allowed', True):
             reason = access.get('reason') or 'need_purchase'
             action = ACTION_HIDDEN if reason in LIFECYCLE_HIDDEN_REASONS else ACTION_VISIBLE_DENY

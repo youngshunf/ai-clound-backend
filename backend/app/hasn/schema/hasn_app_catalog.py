@@ -10,6 +10,10 @@ from backend.common.schema import SchemaBase
 # 基类同时是 GetHasnAppCatalogDetail 的父类，给它加枚举会让存量脏行在**读取**时 500。
 CatalogStatus = Literal['published', 'disabled', 'draft']
 
+# 发布阶段的封闭取值（与上架状态正交）。同样只用于写入面，理由同上。
+# `demo` = 演示稿：应用中心可见可点开、页面是静态原型、分身工具全隐身（APPDEMO-1）。
+CatalogReleasePhase = Literal['ga', 'beta_full', 'beta_gray', 'demo']
+
 
 class HasnAppCatalogSchemaBase(SchemaBase):
     """AI-Native 应用目录（云端权威）基础模型"""
@@ -59,12 +63,20 @@ class CreateHasnAppCatalogParam(HasnAppCatalogSchemaBase):
     # status != 'published' 会让应用从 list_published_catalog 消失——即从应用中心、
     # 工作台、分身工具面同时静默不见，且全程不报错。
     status: CatalogStatus = Field(description='上架状态 (published:已上架:green/disabled:已下架:gray/draft:草稿:orange)')
+    release_phase: CatalogReleasePhase = Field(
+        default='ga',
+        description='发布阶段 (ga:正式:green/beta_full:全量内测:blue/beta_gray:灰度内测:orange/demo:演示:purple)',
+    )
 
 
 class UpdateHasnAppCatalogParam(HasnAppCatalogSchemaBase):
     """更新AI-Native 应用目录（云端权威）参数"""
 
     status: CatalogStatus = Field(description='上架状态 (published:已上架:green/disabled:已下架:gray/draft:草稿:orange)')
+    release_phase: CatalogReleasePhase = Field(
+        default='ga',
+        description='发布阶段 (ga:正式:green/beta_full:全量内测:blue/beta_gray:灰度内测:orange/demo:演示:purple)',
+    )
 
 
 class UpdateHasnAppCatalogConfigParam(SchemaBase):

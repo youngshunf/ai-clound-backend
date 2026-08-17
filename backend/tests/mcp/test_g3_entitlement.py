@@ -365,3 +365,93 @@ def test_g3_reason_dispatch_table_matches_local_gate() -> None:
     from backend.app.mcp.tool_exposure import LIFECYCLE_HIDDEN_REASONS
 
     assert LIFECYCLE_HIDDEN_REASONS == frozenset({'disabled', 'need_beta', 'beta_pending'})
+
+
+# ── 5. APPDEMO-1：演示阶段应用的工具隐身（与 allowed 正交）─────────────────
+#
+# 前四组隐身都建立在「准入被拒」上。演示阶段不是——那些应用 allowed=True、主人照常点开看
+# 原型稿，只是没有真实后端可调，所以**只**对工具面隐身。因此它必须在 not-allowed 分支之前
+# 判，否则永远命不中（这正是本组测试要钉死的东西）。
+
+
+def test_demo_phase_hides_tools_even_though_app_is_allowed() -> None:
+    """allowed=True + tools_hidden=True → 仍然 HIDDEN。
+
+    这是本特性的全部要害：把判定写在 `not allowed` 分支里就会**静默失效**，
+    而且外观完全正常（演示应用照常可见可打开），只有分身那侧悄悄多出一批调不动的工具。
+    """
+    decision = ToolExposurePolicy().evaluate(
+        _ctx(app_access={'deck': {'allowed': True, 'reason': 'free', 'tools_hidden': True}}),
+        _DeckTool(),
+    )
+    assert decision.action == ACTION_HIDDEN, '演示应用的工具必须隐身，即便应用本身准入'
+    assert decision.gate == GATE_ENTITLEMENT
+    assert decision.reason == 'demo_phase'
+
+
+def test_demo_phase_flag_absent_or_false_keeps_tools_visible() -> None:
+    """缺字段（旧云端）与显式 False 都不得隐身——never over-block。"""
+    policy = ToolExposurePolicy()
+    for access in ({'allowed': True, 'reason': 'free'}, {'allowed': True, 'reason': 'free', 'tools_hidden': False}):
+        decision = policy.evaluate(_ctx(app_access={'deck': access}), _DeckTool())
+        assert decision.action == ACTION_ALLOW, f'{access} 不该触发演示隐身'
+
+
+def test_demo_phase_hidden_takes_precedence_over_commercial_deny() -> None:
+    """演示 + 未购买：隐身优先于可见拒。
+
+    演示应用没有真实后端，引导主人去买一个只有原型稿的应用是错的。
+    """
+    decision = ToolExposurePolicy().evaluate(
+        _ctx(app_access={'deck': {'allowed': False, 'reason': 'need_purchase', 'tools_hidden': True}}),
+        _DeckTool(),
+    )
+    assert decision.action == ACTION_HIDDEN
+    assert decision.reason == 'demo_phase'
+
+
+def test_demo_phase_invisible_on_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """发现面：演示应用的工具不列出，也不带 access_hint。"""
+    server = _server_with_noop_io(monkeypatch)
+    server.tool_registry.register(_DeckTool())
+    ctx = _ctx(app_access={'deck': {'allowed': True, 'reason': 'free', 'tools_hidden': True}})
+
+    tool = server.tool_registry.get_tool(DECK_TOOL)
+    assert tool is not None
+    assert not server.tool_directory._can_discover(ctx, tool)
+    assert 'access_hint' not in server.tool_directory._tool_schema(tool, ctx)
+
+
+@pytest.mark.asyncio
+async def test_demo_phase_call_face_is_tool_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """执行面：与「真·未注册」逐字节同款错误，不泄漏「这个应用在演示阶段」。"""
+    server = _server_with_noop_io(monkeypatch)
+    server.tool_registry.register(_DeckTool())
+    ctx = _ctx(app_access={'deck': {'allowed': True, 'reason': 'free', 'tools_hidden': True}})
+
+    with pytest.raises(McpToolError) as exc:
+        await server.call_tool(ctx, DECK_TOOL, {})
+    assert exc.value.code == McpErrorCode.TOOL_NOT_FOUND
+    assert exc.value.message == f'Tool not found: {DECK_TOOL}'
+    assert 'demo' not in exc.value.message
+
+
+def test_demo_phase_does_not_hide_from_owner_permission_catalog() -> None:
+    """权限页仍列出——与 disabled 同口径，主人要能看见这个能力被应用状态挡住了。"""
+    policy = ToolExposurePolicy()
+    ctx = _ctx(app_access={'deck': {'allowed': True, 'reason': 'free', 'tools_hidden': True}})
+    assert policy.evaluate(ctx, _DeckTool()).is_hidden
+    assert not policy.is_catalog_hidden(ctx, _DeckTool())
+
+
+def test_tools_hidden_only_covers_demo_phase() -> None:
+    """判定源本体：只有 `demo` 隐工具，**内测两档必须不隐**。
+
+    内测的用途就是让内测者连同分身一起真实试用；把 beta_full/beta_gray 也纳进来等于废掉内测。
+    未知阶段（云端将来新增）保守按不隐，避免误伤既有应用。
+    """
+    from backend.app.hasn.service.app_catalog_service import tools_hidden_for_phase
+
+    assert tools_hidden_for_phase('demo') is True
+    for phase in ('ga', 'beta_full', 'beta_gray', None, '', 'some_future_phase'):
+        assert tools_hidden_for_phase(phase) is False, f'{phase!r} 不该隐藏工具'
