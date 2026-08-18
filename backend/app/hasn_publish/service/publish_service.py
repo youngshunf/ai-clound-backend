@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+import io
+import mimetypes
 import secrets
+import zipfile
 
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -20,10 +23,13 @@ from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
 from sqlalchemy import func, select, text, update
 
+from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_publish.model import Revision, Site
 from backend.common.exception import errors
 from backend.core.conf import settings
+from backend.plugin.s3.service.storage_service import storage_service
+from backend.plugin.s3.utils.file_ops import write_bytes
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -61,6 +67,69 @@ def _gen_slug() -> str:
 
 def hash_password(plain: str) -> str:
     return _password_hasher.hash(plain)
+
+
+# ---- bundle-zip 发布侧解包 ----
+
+_BUNDLE_ENTRY_NAME = 'index.html'
+
+
+def _is_safe_bundle_member(name: str) -> bool:
+    """bundle 成员名必须是干净的相对路径（拒绝绝对路径、反斜杠、空段与 `.`/`..` 段）。
+
+    zip 来自 daemon 打包核心（hasn-web-package），可信但仍做纵深校验：
+    子对象 key 直接由成员名拼接，恶意/损坏成员名不能越出 `owners/{owner}/publish/{asset_id}/` 前缀。
+    """
+    if not name or name.startswith('/') or '\\' in name:
+        return False
+    return all(part not in ('', '.', '..') for part in name.split('/'))
+
+
+async def _unpack_bundle_zip_manifest(db: AsyncSession, *, owner_id: str, asset_id: str) -> dict[str, Any]:
+    """bundle-zip 的「发布时解包」：读 zip 制品 → 逐对象写回同 storage → files manifest。
+
+    契约背景：daemon 打包核心把 bundle-zip（`index.html` + `assets/*`）整体上传为一个
+    zip asset，并附带打包侧 manifest（`{entry, assets[]}`，无对象存储坐标）；而 serve 侧
+    （`api/v1/open/hosting.py` 的 `_bundle_entry`）按 `{files: {name: {object_key, ...}}}`
+    逐对象代吐。两者之间必须有人在发布时把 zip 真正解开写对象——本函数就是那个环节。
+    缺了它，manifest 里永远没有 object_key，`/s/{slug}` 只会 410「bundle 缺少入口 index.html」。
+
+    零 fake：zip 损坏、成员路径非法、缺入口一律显式报错（daemon 契约错误），不产出残缺 manifest。
+    """
+    asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
+    if asset is None:
+        raise errors.RequestError(msg='制品 asset 不存在')
+    zip_bytes = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile as exc:
+        raise errors.ServerError(msg='bundle-zip 制品不是合法 zip') from exc
+    storage = await storage_service.get_storage(db, asset.storage_id)
+    # 子对象 key 挂 owner/publish/{asset_id} 前缀：owner 隔离 + 每次发布新 asset 天然不撞键。
+    prefix = f'owners/{owner_id}/publish/{asset_id}'
+    files: dict[str, Any] = {}
+    with archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            if not _is_safe_bundle_member(name):
+                raise errors.ServerError(msg=f'bundle-zip 成员路径非法: {name}')
+            data = archive.read(info)
+            mime = mimetypes.guess_type(name)[0] or 'application/octet-stream'
+            if name == _BUNDLE_ENTRY_NAME:
+                mime = 'text/html'
+            object_key = f'{prefix}/{name}'
+            await write_bytes(storage, object_key, data, mime)
+            files[name] = {
+                'object_key': object_key,
+                'mime': mime,
+                'size': len(data),
+                'storage_id': asset.storage_id,
+            }
+    if _BUNDLE_ENTRY_NAME not in files:
+        raise errors.ServerError(msg='bundle-zip 缺少入口 index.html')
+    return {'files': files}
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -284,6 +353,10 @@ class PublishService:
         db.add(site)
         await db.flush()  # 取 site.id
 
+        if runtime == 'bundle-zip':
+            # 发布时解包：serve 侧按 files manifest 逐对象代吐（缺这一步 /s/{slug} 恒 410）。
+            manifest_json = await _unpack_bundle_zip_manifest(db, owner_id=owner_id, asset_id=asset_id)
+
         revision = Revision(
             site_id=site.id,
             owner_id=owner_id,
@@ -343,6 +416,9 @@ class PublishService:
         next_seq = (
             await db.execute(select(func.coalesce(func.max(Revision.seq), 0)).where(Revision.site_id == site.id))
         ).scalar_one() + 1
+        if runtime == 'bundle-zip':
+            # 发布时解包：与 create 同一环节（serve 侧按 files manifest 逐对象代吐）。
+            manifest_json = await _unpack_bundle_zip_manifest(db, owner_id=owner_id, asset_id=asset_id)
         revision = Revision(
             site_id=site.id,
             owner_id=owner_id,
