@@ -39,6 +39,10 @@ class WorkflowNodeSpec(SchemaBase):
     apps: list[str] = Field(default_factory=list, description='默认应用绑定 [app_id...]')
     skills: list[str] = Field(default_factory=list, description='默认技能绑定 [skill...]')
     is_origin: bool = Field(False, description='是否起点节点（主人输入锚点，预完成为 done、不过产出闸）')
+    # display 呈现元数据 {order, step_label}：它决定端侧链路图的环号与阶段卡顺序，是展示数据不是
+    # 附属品——doc35 B1 修死列时补了上面五个字段却漏了它，实例化后节点行 display 恒 {}，端侧只能
+    # 按 node_key 字母序兜底编号（「市场调研」被排成第 8 环、落在「产品研发」之后）。
+    display: dict | None = Field(None, description='呈现元数据 {order, step_label}（决定链路图环号顺序）')
 
 
 class WorkflowEdgeSpec(SchemaBase):

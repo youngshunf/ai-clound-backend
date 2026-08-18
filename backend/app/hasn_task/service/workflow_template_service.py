@@ -766,6 +766,9 @@ class WorkflowTemplateService:
                 'apps': tn.get('apps') or [],
                 'skills': tn.get('skills') or [],
                 'is_origin': is_origin,
+                # display.order 决定端侧链路图环号——doc35 B1 修死列时漏透传它，实例化后节点行
+                # display 恒 {}，端侧只能按 node_key 字母序兜底（调研被排到研发之后）。
+                'display': tn.get('display') or None,
                 'enable_subagents': bool(tn.get('enable_subagents')),
                 'is_sink': bool(tn.get('is_sink')),
             })

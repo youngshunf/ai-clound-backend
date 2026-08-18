@@ -137,6 +137,23 @@ def test_derive_graph_summary_empty() -> None:
     assert empty.steps == [] and empty.agent_types == []
 
 
+def test_template_to_workflow_params_maps_display() -> None:
+    """模板节点的 display 必须透传进建图入参。
+
+    doc35 B1 修死列时补了 output_spec/review_policy/apps/skills/is_origin，唯独漏了
+    display——实例化后节点行 display 恒 {}，端侧链路图按 node_key 字母序兜底编号，
+    「市场调研」被排成第 8 环。本测试钉死这层映射，防再次丢失。
+    """
+    tpl = SimpleNamespace(graph_spec=_graph_spec(), name='一人公司', description='链路详述')
+    result = workflow_template_service._template_to_workflow_params(  # noqa: SLF001
+        tpl, {}, default_agent_id='a_default'
+    )
+    nodes = {n['node_key']: n for n in result['nodes']}
+    assert nodes['idea']['display'] == {'order': 1, 'step_label': '立项'}
+    assert nodes['research']['display'] == {'order': 2, 'step_label': '调研'}
+    assert nodes['design']['display'] == {'order': 3, 'step_label': '方案'}
+
+
 # ============================ 迁移 + 字典 ============================
 
 

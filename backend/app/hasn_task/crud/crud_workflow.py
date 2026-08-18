@@ -86,11 +86,21 @@ class CRUDHasnWorkflowRun(CRUDPlus[HasnWorkflowRun]):
 
 class CRUDHasnWorkflowNode(CRUDPlus[HasnWorkflowNode]):
     async def list_by_workflow(self, db: AsyncSession, workflow_uuid: str) -> Sequence[HasnWorkflowNode]:
-        """获取某工作流的全部节点定义（按 node_key 稳定排序）"""
+        """获取某工作流的全部节点定义（按 display.order 升序；缺省/非数字落末位，同序按 node_key）"""
+        # display->>'order' 仅在确为 JSON number 时参与排序，其余一律落末位。
+        # 该顺序即 instantiate 返回 graph_snapshot 的节点声明序（run_artifacts 拓扑 tiebreak 用它），
+        # 也是端侧链路图环号的数据源——曾按 node_key 字母序，把「市场调研」排到「产品研发」之后。
+        display_order = sa.case(
+            (
+                sa.func.jsonb_typeof(HasnWorkflowNode.display['order']) == 'number',
+                sa.cast(HasnWorkflowNode.display['order'].astext, sa.BigInteger),
+            ),
+            else_=None,
+        )
         stmt = (
             select(HasnWorkflowNode)
             .where(HasnWorkflowNode.workflow_uuid == workflow_uuid)
-            .order_by(HasnWorkflowNode.node_key)
+            .order_by(display_order.asc().nulls_last(), HasnWorkflowNode.node_key)
         )
         result = await db.execute(stmt)
         return result.scalars().all()

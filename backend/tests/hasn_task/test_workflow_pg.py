@@ -292,6 +292,65 @@ async def test_create_diamond_workflow_and_get(env: SimpleNamespace) -> None:
         await env.session.rollback()
 
 
+async def test_create_workflow_preserves_display_and_orders_nodes(env: SimpleNamespace) -> None:
+    """display.order 必须随建图落库、且 get_workflow 按它排序（doc35 B1 漏网之鱼）。
+
+    node_key 故意取成「字母序与 display.order 相反」：字母序是 a_research < b_loose <
+    m_plan < z_idea，而展示序是 z_idea(1) → a_research(2) → m_plan(3) → b_loose(无 display)。
+    若 display 在实例化被丢、或 DAO 仍按 node_key 排，本测试两边都会红。
+    """
+    agent_id = f'a_{_uid()}'
+    await _seed_agent(env.session, owner_id=_OWNER_A, agent_id=agent_id, name='分身')
+
+    def disp(order: int, label: str) -> dict:
+        return {'order': order, 'step_label': label}
+
+    obj = CreateWorkflowParam(
+        name=f'展示序-{_uid()}',
+        schedule_type='once',
+        nodes=[
+            WorkflowNodeSpec(node_key='z_idea', agent_id=agent_id, prompt='立项', display=disp(1, '想法')),
+            WorkflowNodeSpec(node_key='a_research', agent_id=agent_id, prompt='调研', display=disp(2, '调研')),
+            WorkflowNodeSpec(node_key='m_plan', agent_id=agent_id, prompt='方案', display=disp(3, '方案')),
+            WorkflowNodeSpec(node_key='b_loose', agent_id=agent_id, prompt='无展示序节点'),
+        ],
+        edges=[
+            WorkflowEdgeSpec(parent='z_idea', child='a_research'),
+            WorkflowEdgeSpec(parent='a_research', child='m_plan'),
+            WorkflowEdgeSpec(parent='z_idea', child='b_loose'),
+        ],
+    )
+    wf = await workflow_service.create_workflow(env.session, owner_id=_OWNER_A, obj=obj)
+    try:
+        detail = await workflow_service.get_workflow(
+            env.session, owner_id=_OWNER_A, workflow_uuid=wf.workflow_uuid
+        )
+        # ① 返回顺序按 display.order（缺 display 的 b_loose 落末位），不是 node_key 字母序
+        assert [n['node_key'] for n in detail['nodes']] == ['z_idea', 'a_research', 'm_plan', 'b_loose']
+        # ② display 内容逐节点保留
+        by_key = {n['node_key']: n for n in detail['nodes']}
+        assert by_key['z_idea']['display'] == disp(1, '想法')
+        assert by_key['a_research']['display'] == disp(2, '调研')
+        assert by_key['m_plan']['display'] == disp(3, '方案')
+        # ③ 未声明 display 的节点落库为空对象（兼容旧行为），排末位但不丢
+        assert by_key['b_loose']['display'] == {}
+
+        # ④ 落库真值：workflow_node.display 列确实是模板声明的值，不是硬编码 {}
+        rows = await env.session.execute(
+            sa.text(
+                "SELECT node_key, display FROM hasn_task.workflow_node "
+                'WHERE workflow_uuid = :wu'
+            ),
+            {'wu': wf.workflow_uuid},
+        )
+        stored = {r['node_key']: r['display'] for r in rows.mappings().all()}
+        assert stored['z_idea'] == disp(1, '想法')
+        assert stored['a_research'] == disp(2, '调研')
+        assert stored['b_loose'] == {}
+    finally:
+        await env.session.rollback()
+
+
 async def test_create_workflow_rejects_cycle(env: SimpleNamespace) -> None:
     agent_id = f'a_{_uid()}'
     await _seed_agent(env.session, owner_id=_OWNER_A, agent_id=agent_id, name='分身')

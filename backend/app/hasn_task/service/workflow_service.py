@@ -291,7 +291,9 @@ class WorkflowService:
                     is_origin=node.is_origin,
                     output_spec=node.output_spec,
                     review_policy=node.review_policy,
-                    display={},
+                    # display 曾硬编码 {}：模板的 display.order 在实例化整段丢失，端侧链路图只能按
+                    # node_key 字母序兜底编号（环号全错）。从建图入参透传，缺省仍 {}（兼容旧行为）。
+                    display=node.display or {},
                     max_retries=4,
                     enable_subagents=node.enable_subagents,
                 )
