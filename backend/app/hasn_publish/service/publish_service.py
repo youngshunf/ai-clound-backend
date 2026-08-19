@@ -162,10 +162,14 @@ async def _materialize_referenced_assets(
             or not isinstance(name, str)
             or not _is_safe_bundle_member(name)
         ):
-            raise errors.ServerError(msg=f'referenced 资产项缺 asset_id/name 或 name 非法: {item!r}')
+            raise errors.RequestError(msg=f'referenced 资产项缺 asset_id/name 或 name 非法: {item!r}')
         record = await hasn_asset_service.get_by_asset_id(db, ref_asset_id)
         if record is None or record.owner_hasn_id != owner_id:
-            raise errors.ServerError(msg=f'referenced 资产不存在或不属于发布者: {ref_asset_id}')
+            # 主人可修正的输入问题（图片已被清理/从未同步），按 4xx 返回并给出可操作的指引，
+            # 不抛 500——前端 toast 会把这段文案直接呈给主人。
+            raise errors.RequestError(
+                msg=f'发布内容里有图片已失效或未同步到云端（{ref_asset_id}），请在编辑器中替换或删除该图片后重试'
+            )
         storage = await storage_service.get_storage(db, record.storage_id)
         target_key = f'owners/{owner_id}/publish/{publish_asset_id}/{name}'
         await storage_service.copy_between_storages(

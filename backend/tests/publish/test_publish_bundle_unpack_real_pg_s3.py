@@ -246,14 +246,18 @@ async def test_materialize_referenced_assets_copies_server_side() -> None:
 
 @pytest.mark.asyncio
 async def test_materialize_referenced_assets_rejects_foreign_asset() -> None:
-    """ACL：referenced 资产不属于发布者 → 显式报错（防把别人私图挂上自己的公开站点）。"""
+    """ACL：referenced 资产不属于发布者 → 显式 4xx 拒绝（防把别人私图挂上自己的公开站点）。
+
+    引用了不存在/不属于自己的资产是主人可修正的输入问题（图片已被清理或从未同步），
+    按 RequestError(4xx) 返回可操作指引，不抛 500——前端 toast 会把文案直接呈给主人。
+    """
     owner = await _seed_owner()
     other = await _seed_owner()
     foreign_id, foreign_key, foreign_keys = await _upload_asset(
         other, b'\x89PNG-secret', 'secret.png', 'image/png', kind='deck'
     )
     try:
-        with pytest.raises(errors.ServerError):
+        with pytest.raises(errors.RequestError):
             async with async_db_session.begin() as db:
                 await _materialize_referenced_assets(
                     db,
@@ -272,6 +276,38 @@ async def test_materialize_referenced_assets_rejects_foreign_asset() -> None:
                 )
     finally:
         await _cleanup(other, foreign_id, foreign_keys)
+        await _cleanup(owner, '', [])
+
+
+@pytest.mark.asyncio
+async def test_materialize_referenced_assets_rejects_missing_asset() -> None:
+    """referenced 资产查无此行（id 被污染/从未同步）→ 同样 4xx 并给出可操作文案。
+
+    钉住 2026-08-19 生产事故的修复契约：deck 页 html 里 33 位污染 asset_id 查无行，
+    旧代码抛 500 让主人只能看到「发布失败」，新契约必须 4xx 且文案指引替换图片。
+    """
+    owner = await _seed_owner()
+    missing_id = 'ast_' + '0' * 32  # 合法形态但保证不存在
+    try:
+        with pytest.raises(errors.RequestError) as exc_info:
+            async with async_db_session.begin() as db:
+                await _materialize_referenced_assets(
+                    db,
+                    owner_id=owner,
+                    publish_asset_id='pub_fake',
+                    manifest={
+                        'assets': [
+                            {
+                                'source': f'hasn://asset/{missing_id}',
+                                'name': 'assets/x',
+                                'status': 'referenced',
+                                'asset_id': missing_id,
+                            }
+                        ]
+                    },
+                )
+        assert '替换或删除该图片' in str(exc_info.value), f'4xx 文案必须给主人可操作指引: {exc_info.value!r}'
+    finally:
         await _cleanup(owner, '', [])
 
 
