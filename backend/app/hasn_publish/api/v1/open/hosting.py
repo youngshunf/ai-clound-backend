@@ -116,6 +116,12 @@ def _noindex_headers(site) -> dict[str, str]:  # noqa: ANN001
     return {}
 
 
+# 错误响应禁缓存：404/410 属 RFC 9110 可默认启发式缓存状态码，不带 Cache-Control 时浏览器会
+# 长期记住旧错误页（2026-08-19 实测：前一日 bundle 缺入口的 410 被 Chrome 缓存，次日修复后
+# 用户仍看到旧 410 且根本不回源）。所有错误 JSON 一律 no-store。
+_NO_STORE_HEADERS = {'Cache-Control': 'no-store'}
+
+
 async def _authorize_view(
     db: CurrentSession, request: Request, slug: str, vt: str | None
 ) -> tuple[Site | None, Response | None]:
@@ -126,12 +132,20 @@ async def _authorize_view(
         if await _rate_limited(f'publish:probe:{_client_ip(request)}', window=_PROBE_WINDOW_SECONDS, limit=_PROBE_MAX):
             return None, JSONResponse(status_code=429, content={'code': 429, 'msg': '请求过于频繁', 'data': None})
         if site is None:
-            return None, JSONResponse(status_code=404, content={'code': 404, 'msg': '分享不存在', 'data': None})
-        return None, JSONResponse(status_code=410, content={'code': 410, 'msg': '分享已撤销', 'data': None})
+            return None, JSONResponse(
+                status_code=404, headers=_NO_STORE_HEADERS, content={'code': 404, 'msg': '分享不存在', 'data': None}
+            )
+        return None, JSONResponse(
+            status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '分享已撤销', 'data': None}
+        )
     if publish_service.is_expired(site):
-        return None, JSONResponse(status_code=410, content={'code': 410, 'msg': '分享已过期', 'data': None})
+        return None, JSONResponse(
+            status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '分享已过期', 'data': None}
+        )
     if site.current_revision_id is None:
-        return None, JSONResponse(status_code=410, content={'code': 410, 'msg': '分享内容不可用', 'data': None})
+        return None, JSONResponse(
+            status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '分享内容不可用', 'data': None}
+        )
 
     ticket_ok = publish_service.verify_view_ticket(vt, site_id=site.id) if vt else False
     if site.visibility == 'private' and not ticket_ok:
@@ -174,6 +188,8 @@ async def viewer_shell(
             f"frame-ancestors 'self'; default-src 'self' {origin}; "
             "style-src 'unsafe-inline'; script-src 'unsafe-inline'"
         ),
+        # 外壳同样 no-cache：可见性/标题/内容指针变更必须即刻对访客生效
+        'Cache-Control': 'no-cache',
         **_noindex_headers(site),
     }
     form_api_origin = (
@@ -221,10 +237,14 @@ async def content(
         raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
     if revision is None:
-        return JSONResponse(status_code=410, content={'code': 410, 'msg': '内容不可用', 'data': None})
+        return JSONResponse(
+            status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '内容不可用', 'data': None}
+        )
     asset = await hasn_asset_service.get_by_asset_id(db, revision.asset_id)
     if asset is None or asset.object_state == 'missing':
-        return JSONResponse(status_code=410, content={'code': 410, 'msg': '制品丢失', 'data': None})
+        return JSONResponse(
+            status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '制品丢失', 'data': None}
+        )
 
     from backend.plugin.s3.service.storage_service import storage_service
 
@@ -233,8 +253,19 @@ async def content(
         'Content-Security-Policy': _content_csp(origin),
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
+        # no-cache：每次访问都回源按 ETag 校验，命中则 304。缺省时浏览器会启发式缓存
+        # content，「重新发布」后访客（含主人自己）可能长期看到旧版本。
+        'Cache-Control': 'no-cache',
         **_noindex_headers(site),
     }
+    # ETag = revision.content_hash：重新发布产生新 revision → 新 hash → 旧缓存自然失效；
+    # 内容未变则 304 省掉整份 HTML 传输。video-landing 的签名 URL 每次现解析，不走 304。
+    etag = f'"{revision.content_hash}"' if revision.content_hash else None
+    if etag and revision.runtime in ('single-html', 'bundle-zip'):
+        inm = request.headers.get('if-none-match', '')
+        if etag in {token.strip() for token in inm.split(',')}:
+            return Response(status_code=304, headers={'ETag': etag, 'Cache-Control': 'no-cache'})
+        base_headers['ETag'] = etag
     if revision.runtime == 'video-landing':
         # studio 视频成片落地页（doc22 §3.6 / §9 S18）：revision.asset_id 指向成片本身（hasn_assets）。
         # **serve 边界现解析签名 URL**（绝不在发布期烤进 HTML），生成单页 <video> 落地。media-src
@@ -242,7 +273,9 @@ async def content(
         resolved = await hasn_asset_service.resolve(db, requester_hasn_id=site.owner_id, asset_ids=[revision.asset_id])
         video_url = next((r.display_url for r in resolved if r.asset_id == revision.asset_id), None)
         if not video_url:
-            return JSONResponse(status_code=410, content={'code': 410, 'msg': '成片资产不可用', 'data': None})
+            return JSONResponse(
+                status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '成片资产不可用', 'data': None}
+            )
         headers = {
             'Content-Security-Policy': _content_csp_for_video(origin, video_url),
             'X-Content-Type-Options': 'nosniff',
@@ -258,7 +291,11 @@ async def content(
     # bundle-zip：根入口为 index.html（发布时解包逐对象，manifest_json）
     entry = _bundle_entry(revision.manifest_json, 'index.html')
     if entry is None:
-        return JSONResponse(status_code=410, content={'code': 410, 'msg': 'bundle 缺少入口 index.html', 'data': None})
+        return JSONResponse(
+            status_code=410,
+            headers=_NO_STORE_HEADERS,
+            content={'code': 410, 'msg': 'bundle 缺少入口 index.html', 'data': None},
+        )
     data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=entry['object_key'])
     return Response(content=data, media_type='text/html; charset=utf-8', headers=base_headers)
 
@@ -274,16 +311,22 @@ async def asset(
         raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
     if revision is None:
-        return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})
+        return JSONResponse(
+            status_code=404, headers=_NO_STORE_HEADERS, content={'code': 404, 'msg': '资源不存在', 'data': None}
+        )
     # 代吐判据是 manifest.files 里有没有该项，不看 runtime：资产引用化后 single-html
     # 的图片同样由本端点代吐（bundle-zip 是解包逐对象，引用资产是 server-side copy）。
     entry = _bundle_entry(revision.manifest_json, f'assets/{name}') or _bundle_entry(revision.manifest_json, name)
     if entry is None:
-        return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})
+        return JSONResponse(
+            status_code=404, headers=_NO_STORE_HEADERS, content={'code': 404, 'msg': '资源不存在', 'data': None}
+        )
 
     asset = await hasn_asset_service.get_by_asset_id(db, revision.asset_id)
     if asset is None or asset.object_state == 'missing':
-        return JSONResponse(status_code=404, content={'code': 404, 'msg': '制品丢失', 'data': None})
+        return JSONResponse(
+            status_code=404, headers=_NO_STORE_HEADERS, content={'code': 404, 'msg': '制品丢失', 'data': None}
+        )
 
     from backend.plugin.s3.service.storage_service import storage_service
 
