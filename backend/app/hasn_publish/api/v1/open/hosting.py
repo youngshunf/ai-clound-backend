@@ -273,8 +273,10 @@ async def asset(
     if site is None:
         raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
-    if revision is None or revision.runtime != 'bundle-zip':
+    if revision is None:
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})
+    # 代吐判据是 manifest.files 里有没有该项，不看 runtime：资产引用化后 single-html
+    # 的图片同样由本端点代吐（bundle-zip 是解包逐对象，引用资产是 server-side copy）。
     entry = _bundle_entry(revision.manifest_json, f'assets/{name}') or _bundle_entry(revision.manifest_json, name)
     if entry is None:
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})

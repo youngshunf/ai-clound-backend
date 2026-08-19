@@ -69,9 +69,12 @@ def hash_password(plain: str) -> str:
     return _password_hasher.hash(plain)
 
 
-# ---- bundle-zip 发布侧解包 ----
+# ---- 发布时物化：bundle-zip 解包 + 资产引用 server-side copy ----
 
 _BUNDLE_ENTRY_NAME = 'index.html'
+
+# daemon 打包核心 manifest assets[] 项的状态值（hasn-web-package AssetStatus）。
+_ASSET_STATUS_REFERENCED = 'referenced'
 
 
 def _is_safe_bundle_member(name: str) -> bool:
@@ -85,8 +88,8 @@ def _is_safe_bundle_member(name: str) -> bool:
     return all(part not in ('', '.', '..') for part in name.split('/'))
 
 
-async def _unpack_bundle_zip_manifest(db: AsyncSession, *, owner_id: str, asset_id: str) -> dict[str, Any]:
-    """bundle-zip 的「发布时解包」：读 zip 制品 → 逐对象写回同 storage → files manifest。
+async def _unpack_bundle_zip_files(db: AsyncSession, *, owner_id: str, asset_id: str) -> dict[str, Any]:
+    """bundle-zip 的「发布时解包」：读 zip 制品 → 逐对象写回同 storage → files 条目表。
 
     契约背景：daemon 打包核心把 bundle-zip（`index.html` + `assets/*`）整体上传为一个
     zip asset，并附带打包侧 manifest（`{entry, assets[]}`，无对象存储坐标）；而 serve 侧
@@ -129,7 +132,78 @@ async def _unpack_bundle_zip_manifest(db: AsyncSession, *, owner_id: str, asset_
             }
     if _BUNDLE_ENTRY_NAME not in files:
         raise errors.ServerError(msg='bundle-zip 缺少入口 index.html')
-    return {'files': files}
+    return files
+
+
+async def _materialize_referenced_assets(
+    db: AsyncSession, *, owner_id: str, publish_asset_id: str, manifest: dict[str, Any] | None
+) -> dict[str, Any]:
+    """把 manifest.assets 里 `status='referenced'` 的 hasn 资产物化为发布前缀下的真实对象。
+
+    资产引用化契约：deck 页里的图本来就在对象存储桶里（`hasn://asset/{id}`），daemon 打包核心
+    只登记引用、不再把字节下载回本机又上传一遍；云端发布时按 asset_id 做**同桶 server-side
+    copy**（S3 CopyObject，零公网流量）到发布前缀——发布后主人删改原图不影响已发布快照。
+
+    零 fake：referenced 项缺 asset_id/name、资产不存在、**资产不属于发布者**（防 ACL 绕过）
+    一律显式报错，不静默跳过。
+    """
+    assets = manifest.get('assets') if isinstance(manifest, dict) else None
+    if not isinstance(assets, list):
+        return {}
+    files: dict[str, Any] = {}
+    for item in assets:
+        if not isinstance(item, dict) or item.get('status') != _ASSET_STATUS_REFERENCED:
+            continue
+        ref_asset_id = item.get('asset_id')
+        name = item.get('name')
+        if (
+            not isinstance(ref_asset_id, str)
+            or not ref_asset_id
+            or not isinstance(name, str)
+            or not _is_safe_bundle_member(name)
+        ):
+            raise errors.ServerError(msg=f'referenced 资产项缺 asset_id/name 或 name 非法: {item!r}')
+        record = await hasn_asset_service.get_by_asset_id(db, ref_asset_id)
+        if record is None or record.owner_hasn_id != owner_id:
+            raise errors.ServerError(msg=f'referenced 资产不存在或不属于发布者: {ref_asset_id}')
+        storage = await storage_service.get_storage(db, record.storage_id)
+        target_key = f'owners/{owner_id}/publish/{publish_asset_id}/{name}'
+        await storage_service.copy_between_storages(
+            storage,
+            source_key=record.object_key,
+            target=storage,
+            target_key=target_key,
+            size=record.size_bytes,
+            content_type=record.mime,
+        )
+        files[name] = {
+            'object_key': target_key,
+            'mime': record.mime,
+            'size': record.size_bytes,
+            'storage_id': record.storage_id,
+        }
+    return files
+
+
+async def _materialize_publish_manifest(
+    db: AsyncSession, *, owner_id: str, asset_id: str, runtime: str, manifest_json: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """发布时物化统一入口：bundle-zip 解包 + referenced 资产 copy，files 合并进 manifest。
+
+    serve 侧只认 manifest.files 的 object_key 坐标；打包侧 manifest 的其余键
+    （runtime/format/entry/assets[]/failures）原样保留作溯源。
+    """
+    files: dict[str, Any] = {}
+    if runtime == 'bundle-zip':
+        files.update(await _unpack_bundle_zip_files(db, owner_id=owner_id, asset_id=asset_id))
+    files.update(
+        await _materialize_referenced_assets(db, owner_id=owner_id, publish_asset_id=asset_id, manifest=manifest_json)
+    )
+    if not files:
+        return manifest_json  # single-html 且无资产引用：manifest 原样（可为 None）
+    manifest = dict(manifest_json or {})
+    manifest['files'] = files
+    return manifest
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -353,9 +427,11 @@ class PublishService:
         db.add(site)
         await db.flush()  # 取 site.id
 
-        if runtime == 'bundle-zip':
-            # 发布时解包：serve 侧按 files manifest 逐对象代吐（缺这一步 /s/{slug} 恒 410）。
-            manifest_json = await _unpack_bundle_zip_manifest(db, owner_id=owner_id, asset_id=asset_id)
+        # 发布时物化：bundle-zip 解包 + referenced 资产 server-side copy，
+        # serve 侧按 files manifest 逐对象代吐（缺这一步 /s/{slug} 恒 410）。
+        manifest_json = await _materialize_publish_manifest(
+            db, owner_id=owner_id, asset_id=asset_id, runtime=runtime, manifest_json=manifest_json
+        )
 
         revision = Revision(
             site_id=site.id,
@@ -416,9 +492,10 @@ class PublishService:
         next_seq = (
             await db.execute(select(func.coalesce(func.max(Revision.seq), 0)).where(Revision.site_id == site.id))
         ).scalar_one() + 1
-        if runtime == 'bundle-zip':
-            # 发布时解包：与 create 同一环节（serve 侧按 files manifest 逐对象代吐）。
-            manifest_json = await _unpack_bundle_zip_manifest(db, owner_id=owner_id, asset_id=asset_id)
+        # 发布时物化：与 create 同一环节（serve 侧按 files manifest 逐对象代吐）。
+        manifest_json = await _materialize_publish_manifest(
+            db, owner_id=owner_id, asset_id=asset_id, runtime=runtime, manifest_json=manifest_json
+        )
         revision = Revision(
             site_id=site.id,
             owner_id=owner_id,
