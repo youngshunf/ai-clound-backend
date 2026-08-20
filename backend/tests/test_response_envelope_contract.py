@@ -51,6 +51,10 @@ _GENUINE = {
     'POST /s/{slug}/unlock',
     'GET /s/{slug}/content',
     'GET /s/{slug}/assets/{name:path}',
+    # 同上，票落在路径段的那对（制品内相对引用 `assets/x` 只能这样带上票，见 hosting.py 的
+    # _TICKET_PATH_PREFIX）：与上面两条是同一份内容/字节，仅票的承载位置不同
+    'GET /s/{slug}/t/{vt}/content',
+    'GET /s/{slug}/t/{vt}/assets/{name:path}',
     # 重定向 / 外部 OAuth 回调
     'GET /api/v1/oauth2/github/callback',
     'GET /api/v1/oauth2/google/callback',

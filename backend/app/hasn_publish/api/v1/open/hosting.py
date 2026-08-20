@@ -8,9 +8,11 @@
 鉴权（[03] §3）：
   slug 不存在/已删/已撤销 → 404/410（不存在 slug 的探测按 IP 限速）
   expires_at 已过 → 410 Gone
-  private → 需短时访问票 ?vt=（[01] §3.1），否则 401
+  private → 需短时访问票（[01] §3.1），否则 401
   password → 无票 → 输口令页；/unlock 校验（限速）通过发票
   unlisted/public → 直接放行；unlisted 恒 X-Robots-Tag: noindex
+
+访问票有两种承载位置，**制品内容与其子资源必须用路径段那种**，理由见 `_TICKET_PATH_PREFIX` 注释。
 
 非信封面（返回 HTML/二进制/纯 JSON）：见 test_response_envelope_contract.py 白名单。
 """
@@ -21,10 +23,10 @@ import html
 import json
 
 from typing import Annotated
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
@@ -197,13 +199,14 @@ async def viewer_shell(
     )
     if form_api_origin:
         headers['Content-Security-Policy'] += f'; connect-src {form_api_origin}'
-    vt_qs = f'?vt={html.escape(vt)}' if vt else ''
+    # 有票时外壳直接指向路径段形式，省掉一跳 302，且制品内相对子资源自动带票（见 _TICKET_PATH_PREFIX）
+    content_src = _ticket_path(slug, vt, 'content') if vt else f'/s/{quote(slug, safe="")}/content'
     return HTMLResponse(
         content=_viewer_shell_html(
             slug,
             site.title,
             site.allow_present,
-            vt_qs,
+            content_src,
             form_api_origin=form_api_origin,
             form_view_ticket=vt,
         ),
@@ -226,10 +229,43 @@ async def unlock(request: Request, db: CurrentSession, slug: str, body: UnlockRe
     return JSONResponse(status_code=200, content={'code': 200, 'msg': 'ok', 'data': issued})
 
 
+# 访问票的承载位置：查询串 `?vt=` 只用于**入口**，制品内容与其子资源一律走路径段 /t/{vt}/。
+#
+# 制品 HTML 里的图片是**相对路径**（`assets/ast_xxx`，打包期资产引用化的产物），而
+# **相对 URL 不继承 query**：从 `/s/{slug}/content?vt=T` 解析 `assets/x` 得到的是
+# `/s/{slug}/assets/x`——票在这一跳丢掉。public/unlisted 无票也放行，所以这条路径长期没被判过；
+# password/private 站点下每张图都被 _authorize_view 判 401：正文出得来、图片全裂
+# （2026-08-20 生产实测 site 11 `b9CsAYD5XfBR`：/content 200 而 manifest 里 10 张图全 401）。
+#
+# 票落在**路径段**上，相对引用就自动带着它走：`/s/{slug}/t/{T}/content` → `/s/{slug}/t/{T}/assets/x`。
+# 这同时覆盖 CSS `url(...)`、srcset 等所有相对引用，且**不改制品字节**——改字节会让
+# revision.content_hash 与 ETag 语义失真（同一 revision 每个访客拿到不同 HTML）。
+# 旧的 `?vt=` 入口保留并 302 到路径段形式，官网 SPA 与已发出去的分享链接零改造。
+_TICKET_PATH_PREFIX = '/t'
+
+
+def _ticket_path(slug: str, vt: str, tail: str) -> str:
+    """拼路径段带票 URL；slug/vt 全部转义，避免脏输入越出本站点前缀。"""
+    return f'/s/{quote(slug, safe="")}{_TICKET_PATH_PREFIX}/{quote(vt, safe="")}/{tail}'
+
+
 @router.get('/s/{slug}/content', summary='取制品内容（服务端代吐 + CSP sandbox）')
 async def content(
     request: Request, db: CurrentSession, slug: str, vt: Annotated[str | None, Query()] = None
 ) -> Response:
+    # 带票入口：一律 302 到路径段形式，让制品里的相对子资源引用也带上票（见 _TICKET_PATH_PREFIX）。
+    # 票的有效性交给重定向目标判定，避免同一次访问查两遍库；错票在那边照样 401。
+    if vt:
+        return RedirectResponse(url=_ticket_path(slug, vt, 'content'), status_code=302, headers=_NO_STORE_HEADERS)
+    return await _serve_content(request, db, slug, None)
+
+
+@router.get('/s/{slug}' + _TICKET_PATH_PREFIX + '/{vt}/content', summary='取制品内容（路径段带票）')
+async def content_with_ticket(request: Request, db: CurrentSession, slug: str, vt: str) -> Response:
+    return await _serve_content(request, db, slug, vt)
+
+
+async def _serve_content(request: Request, db: CurrentSession, slug: str, vt: str | None) -> Response:
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
@@ -304,6 +340,16 @@ async def content(
 async def asset(
     request: Request, db: CurrentSession, slug: str, name: str, vt: Annotated[str | None, Query()] = None
 ) -> Response:
+    return await _serve_asset(request, db, slug, name, vt)
+
+
+@router.get('/s/{slug}' + _TICKET_PATH_PREFIX + '/{vt}/assets/{name:path}', summary='子资源（路径段带票）')
+async def asset_with_ticket(request: Request, db: CurrentSession, slug: str, vt: str, name: str) -> Response:
+    """制品内相对引用 `assets/x` 在带票 content 下解析到这里，票随路径自动携带。"""
+    return await _serve_asset(request, db, slug, name, vt)
+
+
+async def _serve_asset(request: Request, db: CurrentSession, slug: str, name: str, vt: str | None) -> Response:
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
@@ -528,13 +574,13 @@ def _viewer_shell_html(
     slug: str,
     title: str,
     allow_present: bool,
-    vt_qs: str,
+    content_src: str,
     *,
     form_api_origin: str | None = None,
     form_view_ticket: str | None = None,
 ) -> str:
     t = html.escape(title or '分享')
-    s = html.escape(slug)
+    src = html.escape(content_src, quote=True)
     present = 'true' if allow_present else 'false'
     form_broker = (
         _growth_form_broker_script(
@@ -561,7 +607,7 @@ opacity:0;transition:opacity .2s;pointer-events:none}}
 #bar.show{{opacity:1;pointer-events:auto}}#bar button{{background:transparent;border:1px solid #3f3f46;color:#e5e7eb;
 border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer}}
 </style></head><body>
-<iframe id="frame" sandbox="allow-scripts allow-forms" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
+<iframe id="frame" sandbox="allow-scripts allow-forms" allow="fullscreen" allowfullscreen src="{src}" title="{t}"></iframe>
 <div id="bar"><span>{t}</span><button onclick="fs()">全屏</button></div>
 <script>
 var presentable={present};var bar=document.getElementById('bar');var frame=document.getElementById('frame');var idle;
