@@ -43,7 +43,12 @@ class Site(PublishAppBase):
     status: Mapped[str] = mapped_column(sa.String(16), default='active', comment=STATUS_COMMENT)
     visibility: Mapped[str] = mapped_column(sa.String(16), default='private', comment=VISIBILITY_COMMENT)
     password_hash: Mapped[str | None] = mapped_column(
-        UniversalText, default=None, comment='visibility=password 时存 bcrypt hash（绝不存明文，可空）'
+        UniversalText, default=None, comment='visibility=password 时的 bcrypt hash（访客解锁校验用，可空）'
+    )
+    password_plain: Mapped[str | None] = mapped_column(
+        UniversalText,
+        default=None,
+        comment='visibility=password 时的口令明文（仅 owner/agent 通道可回读，用于主人查看与复制带口令链接；访客面绝不返回，可空）',
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         TimeZone, default=None, comment='过期即拒访（含 unlisted/public，可空）'

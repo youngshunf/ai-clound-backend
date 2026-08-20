@@ -25,6 +25,7 @@ CREATE TABLE "hasn_publish"."site" (
   "status"              varchar(16)    NOT NULL DEFAULT 'active',
   "visibility"          varchar(16)    NOT NULL DEFAULT 'private',
   "password_hash"       text,
+  "password_plain"      text,
   "expires_at"          timestamptz(6),
   "allow_present"       boolean        NOT NULL DEFAULT true,
   "allow_download"      boolean        NOT NULL DEFAULT false,
@@ -54,7 +55,8 @@ COMMENT ON COLUMN "hasn_publish"."site"."platform_project_id" IS '挂靠的平�
 COMMENT ON COLUMN "hasn_publish"."site"."current_revision_id" IS '当前对外版本指针（引用 hasn_publish.revision.id，可空）';
 COMMENT ON COLUMN "hasn_publish"."site"."status" IS '状态 (active:生效:green/revoked:已撤销:gray)';
 COMMENT ON COLUMN "hasn_publish"."site"."visibility" IS '可见性 (private:私有:gray/password:口令:orange/unlisted:不公开:blue/public:公开:green)';
-COMMENT ON COLUMN "hasn_publish"."site"."password_hash" IS 'visibility=password 时存 bcrypt hash（绝不存明文，可空）';
+COMMENT ON COLUMN "hasn_publish"."site"."password_hash" IS 'visibility=password 时的 bcrypt hash（访客解锁校验用，可空）';
+COMMENT ON COLUMN "hasn_publish"."site"."password_plain" IS 'visibility=password 时的口令明文（仅 owner/agent 通道可回读，用于主人查看与复制带口令链接；访客面绝不返回，可空）';
 COMMENT ON COLUMN "hasn_publish"."site"."expires_at" IS '过期即拒访（含 unlisted/public，可空）';
 COMMENT ON COLUMN "hasn_publish"."site"."allow_present" IS '是否允许放映/演讲者模式';
 COMMENT ON COLUMN "hasn_publish"."site"."allow_download" IS '是否允许下载原始制品';

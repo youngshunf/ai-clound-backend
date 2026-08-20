@@ -218,7 +218,12 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def site_to_dict(site: Site) -> dict[str, Any]:
-    """序列化 site（不含 password_hash 等敏感字段）。"""
+    """序列化 site（不含 password_hash；password 明文仅在本 owner/agent 通道回读）。
+
+    `password` 回读是 2026-08-19 产品裁决：分享口令「防访客不防主人」（类比网盘提取码），
+    主人在任一设备可查看口令、复制带口令链接。open/meta/hosting 访客面不经过本函数，
+    明文绝不外露。
+    """
     return {
         'id': site.id,
         'owner_id': site.owner_id,
@@ -233,6 +238,7 @@ def site_to_dict(site: Site) -> dict[str, Any]:
         'status': site.status,
         'visibility': site.visibility,
         'has_password': bool(site.password_hash),
+        'password': site.password_plain if site.visibility == 'password' else None,
         'expires_at': timezone.to_str(site.expires_at) if site.expires_at else None,
         'allow_present': site.allow_present,
         'allow_download': site.allow_download,
@@ -390,6 +396,7 @@ class PublishService:
                 existing.password_hash = (
                     hash_password(password) if visibility == 'password' and password else None
                 )
+                existing.password_plain = password if visibility == 'password' and password else None
                 existing.expires_at = expires_at
                 existing.allow_present = allow_present
                 existing.allow_download = allow_download
@@ -421,6 +428,7 @@ class PublishService:
             status='active',
             visibility=visibility,
             password_hash=hash_password(password) if (visibility == 'password' and password) else None,
+            password_plain=password if (visibility == 'password' and password) else None,
             expires_at=expires_at,
             allow_present=allow_present,
             allow_download=allow_download,
@@ -567,13 +575,16 @@ class PublishService:
             if visibility not in VISIBILITY_ORDER:
                 raise errors.RequestError(msg=f'非法可见性：{visibility}')
             site.visibility = visibility
-            # 不变量 3：离开 password 清空 hash
+            # 不变量 3：离开 password 清空 hash 与明文回读列
             if visibility != 'password':
                 site.password_hash = None
+                site.password_plain = None
         if password:
             site.password_hash = hash_password(password)
+            site.password_plain = password
         elif clear_password and site.visibility != 'password':
             site.password_hash = None
+            site.password_plain = None
         if clear_expires:
             site.expires_at = None
         elif expires_at is not None:
