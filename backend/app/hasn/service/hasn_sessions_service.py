@@ -1174,7 +1174,9 @@ def _projection_card_body(
         'source': {
             'kind': 'task',
             'id': str(task_id or content_json.get('workflow_run_id') or session_id),
-            'display_name': '任务系统',
+            # 产品面统一叫「任务」（与主导航、应用清单同名）；「任务系统」是内部叫法。
+            # 与节点侧 `messaging::work_session_card` 同名——两张卡长相必须一致。
+            'display_name': '任务',
             'verified': True,
         },
         'resource': {
