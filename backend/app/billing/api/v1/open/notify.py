@@ -56,6 +56,28 @@ def _wechat_headers(request: Request) -> dict[str, str]:
     return dict(request.headers)
 
 
+def _wechat_resource(notify_data: Any) -> dict[str, Any]:
+    """取出微信回调里**真正的业务体**。
+
+    ⚠️ `wechatpayv3` 的 `callback()` 返回的是**外层信封**，解密后的业务体被塞进 `resource`：
+
+        data = json.loads(body)                      # {'id','event_type','resource':{密文},...}
+        data.update({'resource': json.loads(result)}) # ← 明文业务体在这里
+        return data
+
+    支付分支曾直接读 `notify_data.get('trade_state')`——顶层没有这个字段，**永远是 None**，
+    于是从不履约；而代码接着照样给微信回 `{"code":"SUCCESS"}`，微信收到成功就**不再重试**。
+    钱付了、订单永远待支付、没有任何告警——这是三个 bug 里最严重的一个，因为它连
+    「靠微信重试自愈」的机会都亲手关掉了。2026-08-21 用真实支付复现。
+
+    退款分支当时是对的（它解了 `resource`），支付与签约两处不是。
+    """
+    if not isinstance(notify_data, dict):
+        return {}
+    resource = notify_data.get('resource')
+    return resource if isinstance(resource, dict) else notify_data
+
+
 @router.post(
     '/notify/{channel_id}',
     summary='统一支付回调',
@@ -92,19 +114,30 @@ async def unified_pay_notify(
             log.info(f'微信支付回调 channel={channel_id}: {raw_data[:500]}')
             headers = _wechat_headers(request)
             notify_data = client.verify_callback(headers, raw_data)
+            resource = _wechat_resource(notify_data)
 
-            trade_state = notify_data.get('trade_state')
+            trade_state = resource.get('trade_state')
             if trade_state == 'SUCCESS':
-                order_no = notify_data['out_trade_no']
-                channel_order_no = notify_data['transaction_id']
-                pay_amount = notify_data['amount']['total']
-                channel_user_id = notify_data.get('payer', {}).get('openid')
+                order_no = resource['out_trade_no']
+                channel_order_no = resource['transaction_id']
+                pay_amount = resource['amount']['total']
+                channel_user_id = (resource.get('payer') or {}).get('openid')
                 await pay_order_service.handle_pay_notify(
                     db=db, order_no=order_no, channel_order_no=channel_order_no,
                     pay_amount=pay_amount, channel_code=code,
                     channel_user_id=channel_user_id, raw_data=raw_data,
                 )
-            return PlainTextResponse('{"code":"SUCCESS","message":"成功"}', status_code=200)
+                return PlainTextResponse('{"code":"SUCCESS","message":"成功"}', status_code=200)
+
+            # **没真正处理就绝不回 SUCCESS**：回 SUCCESS 等于告诉微信「收到了」，
+            # 它立刻停止重试，这笔钱就永久落在地上且无人知道。回 FAIL 让它继续按
+            # 15s/15s/30s/3m/10m… 重试，给我们修复并自愈的窗口。
+            log.error(
+                f'微信支付回调未能识别为成功支付，拒收以触发重试: channel={channel_id} '
+                f'event_type={notify_data.get("event_type")} trade_state={trade_state} '
+                f'out_trade_no={resource.get("out_trade_no")}'
+            )
+            return PlainTextResponse('{"code":"FAIL","message":"回调未识别为成功支付"}', status_code=500)
 
         if code.startswith('alipay'):
             form_data = await request.form()
@@ -253,16 +286,24 @@ async def unified_contract_notify(
             raw_data = body.decode('utf-8')
             headers = _wechat_headers(request)
             notify_data = client.verify_callback(headers, raw_data)
-            change_type = notify_data.get('change_type')
+            # 与支付分支同一个坑：change_type 也在解密后的 resource 里，不在顶层。
+            resource = _wechat_resource(notify_data)
+            change_type = resource.get('change_type')
             if change_type == 'ADD':
-                contract_no = notify_data.get('out_contract_code')
-                channel_contract_id = notify_data.get('contract_id')
+                contract_no = resource.get('out_contract_code')
+                channel_contract_id = resource.get('contract_id')
                 if contract_no and channel_contract_id:
                     await pay_contract_service.handle_sign_notify(db=db, contract_no=contract_no, channel_contract_id=channel_contract_id)
             elif change_type == 'DELETE':
-                contract_no = notify_data.get('out_contract_code')
+                contract_no = resource.get('out_contract_code')
                 if contract_no:
                     await pay_contract_service.handle_unsign_notify(db=db, contract_no=contract_no)
+            else:
+                log.error(
+                    f'微信签约回调未识别 change_type，拒收以触发重试: channel={channel_id} '
+                    f'event_type={notify_data.get("event_type")} change_type={change_type}'
+                )
+                return PlainTextResponse('{"code":"FAIL","message":"签约回调未识别"}', status_code=500)
             return PlainTextResponse('{"code":"SUCCESS","message":"成功"}', status_code=200)
 
         if code.startswith('alipay'):

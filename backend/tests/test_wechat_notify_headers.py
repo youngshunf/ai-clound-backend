@@ -101,3 +101,47 @@ def test_guard_is_falsifiable(absent: str) -> None:
     assert not any(m in headers for m in _SIGNATURE_TYPE_MARKS), (
         '构造的「缺头」场景里签名类型仍然存在，说明这条自检没有真的把它拿掉'
     )
+
+
+# ── 回调业务体的嵌套（同批事故的第二、三个 bug）────────────────────────────
+
+from backend.app.billing.api.v1.open.notify import _wechat_resource  # noqa: E402
+
+#: wechatpayv3 `callback()` 的真实返回形状：外层信封 + 解密后塞进 resource 的业务体。
+_CALLBACK_RETURN = {
+    'id': '7ac98897-3219-5de1-b754-6cd98d82a544',
+    'create_time': '2026-08-21T20:27:28+08:00',
+    'event_type': 'TRANSACTION.SUCCESS',
+    'resource_type': 'encrypt-resource',
+    'summary': '支付成功',
+    'resource': {
+        'out_trade_no': 'HX17873152338160379',
+        'transaction_id': '4200002xxx',
+        'trade_state': 'SUCCESS',
+        'amount': {'total': 1, 'currency': 'CNY'},
+        'payer': {'openid': 'oXXXX'},
+    },
+}
+
+
+def test_business_fields_are_read_from_resource_not_top_level() -> None:
+    """交易字段在解密后的 `resource` 里，顶层没有。
+
+    读顶层会永远拿到 None → 从不履约，而代码还照样回 SUCCESS 让微信停止重试。
+    这是本批事故里最严重的一个：它把「靠重试自愈」的机会也关掉了。
+    """
+    assert _CALLBACK_RETURN.get('trade_state') is None, '顶层本就没有 trade_state，这是前提'
+
+    resource = _wechat_resource(_CALLBACK_RETURN)
+    assert resource['trade_state'] == 'SUCCESS'
+    assert resource['out_trade_no'] == 'HX17873152338160379'
+    assert resource['amount']['total'] == 1
+    assert resource['payer']['openid'] == 'oXXXX'
+
+
+def test_resource_absent_falls_back_to_the_envelope() -> None:
+    """没有 resource 时退回信封本身，不抛异常——解析失败不该变成 500 风暴。"""
+    flat = {'trade_state': 'SUCCESS', 'out_trade_no': 'HX1'}
+    assert _wechat_resource(flat)['out_trade_no'] == 'HX1'
+    assert _wechat_resource(None) == {}
+    assert _wechat_resource({'resource': 'not-a-dict'})['resource'] == 'not-a-dict'
