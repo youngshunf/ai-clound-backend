@@ -60,11 +60,21 @@ class CreditUsagePage(BaseModel):
 
 
 class CreditDailyItem(BaseModel):
-    """积分流水「按日聚合」项（按 Asia/Shanghai 本地日）"""
+    """积分流水「按日聚合」项（按 Asia/Shanghai 本地日）。
+
+    **四类额度变动各自成列，展示层必须分行渲染，不要相加。** 它们金额可以互相抵消，
+    合并成一个数之后主人就看不出当天到底发生了什么：生产实测 2026-08-21 那天
+    同时有「免费档发 100 / 升级清零 91.68 / 轻享版发 500 / 积分包 +200 / 消耗 45.53」，
+    旧口径只显示一个绿色的「+154.47」，消耗和清零全被吃掉了。
+    """
     date: str = Field(description='日期 YYYY-MM-DD（Asia/Shanghai 本地日）')
-    consumed: Decimal = Field(description='当日消耗合计（≤0）')
-    granted: Decimal = Field(description='当日入账合计（≥0）')
-    net: Decimal = Field(description='当日净变动')
+    consumed: Decimal = Field(description='当日 LLM 消耗合计（≤0）')
+    subscription_granted: Decimal = Field(default=Decimal(0), description='当日订阅周期额度发放（≥0）')
+    subscription_revoked: Decimal = Field(default=Decimal(0), description='当日订阅额度清零/回收（≤0，如升级换档）')
+    pack_granted: Decimal = Field(default=Decimal(0), description='当日永久积分入账（≥0：买积分包/赠送/活动）')
+    pack_revoked: Decimal = Field(default=Decimal(0), description='当日永久积分回收（≤0：退款）')
+    granted: Decimal = Field(description='当日入账合计（订阅 + 积分包，≥0）')
+    net: Decimal = Field(description='当日净变动（四类变动 + 消耗）')
     count: int = Field(description='当日流水笔数')
     request_count: int = Field(default=0, description='当日 LLM 请求次数（usage 交易笔数）')
     token_count: int = Field(default=0, description='当日消耗 token 数（usage 交易 input+output 累加）')

@@ -126,21 +126,35 @@ class CreditUsageService:
                 log.warning(f'[CreditUsage] 日聚合读取失败 user_id={user_id}: {exc}')
                 usage_status = USAGE_STATUS_UNAVAILABLE
 
-        granted_by_day = await CreditUsageService._granted_by_day(db, user_id, app_code)
+        movements_by_day = await CreditUsageService._movements_by_day(db, user_id, app_code)
 
         merged: dict[str, dict[str, Any]] = {}
-        for day in set(consumed_by_day) | set(granted_by_day):
+        for day in set(consumed_by_day) | set(movements_by_day):
             consumed_row = consumed_by_day.get(day) or {}
             # NewAPI 的消耗是正数；展示口径用负数表示「花掉了」。
             consumed = -Decimal(str(consumed_row.get('consumed_credits') or 0))
-            granted = granted_by_day.get(day, Decimal(0))
+            movements = movements_by_day.get(day) or {}
+            subscription_granted = movements.get('subscription_granted', Decimal(0))
+            subscription_revoked = movements.get('subscription_revoked', Decimal(0))
+            pack_granted = movements.get('pack_granted', Decimal(0))
+            pack_revoked = movements.get('pack_revoked', Decimal(0))
             request_count = int(consumed_row.get('request_count') or 0)
+            # 变动笔数 = 请求数 + 当天真实发生过的额度变动种类数（0 的桶不算一笔）。
+            movement_count = sum(1 for v in movements.values() if v)
             merged[day] = {
                 'date': day,
                 'consumed': consumed,
-                'granted': granted,
-                'net': granted + consumed,
-                'count': request_count + (1 if granted else 0),
+                # 四个来源各自成列，展示层分行渲染；**不要在这里合并**，
+                # 合并正是「+154.47 掩盖了消耗与清零」的成因。
+                'subscription_granted': subscription_granted,
+                'subscription_revoked': subscription_revoked,
+                'pack_granted': pack_granted,
+                'pack_revoked': pack_revoked,
+                # `granted` 是入账合计（订阅 + 积分包），保留给只想要一个总数的调用方。
+                'granted': subscription_granted + pack_granted,
+                # `net` 现在是**全部四类 + 消耗**的真实净额；旧口径只算了钱包那一路。
+                'net': subscription_granted + subscription_revoked + pack_granted + pack_revoked + consumed,
+                'count': request_count + movement_count,
                 'request_count': request_count,
                 'token_count': int(consumed_row.get('token_count') or 0),
             }
@@ -159,12 +173,30 @@ class CreditUsageService:
         }
 
     @staticmethod
-    async def _granted_by_day(db: AsyncSession, user_id: int, app_code: str) -> dict[str, Decimal]:
-        """从履约事件里取「按本地日的入账合计」。
+    async def _movements_by_day(db: AsyncSession, user_id: int, app_code: str) -> dict[str, dict[str, Decimal]]:
+        """从履约事件里取「按本地日、**按来源分开**的额度变动」。
 
-        只统计**已成功**的钱包发放/回收：pending 的命令还没到账，把它算进流水
-        等于告诉用户钱已经到了。
+        为什么必须分开：这几件事金额可以互相抵消，合并成一个数之后主人就再也看不出
+        当天到底发生了什么。生产实测 2026-08-21 那一天同时有五件事——免费档发 100、
+        升级把旧池未用完的 91.68 清零、轻享版发 500、两笔积分包各 100、LLM 消耗 45.53——
+        旧口径把它们压成一个绿色的「+154.47」，既看不见消耗也看不见清零。
+
+        四个桶各自对应一种真实动作，**永远不在这里相加**：
+
+        - ``subscription_granted``  订阅周期额度发放（``subscription_activate``）
+        - ``subscription_revoked``  订阅额度清零/回收（``subscription_expire``，如升级换档）
+        - ``pack_granted``          永久积分入账（``wallet_grant``：买积分包、赠送、活动）
+        - ``pack_revoked``          永久积分回收（``wallet_revoke``：退款）
+
+        只统计**已成功**的命令：pending 的还没到账，算进流水等于告诉主人钱已经到了。
         """
+        #: 事件类型 → (桶名, 符号)。回收类记负数，展示层直接渲染即可。
+        buckets: dict[str, tuple[str, int]] = {
+            'subscription_activate': ('subscription_granted', 1),
+            'subscription_expire': ('subscription_revoked', -1),
+            'wallet_grant': ('pack_granted', 1),
+            'wallet_revoke': ('pack_revoked', -1),
+        }
         rows = (
             await db.execute(
                 select(CreditGrantEvent.delivered_at, CreditGrantEvent.event_type, CreditGrantEvent.applied_credits)
@@ -172,21 +204,23 @@ class CreditUsageService:
                     CreditGrantEvent.user_id == user_id,
                     CreditGrantEvent.app_code == app_code,
                     CreditGrantEvent.status == 'succeeded',
-                    CreditGrantEvent.event_type.in_(('wallet_grant', 'wallet_revoke')),
+                    CreditGrantEvent.event_type.in_(tuple(buckets)),
                     CreditGrantEvent.applied_credits.is_not(None),
                 )
             )
         ).all()
 
-        acc: dict[str, Decimal] = {}
+        acc: dict[str, dict[str, Decimal]] = {}
         for delivered_at, event_type, applied_credits in rows:
             if delivered_at is None or applied_credits is None:
                 continue
+            bucket = buckets.get(str(event_type))
+            if bucket is None:
+                continue
+            name, sign = bucket
             day = CreditUsageService._local_day(delivered_at)
-            amount = Decimal(str(applied_credits))
-            if event_type == 'wallet_revoke':
-                amount = -amount
-            acc[day] = acc.get(day, Decimal(0)) + amount
+            slot = acc.setdefault(day, {})
+            slot[name] = slot.get(name, Decimal(0)) + Decimal(str(applied_credits)) * sign
         return acc
 
     @staticmethod
