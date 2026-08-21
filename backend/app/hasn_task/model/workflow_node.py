@@ -39,6 +39,12 @@ class HasnWorkflowNode(HasnTaskAppBase):
     system_prompt: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='节点系统提示词')
     apps: Mapped[list] = mapped_column(postgresql.JSONB(), default_factory=list, comment='默认应用绑定 [app_id...]')
     skills: Mapped[list] = mapped_column(postgresql.JSONB(), default_factory=list, comment='默认技能绑定 [skill...]')
+    # 技能包与单技能是两个正交集合（运行时 RuntimeSkillRequirements.bundles / .skills 分别消费）。
+    # 此前只有 skills 列：建图入参与 task 投影行都带着 skill_bundle_ids，唯独专属表没有落点，
+    # 而读侧优先读本表 → 技能包在下发给 daemon 的 graph_snapshot 里被整段丢掉。
+    skill_bundle_ids: Mapped[list] = mapped_column(
+        postgresql.JSONB(), default_factory=list, comment='默认技能包绑定 [bundle_slug...]'
+    )
     enabled_toolsets: Mapped[list | None] = mapped_column(
         postgresql.JSONB(), default=None, comment='限制工具集（NULL=全部；继承 task 语义，派发时取授权交集）'
     )

@@ -285,6 +285,7 @@ class WorkflowService:
                     system_prompt=node.system_prompt,
                     apps=node.apps,
                     skills=node.skills,
+                    skill_bundle_ids=node.skill_bundle_ids,
                     enabled_toolsets=node.enabled_toolsets,
                     # doc35 B1：这三个曾被硬编码成空值，把模板声明的应用绑定/起点标记/产出闸
                     # 在实例化时整段丢掉；节点表列一直在，只是从没被写进去过。
@@ -339,6 +340,7 @@ class WorkflowService:
                     'is_origin': n.is_origin,
                     'apps': n.apps,
                     'skills': n.skills,
+                    'skill_bundle_ids': n.skill_bundle_ids,
                     'enabled_toolsets': n.enabled_toolsets,
                     'output_spec': n.output_spec,
                     'review_policy': n.review_policy,
@@ -362,6 +364,7 @@ class WorkflowService:
                     'is_origin': False,
                     'apps': [],
                     'skills': [],
+                    'skill_bundle_ids': [],
                     'enabled_toolsets': None,
                     'output_spec': None,
                     'review_policy': None,

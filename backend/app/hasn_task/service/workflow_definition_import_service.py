@@ -35,6 +35,8 @@ def _node_snapshot(node: dict[str, Any]) -> dict[str, Any]:
         'review_policy': node.get('review_policy'),
         'apps': node.get('apps') if isinstance(node.get('apps'), list) else [],
         'skills': node.get('skills') if isinstance(node.get('skills'), list) else [],
+        # 技能包与单技能分列参与幂等指纹：漏了它，「只改技能包」的模板改版会被判成定义未变而跳过重导。
+        'skill_bundle_ids': node.get('skill_bundle_ids') if isinstance(node.get('skill_bundle_ids'), list) else [],
         'is_origin': bool(node.get('is_origin', False)),
     }
 

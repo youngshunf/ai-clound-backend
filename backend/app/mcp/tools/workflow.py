@@ -315,7 +315,7 @@ _GRAPH_SPEC_SCHEMA = {
     'type': 'object',
     'description': (
         '图蓝图 {nodes:[...], edges:[...]}。node：node_key(唯一)/name/node_kind(origin|agent)/'
-        'is_origin(bool)/description/default_agent_type/apps[]/skills[]/prompt/system_prompt/'
+        'is_origin(bool)/description/default_agent_type/apps[]/skills[]/skill_bundle_ids[]/prompt/system_prompt/'
         'output_spec{required,label?,expects:[...]}（expects 每条二选一：应用资源写 resource_kind '
         '如 knowledge.base/deck.presentation，非应用资源写 artifact_kind∈document|image|video|voice|file；'
         '多条之间是「或」。写错即报错，不静默放行）/'
