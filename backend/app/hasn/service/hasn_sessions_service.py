@@ -1167,9 +1167,11 @@ def _projection_card_body(
 
     return {
         'schema_version': 'hasn.card/0.1',
-        # 没有人类可读标题时不要把 session_id 塞进标题（「工作会话「sess_01KYRBY…」已完成」），
+        # 标题里统一叫「任务」（与 source.display_name、主导航同口径）；「工作会话」是内部叫法，
+        # 不对主人露出，与节点侧 `messaging::work_session_card` 保持同一份措辞。
+        # 没有人类可读标题时不要把 session_id 塞进标题（「任务「sess_01KYRBY…」已完成」），
         # 那是内部 ULID，主人看不懂也用不上——直接落通用文案。
-        'title': f'工作会话「{title}」已完成' if title else '任务已完成',
+        'title': f'任务「{title}」已完成' if title else '任务已完成',
         'description': content_json.get('summary') or '工作会话已完成。',
         'source': {
             'kind': 'task',

@@ -191,7 +191,7 @@ def test_undeclared_app_falls_back_to_generic_task_card(monkeypatch: pytest.Monk
         'dedupe_key': 'work_session_result:sess_u:final',
     }
     card = _projection_card_body(session_id='sess_u', title='未知应用任务', content_json=content_json)
-    assert card['title'] == '工作会话「未知应用任务」已完成'
+    assert card['title'] == '任务「未知应用任务」已完成'
     assert card['resource']['type'] == 'task_session'
     assert card['resource']['app_id'] == 'tasks'
 
@@ -207,7 +207,7 @@ def test_non_app_session_falls_back_to_generic_task_card() -> None:
         'dedupe_key': 'work_session_result:sess_t:final',
     }
     card = _projection_card_body(session_id='sess_t', title='普通任务', content_json=content_json)
-    assert card['title'] == '工作会话「普通任务」已完成'
+    assert card['title'] == '任务「普通任务」已完成'
     assert card['resource']['type'] == 'task_session'
 
 
@@ -312,5 +312,5 @@ def test_plan_unmatched_ref_type_falls_back_to_generic() -> None:
             'dedupe_key': f'work_session_result:{origin_ref}:final',
         }
         card = _projection_card_body(session_id='sess_o', title='了解你', content_json=content_json)
-        assert card['title'] == '工作会话「了解你」已完成', origin_ref
+        assert card['title'] == '任务「了解你」已完成', origin_ref
         assert card['resource']['type'] == 'task_session', origin_ref

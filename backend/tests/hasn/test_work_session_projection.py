@@ -456,7 +456,7 @@ def test_projection_uses_node_built_card_verbatim() -> None:
 
     card = _plain_card_body(node_card=node_card)
 
-    # 标题/正文/字段一字不改地透传，云端不得用自己那套「工作会话「…」已完成」覆盖。
+    # 标题/正文/字段一字不改地透传，云端不得用自己那套「任务「…」已完成」覆盖。
     assert card['title'] == '任务未完成'
     assert card['description'] == '分身这次没能完成任务，请稍后再试一次。'
     assert card['fields'] == node_card['fields']
@@ -466,7 +466,7 @@ def test_projection_falls_back_when_node_card_is_invalid() -> None:
     """节点卡片体不合规时不拖垮整条投影：回落云端自建卡，主人照样收得到回执。"""
     card = _plain_card_body(node_card={'schema_version': 'hasn.card/0.1'})  # 缺 title/source
 
-    assert card['title'] == '工作会话「周报汇总」已完成'
+    assert card['title'] == '任务「周报汇总」已完成'
     # 回落的是云端自建卡（真实数据），不是任何形式的占位假卡。
     assert {'label': '状态', 'value': '成功'} in card['fields']
 
@@ -547,7 +547,7 @@ def test_projection_without_server_id_never_places_local_id_in_uri() -> None:
         deck_server_id=None,
     )
 
-    assert content['title'] == '工作会话「唤星融资路演 · 生成」已完成'
+    assert content['title'] == '任务「唤星融资路演 · 生成」已完成'
     assert content['resource']['type'] == 'task_session'
     assert local_deck_id not in content['resource']['uri']
     assert local_deck_id not in content['primary_action']['uri']

@@ -194,7 +194,7 @@ async def test_projection_rollback_commit_relay_and_dedupe(pg_context) -> None:
         ).mappings().one()
         assert message['conversation_seq'] == 1
         assert message['origin_session_id'] == session_id
-        assert message['content']['title'] == '工作会话「生成客户跟进建议」已完成'
+        assert message['content']['title'] == '任务「生成客户跟进建议」已完成'
         assert message['content']['primary_action']['uri'] == (
             'hasn://tasks/sessions/session-outbox'
         )

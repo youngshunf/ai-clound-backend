@@ -49,7 +49,7 @@ def _community_post_card(**overrides):
 def _task_card(**overrides):
     body = {
         'schema_version': 'hasn.card/0.1',
-        'title': '工作会话「生成日报」已完成',
+        'title': '任务「生成日报」已完成',
         'description': '已生成客户优先级和跟进建议。',
         'source': {
             'kind': 'task',
