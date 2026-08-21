@@ -18,11 +18,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.billing.crud.crud_user_subscription import user_subscription_dao
 from backend.app.billing.model import UserSubscription
 from backend.app.billing.service import offering_pricing
+from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES
 from backend.app.billing.service.credit_account_service import CREDIT_STATUS_OK
 from backend.common.exception import errors
 from backend.common.log import log
@@ -149,8 +150,8 @@ class CreditService:
         :param app_code: 应用标识
         :return: 用户订阅
         """
-        # 查询用户订阅
-        subscription = await user_subscription_dao.select_model_by_column(db, user_id=user_id, app_code=app_code)
+        # 取**此刻生效的**那份，不是物理第一行——升级报价按它算折抵，拿错档位会报错价。
+        subscription = await self._current_contract(db, user_id, app_code)
 
         if subscription:
             return subscription
@@ -272,6 +273,44 @@ class CreditService:
             'status': 'active',
         }
 
+    @staticmethod
+    async def _current_contract(db: AsyncSession, user_id: int, app_code: str) -> UserSubscription | None:
+        """挑出**此刻生效的**那份合同，而不是「碰巧排在第一条」的那份。
+
+        ⚠️ 这里原先用 `user_subscription_dao.select_model_by_column(user_id=…, app_code=…)`，
+        它既不过滤状态也不排序，返回的是数据库物理顺序的第一行。用户只有一份合同时看不出问题，
+        **一旦升过档就必错**：升级会把旧合同置 expired 并新建一份 active，而第一行是那份旧的，
+        于是页面显示「免费版 · 已过期」，而用户实际持有一份生效中的轻享版。
+
+        2026-08-21 用真实支付升级到轻享版时暴露。此前不可能发现——微信回调一直是坏的
+        （见 `open/notify.py`），没有任何用户成功升过档，也就从来没有第二份合同。
+
+        取数规则：先取生效中的（含「取消自动续费但仍在有效期」），同档多份取最新那份；
+        一份生效的都没有时退回最近一份，好让页面仍能显示「上一次的档位 + 已过期」。
+        """
+        current = (
+            await db.execute(
+                select(UserSubscription)
+                .where(
+                    UserSubscription.app_code == app_code,
+                    UserSubscription.user_id == user_id,
+                    UserSubscription.status.in_(CURRENT_CONTRACT_STATUSES),
+                )
+                .order_by(UserSubscription.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if current is not None:
+            return current
+        return (
+            await db.execute(
+                select(UserSubscription)
+                .where(UserSubscription.app_code == app_code, UserSubscription.user_id == user_id)
+                .order_by(UserSubscription.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
     async def get_user_credits_info(
         self,
         db: AsyncSession,
@@ -291,7 +330,7 @@ class CreditService:
         :param app_code: 应用标识
         :return: 积分信息
         """
-        subscription = await user_subscription_dao.select_model_by_column(db, user_id=user_id, app_code=app_code)
+        subscription = await self._current_contract(db, user_id, app_code)
         if not isinstance(subscription, UserSubscription):
             return await self._free_default_info(db, user_id, app_code)
 

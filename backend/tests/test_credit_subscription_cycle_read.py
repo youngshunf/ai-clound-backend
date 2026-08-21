@@ -94,9 +94,6 @@ def _patch(monkeypatch, *, contract: Any, account: dict[str, Any], daily_consume
     import backend.app.billing.service.credit_account_service as account_module
     import backend.app.billing.service.credit_service as service_module
 
-    class _Dao:
-        async def select_model_by_column(self, db, **kwargs):  # noqa: ANN001
-            return contract
 
     class _Accounts:
         async def get_account(self, db, user_id, app_code='huanxing'):  # noqa: ANN001
@@ -117,7 +114,11 @@ def _patch(monkeypatch, *, contract: Any, account: dict[str, Any], daily_consume
             return _Tier()
 
     usage = _Usage()
-    monkeypatch.setattr(service_module, 'user_subscription_dao', _Dao())
+    # 选行接缝在 `_current_contract`（它按「此刻生效」挑合同，不是物理第一行）
+    async def _current(self, db, user_id, app_code):  # noqa: ANN001
+        return contract
+
+    monkeypatch.setattr(service_module.CreditService, '_current_contract', _current)
     monkeypatch.setattr(service_module, 'offering_pricing', _Pricing())
     monkeypatch.setattr(service_module.timezone, 'now', lambda: _NOW)
     monkeypatch.setattr(account_module, 'credit_account_service', _Accounts())
@@ -222,3 +223,94 @@ async def test_unparsable_authority_field_is_treated_as_missing(monkeypatch) -> 
 
     assert info['monthly_remaining'] is None
     assert info['monthly_credits'] == 0.0
+
+
+# ── 选行：升过档之后必须取「此刻生效的」那份，不是物理第一行 ──────────────
+
+class _Row:
+    """`_current_contract` 只按 status / id 挑行，这里给它一个最小替身。"""
+
+    def __init__(self, row_id: int, tier: str, status: str) -> None:
+        self.id = row_id
+        self.tier = tier
+        self.status = status
+
+
+class _FakeResult:
+    def __init__(self, row: Any) -> None:
+        self._row = row
+
+    def scalar_one_or_none(self) -> Any:
+        return self._row
+
+
+class _FakeDb:
+    """忠实模拟 `where … order_by … limit 1`：**过滤和排序方向都要照做**。
+
+    ⚠️ 这个假库最初无论如何都返回 `max(id)`，于是「去掉 order_by」这种变异根本
+    影响不到它——测试看起来在守选行，实际只守了「有没有过滤」。真 bug 恰恰是
+    「没有排序、拿物理第一行」，那一半没被守住。现在按 SQL 里的 DESC/ASC 取首行。
+    """
+
+    def __init__(self, rows: list[_Row]) -> None:
+        self.rows = rows
+
+    async def execute(self, stmt: Any) -> _FakeResult:
+        sql = ' '.join(str(stmt).split())
+        candidates = list(self.rows)
+        if 'status IN' in sql:
+            candidates = [r for r in candidates if r.status in ('active', 'cancel_at_period_end')]
+        descending = 'DESC' in sql.upper()
+        candidates.sort(key=lambda r: r.id, reverse=descending)
+        return _FakeResult(candidates[0] if candidates else None)
+
+
+async def test_current_contract_prefers_the_active_one_after_an_upgrade() -> None:
+    """升级会留下「旧 free 已终止 + 新 lite 生效」两行，必须取后者。
+
+    2026-08-21 真实支付升级到轻享版时暴露：旧写法用不带排序/过滤的通用 DAO，
+    取到物理第一行（那份已 expired 的 free），页面显示「免费版 · 已过期」，
+    而用户实际持有一份生效中的轻享版。此前不可能发现——微信回调一直是坏的，
+    没有任何用户成功升过档，也就从来没有第二份合同。
+    """
+    db = _FakeDb([_Row(4, 'free', 'expired'), _Row(9, 'lite', 'active')])
+
+    picked = await credit_service._current_contract(db, 116, 'huanxing')
+
+    assert picked is not None
+    assert picked.tier == 'lite'
+    assert picked.status == 'active'
+
+
+async def test_current_contract_falls_back_to_latest_when_none_active() -> None:
+    """一份生效的都没有时退回最近一份，页面仍能显示「上次的档位 + 已过期」，而不是空白。"""
+    db = _FakeDb([_Row(4, 'free', 'expired'), _Row(9, 'lite', 'expired')])
+
+    picked = await credit_service._current_contract(db, 116, 'huanxing')
+
+    assert picked is not None
+    assert picked.tier == 'lite', '退回的是最近一份，不是最老那份'
+
+
+async def test_cancel_at_period_end_still_counts_as_current() -> None:
+    """取消自动续费的合同仍在有效期内，必须算作「此刻生效」。"""
+    db = _FakeDb([_Row(4, 'free', 'expired'), _Row(9, 'lite', 'cancel_at_period_end')])
+
+    picked = await credit_service._current_contract(db, 116, 'huanxing')
+
+    assert picked is not None and picked.tier == 'lite'
+
+
+async def test_scheduled_future_contract_must_not_shadow_the_active_one() -> None:
+    """降级会排一份**尚未生效**的 scheduled 合同，它的 id 比当前生效那份更大。
+
+    只按 id 倒序而不过滤状态，就会取到那份还没开始的合同，页面提前显示降级后的档位——
+    而用户这一期的钱已经付过、额度还该按原档算。状态过滤就是为这种情形存在的，
+    这条用例专门守它（去掉 `status IN (...)` 即红）。
+    """
+    db = _FakeDb([_Row(9, 'pro', 'active'), _Row(12, 'lite', 'scheduled')])
+
+    picked = await credit_service._current_contract(db, 116, 'huanxing')
+
+    assert picked is not None
+    assert picked.tier == 'pro', 'scheduled 合同尚未生效，不得顶替当前生效的那份'
