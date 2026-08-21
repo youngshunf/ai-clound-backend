@@ -40,7 +40,9 @@ async def agent_get_usage(
         'current_credits': info['current_credits'],
         'used_credits': info['used_credits'],
         'monthly_credits': info['monthly_credits'],
-        'monthly_remaining': info.get('monthly_remaining', 0),
+        # 周期剩余读不到时如实为 null（不补 0）：分身据此措辞时，
+        # 「不知道还剩多少」和「一点都不剩了」是两句完全不同的话。
+        'monthly_remaining': info['monthly_remaining'],
         'purchased_credits': info.get('purchased_credits', 0),
-        'bonus_remaining': info.get('bonus_remaining', 0),
+        'bonus_remaining': info['bonus_remaining'],
     })

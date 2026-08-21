@@ -184,8 +184,10 @@ async def get_my_subscription_info(
         used_credits=Decimal(str(info['used_credits'])),
         cycle_consumed_credits=Decimal(str(info.get('cycle_consumed_credits', 0))),
         purchased_credits=Decimal(str(info['purchased_credits'])),
-        monthly_remaining=Decimal(str(info.get('monthly_remaining', 0))),
-        bonus_remaining=Decimal(str(info.get('bonus_remaining', 0))),
+        # 这两个可为空：读不到权威周期时如实留空。**不要在这里补 0**——
+        # 展示层会把它渲染成「套餐额度 0」，那是一句假话而不是一个缺失值。
+        monthly_remaining=Decimal(str(info['monthly_remaining'])) if info.get('monthly_remaining') is not None else None,
+        bonus_remaining=Decimal(str(info['bonus_remaining'])) if info.get('bonus_remaining') is not None else None,
         billing_cycle_start=datetime.fromisoformat(info['billing_cycle_start']),
         billing_cycle_end=datetime.fromisoformat(info['billing_cycle_end']),
         subscription_start_date=datetime.fromisoformat(info['subscription_start_date']) if info.get('subscription_start_date') else None,

@@ -81,6 +81,11 @@ class CreditGrantService:
             )
         ).scalar_one_or_none()
         if existing is not None:
+            # 已有合同**不等于**已经履约。doc94 之前建的免费合同没有
+            # `external_subscription_id`，也从未进过 outbox；而这里过去无条件
+            # `return existing`，于是那批合同此生都拿不到 NewAPI 侧的订阅池——
+            # 合同上写着「每 30 天 100 积分」，权威侧一个订阅都没有。
+            await CreditGrantService.backfill_free_contract_fulfillment(db, existing, app_code=app_code)
             return existing
 
         # doc94 D1：档位配置的唯一事实源是商品目录 billing_plan，不再读 subscription_tier。
@@ -173,6 +178,89 @@ class CreditGrantService:
         )
         log.info(f'[CreditGrant] 免费合同已建立: user_id={user_id} contract_no={contract_no} epoch={epoch}')
         return contract
+
+    @staticmethod
+    async def backfill_free_contract_fulfillment(
+        db: AsyncSession, contract: UserSubscription, *, app_code: str
+    ) -> bool:
+        """给「doc94 之前建的、从未履约过」的免费合同补一次履约登记。返回是否补了。
+
+        判据只有一个：**合同没有 `external_subscription_id`**。那是合同与 NewAPI 侧
+        订阅池之间唯一的连接键，它为空就说明这份合同从未被投递过——不能靠
+        `fulfillment_status` 判，那一列是 2026-07-25 加列时给存量行落的 DEFAULT
+        `'not_required'`，含义是「加列那天没人回填」，不是「确认无需履约」。
+
+        幂等由 `IdempotencyKeys.free_activate(user_id, policy_version, epoch)` 保证，
+        与正常建合同走同一个键空间：重复调用只会撞上同一个键，不会发第二份额度。
+        """
+        if contract.tier != 'free':
+            return False
+        if (contract.external_subscription_id or '').strip():
+            return False
+
+        tier = await offering_pricing.get_tier(db, 'free')
+        if tier is None or tier.credits_per_cycle <= 0:
+            log.warning(f'[CreditGrant] 免费档配置缺失，跳过存量合同回填: user_id={contract.user_id}')
+            return False
+
+        # **先解析映射再改合同**：解析不到时必须一个字段都没动过就退出。
+        # 反过来（先写字段、enqueue 失败再吞掉异常）会留下一份「已标 pending、
+        # 有 external_subscription_id、但 outbox 里没有对应命令」的合同——
+        # 它既不会被投递，也不会再被本方法认领（判据正是那个键为空），永久卡死。
+        from backend.app.newapi.crud import llm_newapi_user_mapping_dao
+
+        mapping = await llm_newapi_user_mapping_dao.get_by_user(db, contract.user_id, app_code)
+        if not mapping or not mapping.newapi_user_id:
+            # 尚未开通 NewAPI 账户：这是「还不能履约」，不是「不该履约」。
+            # 保持原状，等 sweep 下一轮或开户完成后再来。
+            log.warning(f'[CreditGrant] 尚无 NewAPI 映射，暂不回填存量免费合同: user_id={contract.user_id}')
+            return False
+
+        now = timezone.now()
+        contract_no = (contract.contract_no or '').strip() or f'HXF{uuid.uuid4().hex[:20].upper()}'
+        policy_version = int(contract.free_policy_version or settings.FREE_TIER_POLICY_VERSION)
+        epoch = int(contract.free_grant_epoch or 1)
+
+        contract.contract_no = contract_no
+        contract.external_subscription_id = contract_no
+        contract.free_policy_version = policy_version
+        contract.free_grant_epoch = epoch
+        contract.fulfillment_status = 'pending'
+        # 存量行的 cycle_seconds 可能为空；周期长度是履约命令的必填项，NewAPI 侧
+        # 会校验它必须恰好等于 CycleSecondsFixed。
+        if not contract.cycle_seconds:
+            contract.cycle_seconds = CYCLE_SECONDS
+        if contract.contract_start_at is None:
+            contract.contract_start_at = contract.subscription_start_date or now
+        contract.monthly_credits = tier.credits_per_cycle
+
+        await credit_grant_event_service.enqueue(
+            db,
+            event_type=EVENT_SUBSCRIPTION_ACTIVATE,
+            idempotency_key=IdempotencyKeys.free_activate(contract.user_id, policy_version, epoch),
+            user_id=contract.user_id,
+            newapi_user_id=int(mapping.newapi_user_id),
+            app_code=app_code,
+            credit_amount=tier.credits_per_cycle,
+            subscription_id=contract.id,
+            contract_no=contract_no,
+            payload_extra={
+                'external_subscription_id': contract_no,
+                # 起点用合同锚点而不是「此刻」：周期边界应当延续这份合同本来的节奏，
+                # 用回填当天当起点会让所有存量用户的重置日挤在同一天。
+                'start_at': _rfc3339(contract.contract_start_at or now),
+                'end_at': None,
+                'cycle_seconds': int(contract.cycle_seconds or CYCLE_SECONDS),
+                'cycle_count': None,
+                'wallet_overflow': True,
+                'reason': 'free_tier_backfill',
+            },
+        )
+        log.info(
+            f'[CreditGrant] 存量免费合同补履约登记: user_id={contract.user_id} '
+            f'contract_no={contract_no} policy_version={policy_version} epoch={epoch}'
+        )
+        return True
 
     @staticmethod
     async def revoke_free_contract(db: AsyncSession, *, user_id: int, app_code: str = 'huanxing') -> None:

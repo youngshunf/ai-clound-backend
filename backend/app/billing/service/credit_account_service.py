@@ -80,6 +80,10 @@ class CreditAccountService:
                     'cycle_used_credits': item.get('cycle_used_credits'),
                     'cycle_remaining_credits': item.get('cycle_remaining_credits'),
                     'cycle_start_at': item.get('cycle_start_at'),
+                    # next_reset_at 才是「本期额度何时清零」。cycle_end_at 是**合同终止时刻**，
+                    # 免费合同为 null、付费合同给的是合同末日——拿它当周期终点用，
+                    # 正是「重置日永远显示不出来 / 显示成一个早已过去的日子」的成因。
+                    'next_reset_at': item.get('next_reset_at'),
                     'cycle_end_at': item.get('cycle_end_at'),
                 }
             )

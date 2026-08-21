@@ -45,6 +45,13 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）
         'schedule': TzAwareCrontab('20', '2'),
     },
+    '存量免费合同补履约': {
+        'task': 'free_contract_fulfillment_backfill',
+        # 每天凌晨 2:25。doc94 之前建的免费合同从未投递给 NewAPI（external_subscription_id 为空），
+        # 那批用户合同上写着「每 30 天 100 积分」而权威侧一个订阅池都没有。
+        # 排在「履约 outbox 投递」之前，补的命令当轮即可投出；补齐后本任务自然空转。
+        'schedule': TzAwareCrontab('25', '2'),
+    },
     '履约 outbox 投递': {
         'task': 'credit_outbox_dispatch',
         # 每分钟投递一轮待履约命令。云端事务只写命令，真正调用 NewAPI 在这里；

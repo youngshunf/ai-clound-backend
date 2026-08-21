@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from celery import shared_task
 from sqlalchemy import and_, select, update
+from sqlalchemy import or_ as sa_or
 
 from backend.app.billing.model import UserSubscription
 from backend.app.newapi.apikey.enums import ApiKeyStatus
@@ -344,6 +345,62 @@ async def billing_lifecycle_sweep() -> str:
         f'变更 owner {r["affected_owners"]} 个'
     )
     log.info(f'[BillingSweep] {result_msg}')
+    return result_msg
+
+
+async def run_free_contract_fulfillment_backfill(limit: int = 200) -> dict[str, int]:
+    """把「doc94 之前建的、从未履约过」的免费合同补登记进 outbox。
+
+    存量用户不会再走一次开通流程，所以光靠 `ensure_free_contract` 的回填分支够不着
+    他们——那个分支只在有人调开通时才有机会跑。判据是
+    `external_subscription_id` 为空：那是合同与 NewAPI 订阅池之间唯一的连接键。
+
+    幂等由 `IdempotencyKeys.free_activate` 保证，重复跑不会发第二份额度；
+    因此这支任务可以安全地反复执行，也可以由运维手动触发一次。
+    """
+    from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES
+    from backend.app.billing.service.credit_grant_service import credit_grant_service
+
+    scanned = 0
+    backfilled = 0
+
+    async with async_db_session.begin() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(UserSubscription)
+                    .where(
+                        UserSubscription.tier == 'free',
+                        UserSubscription.status.in_(CURRENT_CONTRACT_STATUSES),
+                        # 空串与 NULL 都算「从未投递」：加列时落 DEFAULT 的那批是空串。
+                        sa_or(
+                            UserSubscription.external_subscription_id.is_(None),
+                            UserSubscription.external_subscription_id == '',
+                        ),
+                    )
+                    .order_by(UserSubscription.id)
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for contract in rows:
+            scanned += 1
+            app_code = getattr(contract, 'app_code', 'huanxing') or 'huanxing'
+            if await credit_grant_service.backfill_free_contract_fulfillment(db, contract, app_code=app_code):
+                backfilled += 1
+
+    return {'scanned': scanned, 'backfilled': backfilled}
+
+
+@shared_task(name='free_contract_fulfillment_backfill')
+async def free_contract_fulfillment_backfill() -> str:
+    """存量免费合同补履约（每日一次；全部补齐后自然空转）。"""
+    r = await run_free_contract_fulfillment_backfill()
+    result_msg = f'存量免费合同补履约完成: 扫描 {r["scanned"]} 份, 补登记 {r["backfilled"]} 份'
+    if r['scanned']:
+        log.info(f'[FreeBackfill] {result_msg}')
     return result_msg
 
 
