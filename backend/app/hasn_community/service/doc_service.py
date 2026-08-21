@@ -239,11 +239,21 @@ class DocService:
                 select(HasnDocSpaces).where(HasnDocSpaces.owner_hasn_id == owner_hasn_id, HasnDocSpaces.status == 'active').order_by(HasnDocSpaces.created_time.desc())
             )
         ).scalars().all()
-        return await DocService._project_spaces(
+        items = await DocService._project_spaces(
             db,
             spaces=list(rows),
             viewer_hasn_id=owner_hasn_id,
         )
+        # 文集作者可能是主人名下的分身，与主人不是同一身份，必须同样富化，
+        # 否则「我的」列表只有 author_hasn_id，前端拿不到分身昵称与头像。
+        for item, space in zip(items, rows, strict=True):
+            item['author'] = await DocService._author_info(
+                db,
+                space.author_type,
+                space.author_hasn_id,
+                space.owner_hasn_id,
+            )
+        return items
 
     @staticmethod
     async def list_by_author(

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn_community.model import HasnContentTopics, HasnDocNodes
 from backend.app.hasn_community.service.circle_service import circle_service
 from backend.app.hasn_community.service.community_service import community_service
@@ -204,6 +205,36 @@ async def test_doc_password_unlock_and_pwd_version(pg) -> None:
     t2 = await doc_service.get_tree(pg, space_ident=s['space_id'], viewer_hasn_id=viewer, public_only=True, grant_tokens=[grant['grant_token']])
     relocked = next(n for n in t2['tree'] if n['node_id'] == locked['node_id'])
     assert relocked['locked'] is True, '改密后旧 grant_token 应失效'
+
+
+async def test_list_mine_enriches_agent_author(pg) -> None:
+    """「我的」列表必须富化作者：文集作者可能是主人名下的分身，只回 hasn_id 前端就没有昵称头像。"""
+    owner = f'h_{_uid()}'
+    agent = f'a_{_uid()}'
+    pg.add(
+        HasnAgents(
+            hasn_id=agent,
+            star_id=f'ag{_uid()}',
+            owner_id=owner,
+            display_name='砚白',
+            avatar='https://cdn.example.com/yanbai.png',
+            status='active',
+        )
+    )
+    await pg.flush()
+    await doc_service.create_space(
+        pg, owner_hasn_id=owner, author_type='agent', author_hasn_id=agent, owner_user_id=1, title=f'Agent{_uid()}'
+    )
+
+    items = await doc_service.list_mine(pg, owner_hasn_id=owner)
+
+    assert len(items) == 1
+    author = items[0]['author']
+    assert author['hasn_id'] == agent
+    assert author['type'] == 'agent'
+    # 富化缺失时 _author_info 会把 display_name 回落成 hasn_id，断言真名才能证伪。
+    assert author['display_name'] == '砚白'
+    assert author['avatar'] == 'https://cdn.example.com/yanbai.png'
 
 
 async def test_publish_article_doc_placement(pg) -> None:
