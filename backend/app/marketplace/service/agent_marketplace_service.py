@@ -369,7 +369,41 @@ class AgentMarketplaceService:
         )
         if selected is not None:
             item.update(self._template_version_payload(selected, kind=kind))
+            if kind == 'skill_pack':
+                item.update(await self._skill_pack_runtime_authority(db, selected))
         return item
+
+    @staticmethod
+    async def _skill_pack_runtime_authority(
+        db: AsyncSession,
+        version: MarketplaceTemplateVersion,
+    ) -> dict[str, Any]:
+        """补齐 Runtime 物化技能包所需的权威字段：definition 原文 + 成员固定版本快照。
+
+        Runtime（hermes embedded provision）拿到本响应后要做三件事，缺一即 fail-closed：
+        ① 读 ``hermes_yaml`` 作为权威 definition——缺了直接报
+           ``runtime_skill_materialize_failed / 缺少权威 definition``；
+        ② 用 ``sha256(hermes_yaml)`` 与 ``content_hash`` 对账，防止 definition 被中途换掉；
+        ③ 按 ``member_skills`` 的 ``(skill_id, version, content_hash)`` 逐个物化成员技能，
+           并与 definition 里解析出的成员列表交叉核对，两边不一致即拒绝。
+
+        此前这两个字段只在 ``_template_version_payload`` 内部被用来算 hash 与成员 id，
+        **没有回到响应体里**，于是任何「分身没常驻安装、需按 package_id+version 现取」的
+        技能包都会在 Runtime 侧卡住。分身已安装的包因为命中 Agent Profile 的 skill_bundles
+        缓存、根本不走这条路，所以这个缺口长期没有被触发。
+        """
+        hermes_yaml = version.hermes_yaml or ''
+        if not hermes_yaml:
+            return {}
+        member_ids = skill_pack_service.member_skill_ids(hermes_yaml)
+        return {
+            'hermes_yaml': hermes_yaml,
+            'member_skills': await skill_pack_service.resolve_member_skill_snapshots(
+                db,
+                member_ids,
+                getattr(version, 'skill_dependencies_versioned', None),
+            ),
+        }
 
     async def _resolve_skill(
         self,

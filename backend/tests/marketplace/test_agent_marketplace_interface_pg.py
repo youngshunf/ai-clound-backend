@@ -152,6 +152,15 @@ async def _seed_template(
 ) -> str:
     template_id = f'{namespace}/{slug}'
     digest = f"sha256:{hashlib.sha256(f'{template_id}@1.0.0'.encode()).hexdigest()}"
+    # 技能包的成员必须是**真实存在**的技能：读取固定版本时要把成员解析成
+    # `skill_id + version + content_hash` 快照交给 Runtime，成员查不到即整体 404
+    # （fail-closed，见 skill_pack_service.resolve_member_skill_snapshots）。
+    # 此前 fixture 写死引用了从未 seed 的 `huanxing/example`，只因当时端点不解析成员才没暴露。
+    member_skill_id = (
+        await _seed_skill(session, namespace=namespace, slug=f'member-{slug}')
+        if template_type == 'skill_pack'
+        else None
+    )
     session.add(
         MarketplaceTemplate(
             template_id=template_id,
@@ -177,7 +186,7 @@ async def _seed_template(
             bundle_slug=slug if template_type == 'skill_pack' else None,
             command_key=f'/{slug}' if template_type == 'skill_pack' else None,
             hermes_yaml=(
-                f'name: {slug}\ndescription: 测试技能包\nskills:\n  - huanxing/example\n'
+                f'name: {slug}\ndescription: 测试技能包\nskills:\n  - {member_skill_id}\n'
                 if template_type == 'skill_pack'
                 else None
             ),
@@ -323,9 +332,24 @@ async def test_templates_and_skill_packs_are_independent_first_class_queries(cli
     assert package.status_code == 200, package.text
     assert package.json()['data']['package_id'] == package_id
     assert package.json()['data']['version'] == '1.0.0'
+    member_skill_id = f'huanxing-{tag}/member-pack-{tag}'
     expected_definition = (
-        f'name: pack-{tag}\ndescription: 测试技能包\nskills:\n  - huanxing/example\n'
+        f'name: pack-{tag}\ndescription: 测试技能包\nskills:\n  - {member_skill_id}\n'
     )
     assert package.json()['data']['content_hash'] == (
         f'sha256:{hashlib.sha256(expected_definition.encode()).hexdigest()}'
+    )
+    # Runtime 物化技能包要靠这两个字段：hermes_yaml 是权威 definition、member_skills 是成员
+    # 固定版本快照。缺任一个，分身派发就死在「技能准备失败 / 缺少权威 definition」
+    # （2026-08-21 真机派发实测，website-publishing 首次走「未常驻安装、按版本现取」这条路时暴露）。
+    payload = package.json()['data']
+    assert payload['hermes_yaml'] == expected_definition, '缺 definition 原文 → Runtime 无法物化'
+    assert payload['content_hash'] == f'sha256:{hashlib.sha256(payload["hermes_yaml"].encode()).hexdigest()}', (
+        'content_hash 必须是 hermes_yaml 的指纹，Runtime 会用它对账'
+    )
+    assert [member['skill_id'] for member in payload['member_skills']] == [member_skill_id], (
+        '成员快照要与 definition 里解析出的成员一致，Runtime 两边交叉核对'
+    )
+    assert all(member.get('version') and member.get('content_hash') for member in payload['member_skills']), (
+        '每个成员都要带固定版本与摘要，否则 Runtime 无法逐个物化'
     )
