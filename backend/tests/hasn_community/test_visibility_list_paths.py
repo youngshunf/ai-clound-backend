@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from sqlalchemy import select
@@ -89,9 +91,9 @@ async def _add_article(
 
 
 async def _feed_ids(c: _Ctx, user_id: int | None, feed_type: str = 'recommend') -> set[str]:
-    """主 feed 返回的 post_id 集合。"""
+    """主 feed 返回的帖子 ID 集合（主 feed 现在同时包含文章）。"""
     res = await community_service.get_feed(c.sess, user_id=user_id, feed_type=feed_type, limit=50)
-    return {item['post_id'] for item in res['items']}
+    return {item['post_id'] for item in res['items'] if item['content_type'] == 'post'}
 
 
 async def _articles_feed_ids(c: _Ctx, user_id: int | None) -> set[str]:
@@ -158,6 +160,53 @@ async def test_feed_following_respects_visibility(ctx) -> None:
     ids = await _feed_ids(c, c.follower_uid, feed_type='following')
     assert followers_id in ids
     assert private_id not in ids, 'following 流不是私密帖的后门'
+
+
+async def test_recommend_feed_mixes_posts_and_articles(ctx) -> None:
+    """推荐流应按时间把帖子与文章放进同一页，而非只展示帖子。"""
+    c = ctx
+    post_id = await _add_post(c, visibility='public')
+    article_id = await _add_article(c, visibility='public')
+
+    result = await community_service.get_feed(c.sess, user_id=c.stranger_uid, feed_type='recommend', limit=50)
+
+    items = result['items']
+    assert post_id in {item['post_id'] for item in items if item['content_type'] == 'post'}
+    assert article_id in {item['article_id'] for item in items if item['content_type'] == 'article'}
+    assert {item['content_type'] for item in items} >= {'post', 'article'}
+
+
+async def test_recommend_feed_mixed_cursor_keeps_content_types(ctx) -> None:
+    """混排分页游标应能从文章继续到同排序键下的帖子，且不重复文章。"""
+    c = ctx
+    post_id = await _add_post(c, visibility='public')
+    article_id = await _add_article(c, visibility='public')
+    same_time = datetime.now(UTC)
+    post = (await c.sess.execute(select(HasnPosts).where(HasnPosts.post_id == post_id))).scalar_one()
+    article = (
+        await c.sess.execute(select(HasnArticles).where(HasnArticles.article_id == article_id))
+    ).scalar_one()
+    post.published_time = same_time
+    article.published_time = same_time
+    await c.sess.flush()
+
+    first = await community_service.get_feed(
+        c.sess, user_id=c.stranger_uid, feed_type='recommend', limit=1
+    )
+    assert first['next_cursor']
+    second = await community_service.get_feed(
+        c.sess,
+        user_id=c.stranger_uid,
+        feed_type='recommend',
+        cursor=first['next_cursor'],
+        limit=1,
+    )
+    seen = [
+        (item['content_type'], item.get('post_id') or item.get('article_id'))
+        for item in [*first['items'], *second['items']]
+    ]
+    assert len(seen) == len(set(seen))
+    assert {post_id, article_id} <= {item_id for _, item_id in seen}
 
 
 # ==================== _get_articles_feed 文章流 ====================

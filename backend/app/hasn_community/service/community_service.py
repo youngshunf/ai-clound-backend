@@ -297,26 +297,27 @@ class CommunityService:
         cursor: str | None = None,
         limit: int = 20,
         exclude_unsearchable_authors: bool = False,
+        include_articles: bool = True,
     ) -> dict[str, Any]:
         """
         获取社区信息流
 
         - following：仅当前用户关注对象的内容（JOIN hasn_follows）；未登录返回空
-        - recommend/articles：按 published_time 倒序
+        - recommend/following/articles：按 published_time 倒序；前两者帖子与文章混排
         - hot：按 like_count 倒序
         - tag：可叠加在任意 feed_type 上，仅返回 tags 数组包含该话题的内容（标签流）
-        - q：关键词搜索，命中帖子正文（ILIKE，可叠加在任意 feed_type 上）
+        - q：关键词搜索，命中帖子正文或文章标题/摘要/正文（ILIKE，可叠加在任意 feed_type 上）
         - 可见性：published 之外还必须过 visibility 判据（public/followers/private/circle），
           私密与 followers 帖不会漏给无权 viewer，匿名只剩 public——判据与详情/翻译接口同一份。
-        - 游标分页：keyset（按排序键 + post_id），返回真实 next_cursor
+        - 游标分页：keyset（按排序键 + 内容类型 + 内容 ID），返回真实 next_cursor
         - is_liked/is_collected：批量回填当前 viewer 的互动态
 
         :param db: 数据库会话
         :param user_id: 用户 ID（open scope 可为 None）
         :param feed_type: 信息流类型（following/recommend/hot/articles）
         :param tag: 话题标签过滤（可选，命中 tags 数组包含该 tag 的内容）
-        :param q: 关键词（可选，帖子正文 ILIKE 模糊匹配）
-        :param cursor: 分页游标（格式 "{排序值}|{post_id}"）
+        :param q: 关键词（可选，帖子正文或文章标题/摘要/正文 ILIKE 模糊匹配）
+        :param cursor: 分页游标（混排格式 "{排序值}|{content_type}:{content_id}"）
         :param limit: 每页条数
         :return: 信息流数据 {items, next_cursor}
         """
@@ -332,6 +333,20 @@ class CommunityService:
                 q=q,
                 cursor=cursor,
                 limit=limit,
+            )
+
+        # 发现页的推荐/关注/热门统一返回帖子与文章，按同一排序键混排。
+        # 搜索帖子分组显式关闭该行为，继续复用下面的帖子专用查询。
+        if include_articles:
+            return await CommunityService._get_mixed_feed(
+                db,
+                viewer_hasn_id=viewer_hasn_id,
+                feed_type=feed_type,
+                tag=tag,
+                q=q,
+                cursor=cursor,
+                limit=limit,
+                exclude_unsearchable_authors=exclude_unsearchable_authors,
             )
 
         stmt = (
@@ -459,6 +474,196 @@ class CommunityService:
         }
 
     @staticmethod
+    async def _get_mixed_feed(
+        db: AsyncSession,
+        *,
+        viewer_hasn_id: str | None,
+        feed_type: str,
+        tag: str | None,
+        q: str | None,
+        cursor: str | None,
+        limit: int,
+        exclude_unsearchable_authors: bool = False,
+    ) -> dict[str, Any]:
+        """查询并合并帖子与文章，供发现页的默认信息流使用。
+
+        两张表保持各自的可见性与索引条件，查询结果在服务层按同一排序键合并；
+        游标携带最后一条内容的类型与 ID，避免帖子和文章 ID 相同导致分页跳项。
+        """
+        is_hot = feed_type == 'hot'
+        following_ids = None
+        if feed_type == 'following':
+            if not viewer_hasn_id:
+                return {'items': [], 'next_cursor': None}
+            following_ids = select(HasnFollows.target_hasn_id).where(
+                HasnFollows.follower_hasn_id == viewer_hasn_id
+            )
+
+        cursor_value: str | None = None
+        cursor_id: str | None = None
+        if cursor:
+            try:
+                cursor_value, cursor_ref = cursor.split('|', 1)
+                if ':' in cursor_ref:
+                    cursor_type, cursor_id = cursor_ref.split(':', 1)
+                else:
+                    cursor_type, cursor_id = None, cursor_ref
+            except ValueError:
+                cursor_value = cursor_id = cursor_type = None
+        else:
+            cursor_type = None
+
+        post_stmt = select(HasnPosts).where(
+            HasnPosts.status == 'published',
+            HasnPosts.circle_id.is_(None),
+            content_visibility_sql(HasnPosts, viewer_hasn_id=viewer_hasn_id),
+        )
+        article_stmt = select(HasnArticles).where(
+            HasnArticles.status == 'published',
+            HasnArticles.circle_id.is_(None),
+            content_visibility_sql(HasnArticles, viewer_hasn_id=viewer_hasn_id),
+        )
+        if following_ids is not None:
+            post_stmt = post_stmt.where(HasnPosts.author_hasn_id.in_(following_ids))
+            article_stmt = article_stmt.where(HasnArticles.author_hasn_id.in_(following_ids))
+        if tag:
+            post_stmt = post_stmt.where(any_(HasnPosts.tags) == tag)
+            article_stmt = article_stmt.where(any_(HasnArticles.tags) == tag)
+        if q and q.strip():
+            keyword = f'%{q.strip()}%'
+            post_stmt = post_stmt.where(HasnPosts.content.ilike(keyword))
+            article_stmt = article_stmt.where(
+                or_(
+                    HasnArticles.title.ilike(keyword),
+                    HasnArticles.summary.ilike(keyword),
+                    HasnArticles.content.ilike(keyword),
+                )
+            )
+        post_stmt = CommunityService._apply_visibility_filters(
+            post_stmt,
+            content_model=HasnPosts,
+            viewer_hasn_id=viewer_hasn_id,
+            exclude_unsearchable_authors=exclude_unsearchable_authors,
+        )
+        article_stmt = CommunityService._apply_visibility_filters(
+            article_stmt,
+            content_model=HasnArticles,
+            viewer_hasn_id=viewer_hasn_id,
+            exclude_unsearchable_authors=exclude_unsearchable_authors,
+        )
+
+        if cursor_value is not None:
+            try:
+                if is_hot:
+                    sort_value = int(cursor_value)
+                    post_before = HasnPosts.like_count < sort_value
+                    article_before = HasnArticles.like_count < sort_value
+                    post_same = HasnPosts.like_count == sort_value
+                    article_same = HasnArticles.like_count == sort_value
+                else:
+                    sort_value = datetime.fromisoformat(cursor_value)
+                    post_before = HasnPosts.published_time < sort_value
+                    article_before = HasnArticles.published_time < sort_value
+                    post_same = HasnPosts.published_time == sort_value
+                    article_same = HasnArticles.published_time == sort_value
+
+                # 排序键为 (sort_value DESC, content_rank DESC, id DESC)，文章的
+                # content_rank 高于帖子。游标必须先按类型优先级裁剪，再比较同类型 ID。
+                if cursor_type == 'article':
+                    post_stmt = post_stmt.where(or_(post_before, post_same))
+                    article_stmt = article_stmt.where(
+                        or_(article_before, and_(article_same, HasnArticles.article_id < (cursor_id or '')))
+                    )
+                elif cursor_type == 'post':
+                    post_stmt = post_stmt.where(
+                        or_(post_before, and_(post_same, HasnPosts.post_id < (cursor_id or '')))
+                    )
+                    article_stmt = article_stmt.where(article_before)
+                else:
+                    # 兼容旧版不带类型的游标：两侧按各自 ID 继续，后续响应会
+                    # 自动返回新格式游标。
+                    post_stmt = post_stmt.where(
+                        or_(post_before, and_(post_same, HasnPosts.post_id < (cursor_id or '')))
+                    )
+                    article_stmt = article_stmt.where(
+                        or_(article_before, and_(article_same, HasnArticles.article_id < (cursor_id or '')))
+                    )
+            except ValueError:
+                pass
+
+        if is_hot:
+            post_stmt = post_stmt.order_by(HasnPosts.like_count.desc(), HasnPosts.post_id.desc())
+            article_stmt = article_stmt.order_by(HasnArticles.like_count.desc(), HasnArticles.article_id.desc())
+        else:
+            post_stmt = post_stmt.order_by(HasnPosts.published_time.desc(), HasnPosts.post_id.desc())
+            article_stmt = article_stmt.order_by(HasnArticles.published_time.desc(), HasnArticles.article_id.desc())
+        posts = list((await db.execute(post_stmt.limit(limit + 1))).scalars().all())
+        articles = list((await db.execute(article_stmt.limit(limit + 1))).scalars().all())
+
+        post_liked, post_collected = await CommunityService._batch_reactions(
+            db, viewer_hasn_id, 'post', [post.post_id for post in posts]
+        )
+        article_liked, article_collected = await CommunityService._batch_reactions(
+            db, viewer_hasn_id, 'article', [article.article_id for article in articles]
+        )
+
+        def sort_key(item: dict[str, Any]) -> tuple[Any, int, str]:
+            value = item['like_count'] if is_hot else item['published_time']
+            if not is_hot and value:
+                value = datetime.fromisoformat(value).timestamp()
+            content_rank = 1 if item['content_type'] == 'article' else 0
+            item_id = item['post_id'] if item['content_type'] == 'post' else item['article_id']
+            return value or 0, content_rank, item_id
+
+        items: list[dict[str, Any]] = []
+        for post in posts:
+            items.append({
+                'content_type': 'post',
+                'post_id': post.post_id,
+                'origin_workspace': {'kind': post.origin_workspace_kind, 'id': post.origin_workspace_id},
+                'author': {'hasn_id': post.author_hasn_id, 'type': post.author_type},
+                'content': post.content,
+                'tags': post.tags or [],
+                'media': _present_media(post.media_json),
+                'reference_cards': _present_reference_cards(post.reference_cards, viewer_hasn_id),
+                'like_count': post.like_count,
+                'comment_count': post.comment_count,
+                'published_time': post.published_time.isoformat() if post.published_time else None,
+                'is_liked': post.post_id in post_liked,
+                'is_collected': post.post_id in post_collected,
+            })
+        for article in articles:
+            items.append({
+                'content_type': 'article',
+                'article_id': article.article_id,
+                'author': {'hasn_id': article.author_hasn_id, 'type': article.author_type},
+                'title': article.title,
+                'summary': effective_summary(article.summary, article.content),
+                'cover_url': article.cover_url,
+                'tags': article.tags or [],
+                'reference_cards': _present_reference_cards(article.reference_cards, viewer_hasn_id),
+                'like_count': article.like_count,
+                'comment_count': article.comment_count,
+                'read_time_min': article.read_time_min,
+                'published_time': article.published_time.isoformat() if article.published_time else None,
+                'is_liked': article.article_id in article_liked,
+                'is_collected': article.article_id in article_collected,
+            })
+
+        items.sort(key=sort_key, reverse=True)
+        has_more = len(items) > limit
+        items = items[:limit]
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            last_id = last['post_id'] if last['content_type'] == 'post' else last['article_id']
+            last_sort = last['like_count'] if is_hot else last['published_time']
+            if last_sort is not None:
+                next_cursor = f'{last_sort}|{last["content_type"]}:{last_id}'
+        await CommunityService._enrich_authors(db, [item['author'] for item in items])
+        return {'items': items, 'next_cursor': next_cursor}
+
+    @staticmethod
     async def search(
         db: AsyncSession,
         *,
@@ -490,7 +695,7 @@ class CommunityService:
             )
         return await CommunityService.get_feed(
             db, user_id=user_id, feed_type='recommend', tag=tag, q=q, cursor=cursor, limit=limit,
-            exclude_unsearchable_authors=True,
+            exclude_unsearchable_authors=True, include_articles=False,
         )
 
     @staticmethod
