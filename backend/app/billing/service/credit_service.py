@@ -102,6 +102,36 @@ def _rolled_forward_cycle(subscription: UserSubscription, now: datetime) -> tupl
     return cycle_start, cycle_start + period
 
 
+def _resolve_cycle_window(
+    subscription: UserSubscription,
+    authoritative: dict[str, Any] | None,
+    now: datetime,
+) -> tuple[datetime, datetime]:
+    """定出「当前这一期」的起止：权威优先，缺什么补什么，但**两端必须同源**。
+
+    三种组合，中间那种是升级窗口里真实会出现的：
+
+    1. 权威给了起点也给了重置时刻 → 直接用，最准；
+    2. **权威给了起点但没给重置时刻**——NewAPI 尚未升级到带 `next_reset_at` 的版本，
+       或该订阅已到合同末期不再重置。此时按权威起点 + 期长推出终点，
+       **不能拿合同锚点滚出来的终点去配权威的起点**：两端来自不同锚点，
+       会给出「起点 8/17、终点 9/13」这种对不齐的窗口；
+    3. 权威侧没有订阅池 → 整段按合同锚点滚动推进。
+    """
+    rolled_start, rolled_end = _rolled_forward_cycle(subscription, now)
+    if authoritative is None:
+        return rolled_start, rolled_end
+
+    start = authoritative['start']
+    reset_at = authoritative['reset_at']
+    if start is None:
+        return rolled_start, reset_at or rolled_end
+    if reset_at is None:
+        cycle_seconds = int(getattr(subscription, 'cycle_seconds', 0) or 0) or _FALLBACK_CYCLE_SECONDS
+        return start, start + timedelta(seconds=cycle_seconds)
+    return start, reset_at
+
+
 class CreditService:
     """订阅合同读服务。**不持有任何余额原语**（doc94 D1）。"""
 
@@ -287,11 +317,7 @@ class CreditService:
         # 而那两列建合同时写一次之后无人推进（`_refresh_billing_cycle` 全仓零调用），
         # 于是「X 月 X 日重置」永久定格在建号后 30 天。
         authoritative = self._authoritative_cycle(account)
-        rolled_start, rolled_end = _rolled_forward_cycle(subscription, now)
-        billing_cycle_start = (authoritative['start'] if authoritative and authoritative['start'] else None) or rolled_start
-        billing_cycle_end = (
-            authoritative['reset_at'] if authoritative and authoritative['reset_at'] else None
-        ) or rolled_end
+        billing_cycle_start, billing_cycle_end = _resolve_cycle_window(subscription, authoritative, now)
 
         # ===== 本周期已用 =====
         # 权威侧有订阅池时，直接用它的 cycle_used_credits：那是**同一本账**里的

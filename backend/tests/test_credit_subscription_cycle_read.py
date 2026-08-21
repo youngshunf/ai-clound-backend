@@ -162,6 +162,24 @@ async def test_cycle_window_never_stays_in_the_past_without_authority(monkeypatc
     assert usage.window[0] == cycle_start
 
 
+async def test_window_stays_self_consistent_when_authority_omits_next_reset(monkeypatch) -> None:
+    """升级窗口：NewAPI 还是旧版（不发 next_reset_at）时，终点必须从**权威起点**推出。
+
+    否则会拿合同锚点滚出来的终点去配权威的起点，得到「起点 8/17、终点 9/13」
+    这种两端不同源、对不齐的窗口。
+    """
+    stale = _authoritative_subscription()
+    del stale['next_reset_at']
+    _patch(monkeypatch, contract=_Contract(), account=_account([stale]))
+
+    info = await credit_service.get_user_credits_info(TEST_DB, 116)
+
+    cycle_start = datetime.fromisoformat(info['billing_cycle_start'])
+    cycle_end = datetime.fromisoformat(info['billing_cycle_end'])
+    assert cycle_start.isoformat().startswith('2026-08-17'), '起点仍取权威'
+    assert cycle_end - cycle_start == timedelta(days=30), '终点从权威起点推出，两端同源'
+
+
 async def test_no_authoritative_pool_reports_zero_quota_not_the_contract_number(monkeypatch) -> None:
     """权威侧一个订阅都没有时，周期额度是 0，不是合同列上那个没有执行力的 100。
 
