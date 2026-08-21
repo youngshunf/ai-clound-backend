@@ -1,9 +1,12 @@
 """通用网页发布与分享 公开查看面 /s/{slug}（模块 18，P3）。
 
-> 整个 /s/* 落独立分享域名（usercontent 模式，[04] §5）：API 主域 cookie 在该域不可见。
-> /content 响应恒带 `Content-Security-Policy: sandbox allow-scripts allow-forms`——直开导航也被沙箱；
->   资源指令用**显式 host-source**（opaque origin 下 'self' 永不匹配，会拦死制品自己的 assets）。
-> connect-src 'none' 阻断数据外联（打包期已收敛外链，[02]）。
+> 外壳（/s/{slug}）与**制品内容**（/content、/assets/*）分属两个域：制品落 usercontent 隔离域
+>   （`WEB_PUBLISH_CONTENT_ORIGIN`），该域上没有登录态、没有 /api/ 反代（nginx 只反代 /s/*）。
+> 制品带 `allow-same-origin`（localStorage/IndexedDB 需要它）**当且仅当它真的跨域**——判据是实际
+>   origin 不同，不是配置项非空，见 `_content_is_isolated`。同域时退回 opaque origin，否则制品能读
+>   该域 cookie、读外壳注入的 view ticket、并同源调 /api/。
+> 资源指令用**显式 host-source**；`connect-src https:` 放开外部 API（客户端动态站的前提），
+>   `form-action 'none'` 仍锁死直接表单外发。
 
 鉴权（[03] §3）：
   slug 不存在/已删/已撤销 → 404/410（不存在 slug 的探测按 IP 限速）
@@ -68,24 +71,72 @@ async def _rate_limited(key: str, *, window: int, limit: int) -> bool:
 
 
 def _share_origin(request: Request) -> str:
-    """分享域名 origin：配置优先，否则回退请求 origin（dev/同域）。"""
+    """外壳（查看器 /s/{slug}）所在 origin：配置优先，否则回退请求 origin（dev/同域）。"""
     configured = (settings.WEB_PUBLISH_SHARE_ORIGIN or '').rstrip('/')
     if configured:
         return configured
     return f'{request.url.scheme}://{request.headers.get("host", request.url.netloc)}'
 
 
-def _content_csp(origin: str) -> str:
-    """/content 的 CSP：允许受控 submit 事件，仍以 opaque origin、form-action 与断外联约束。"""
+def _content_origin(request: Request) -> str:
+    """制品内容域 origin（usercontent 隔离域）；未配置则回退外壳 origin。"""
+    configured = (settings.WEB_PUBLISH_CONTENT_ORIGIN or '').rstrip('/')
+    if configured:
+        return configured
+    return _share_origin(request)
+
+
+def _request_origin(request: Request) -> str:
+    """访客**实际**打到的 origin。经 nginx 反代时 `request.url.scheme` 恒为 http，
+    必须以 `X-Forwarded-Proto` 为准，否则 https 请求会被算成 http 而与配置值比不上。
+    """
+    proto = request.headers.get('x-forwarded-proto') or request.url.scheme
+    host = request.headers.get('host') or request.url.netloc
+    return f'{proto}://{host}'
+
+
+def _content_is_isolated(request: Request) -> bool:
+    """制品是否真的落在独立内容域上——决定能不能安全地给 allow-same-origin。
+
+    判据是**这一次请求实际打在哪个域**，不是两个配置项的比较，也不是「配置项非空」。
+    浏览器判同源看的是制品实际被加载的 origin：只要 /content 仍能从 API 主域访问到
+    （旧分享链接、官网旧构建、直连 8020 探活都会这样），那一次访问里的制品就**真的**
+    在 API 主域上——此时若照配置发 allow-same-origin，制品立刻能读该域 cookie 并同源
+    调 /api/。所以必须逐请求判定，同域一律退回 opaque origin。
+    """
+    configured = (settings.WEB_PUBLISH_CONTENT_ORIGIN or '').rstrip('/')
+    if not configured:
+        return False
+    return configured == _request_origin(request) and configured != _share_origin(request)
+
+
+def _content_csp(origin: str, *, isolated: bool) -> str:
+    """/content 的 CSP。
+
+    `isolated=True`（制品在独立 usercontent 域）时给 `allow-same-origin`：制品拿到真实
+    origin，localStorage / sessionStorage / IndexedDB / cookie 才能用——没有它，浏览器对
+    这些 API 一律抛 SecurityError（2026-08-20 实测）。因为该域上没有登录态、没有 /api/、
+    也不承载外壳注入的 view ticket，同源能读到的只有制品自己那点东西。
+    ⚠️ 同域时**绝不能**给：那等于把外壳的 token 和主域 cookie 一起交出去。
+
+    `connect-src`：放开到 https:，制品可以调外部公开 API（天气/汇率/地图等）——这是
+    「客户端动态站」的必要条件。代价是制品也能把数据发出去；制品由主人自己的分身产出、
+    主人对发布内容负责，接受这个代价。form-action 仍锁死，不允许直接表单外发。
+    """
+    sandbox = (
+        'sandbox allow-scripts allow-forms allow-same-origin; '
+        if isolated
+        else 'sandbox allow-scripts allow-forms; '
+    )
     return (
-        'sandbox allow-scripts allow-forms; '
+        f'{sandbox}'
         "default-src 'none'; "
-        f'img-src {origin} data: blob:; '
+        f'img-src {origin} data: blob: https:; '
         f"style-src {origin} 'unsafe-inline'; "
-        f'font-src {origin} data:; '
-        f'media-src {origin} data: blob:; '
+        f'font-src {origin} data: https:; '
+        f'media-src {origin} data: blob: https:; '
         f"script-src {origin} 'unsafe-inline'; "
-        "connect-src 'none'; "
+        'connect-src https:; '
         "base-uri 'none'; "
         "form-action 'none'"
     )
@@ -179,15 +230,17 @@ async def viewer_shell(
         raise RuntimeError('分享授权成功但站点实体缺失')
     await publish_service.increment_view_count(db, site_id=site.id)
     origin = _share_origin(request)
+    content_origin = _content_origin(request)
     # 查看器外壳是本服务生成的**可信** HTML（title 经 html.escape，无用户脚本注入面）：
     # 必须允许它**自身的内联 style/script**，否则 `#frame{width/height:100%}` 等内联样式被 CSP
     # 拦掉 → iframe 退化成浏览器默认 ~300×150、外壳脚本（全屏/底栏）也失效 → 演示只剩一小块。
-    # 真正不可信的发布制品在 /content 子 iframe，自带 `sandbox allow-scripts allow-forms` 的独立 CSP，
-    # 与本外壳 CSP 互不影响（见 _content_csp）。
+    # 真正不可信的发布制品在 /content 子 iframe，自带独立 CSP，与本外壳 CSP 互不影响（见 _content_csp）。
+    # frame-src 必须显式放行内容域：制品移到 usercontent 隔离域后，默认 default-src 拦不住也放不进。
     headers = {
         'X-Frame-Options': 'SAMEORIGIN',
         'Content-Security-Policy': (
             f"frame-ancestors 'self'; default-src 'self' {origin}; "
+            f'frame-src {content_origin}; '
             "style-src 'unsafe-inline'; script-src 'unsafe-inline'"
         ),
         # 外壳同样 no-cache：可见性/标题/内容指针变更必须即刻对访客生效
@@ -199,8 +252,11 @@ async def viewer_shell(
     )
     if form_api_origin:
         headers['Content-Security-Policy'] += f'; connect-src {form_api_origin}'
-    # 有票时外壳直接指向路径段形式，省掉一跳 302，且制品内相对子资源自动带票（见 _TICKET_PATH_PREFIX）
-    content_src = _ticket_path(slug, vt, 'content') if vt else f'/s/{quote(slug, safe="")}/content'
+    # 有票时外壳直接指向路径段形式，省掉一跳 302，且制品内相对子资源自动带票（见 _TICKET_PATH_PREFIX）。
+    # 制品落在内容域，所以这里必须是**绝对** URL——相对路径会把制品拉回外壳域，
+    # 那样它与外壳同源，allow-same-origin 一给就能读外壳注入的 view ticket。
+    content_path = _ticket_path(slug, vt, 'content') if vt else f'/s/{quote(slug, safe="")}/content'
+    content_src = f'{content_origin}{content_path}'
     return HTMLResponse(
         content=_viewer_shell_html(
             slug,
@@ -284,9 +340,10 @@ async def _serve_content(request: Request, db: CurrentSession, slug: str, vt: st
 
     from backend.plugin.s3.service.storage_service import storage_service
 
-    origin = _share_origin(request)
+    # 制品的 CSP host-source 用**内容域**（制品自己所在的域），不是外壳域
+    origin = _content_origin(request)
     base_headers = {
-        'Content-Security-Policy': _content_csp(origin),
+        'Content-Security-Policy': _content_csp(origin, isolated=_content_is_isolated(request)),
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
         # no-cache：每次访问都回源按 ETag 校验，命中则 304。缺省时浏览器会启发式缓存
@@ -591,9 +648,13 @@ def _viewer_shell_html(
         if form_api_origin
         else ''
     )
-    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在
-    # `sandbox="allow-scripts allow-forms"`
-    # 的 opaque origin 子帧里跑，内置查看运行时点「放映」会 `element.requestFullscreen()`。沙箱本身不含
+    # iframe 的 sandbox 与 /content 响应头 CSP 的 sandbox **取交集**（更严格者生效）。这里给到最宽，
+    # 由后端按「制品是否真落在独立内容域」决定实际放不放 allow-same-origin（见 _content_csp 的 isolated）：
+    # 同域时后端不给，制品照样是 opaque origin——**权威判定在后端，不在这个属性上**。
+    # 反过来若这里不给，后端给了也没用，localStorage 依旧 SecurityError。
+    #
+    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在沙箱子帧里跑，
+    # 内置查看运行时点「放映」会 `element.requestFullscreen()`。沙箱本身不含
     # fullscreen flag、不拦全屏，但**全屏须经 Permissions-Policy 委派**——没有 allow，浏览器静默拒绝内层
     # requestFullscreen → 只剩运行时的 CSS 放映态（铺满 iframe=铺满浏览器视口），用户看到「只是浏览器全屏、
     # 没进真·全屏」。委派后内层请求把 iframe 升为原生全屏，deck 铺满整屏（回归守卫见 hosting e2e）。
@@ -607,7 +668,7 @@ opacity:0;transition:opacity .2s;pointer-events:none}}
 #bar.show{{opacity:1;pointer-events:auto}}#bar button{{background:transparent;border:1px solid #3f3f46;color:#e5e7eb;
 border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer}}
 </style></head><body>
-<iframe id="frame" sandbox="allow-scripts allow-forms" allow="fullscreen" allowfullscreen src="{src}" title="{t}"></iframe>
+<iframe id="frame" sandbox="allow-scripts allow-forms allow-same-origin" allow="fullscreen" allowfullscreen src="{src}" title="{t}"></iframe>
 <div id="bar"><span>{t}</span><button onclick="fs()">全屏</button></div>
 <script>
 var presentable={present};var bar=document.getElementById('bar');var frame=document.getElementById('frame');var idle;

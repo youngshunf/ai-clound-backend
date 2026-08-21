@@ -248,9 +248,16 @@ class Settings(BaseSettings):
     # RAGFlow 公共实例配置
     RAGFLOW_PUBLIC_URL: str = ''  # RAGFlow 服务地址，如 http://127.0.0.1:18082
 
-    # 网页发布（模块 18）：制品内容绝不在 API 主域渲染——/s/* 整面落独立分享域名（usercontent 模式）。
-    # 形如 https://share.huanxing.ai；为空时回退请求 origin（仅 dev/同域，生产必须配独立域名）。
+    # 网页发布（模块 18）外壳所在 origin（查看器 /s/{slug} 这一层，可与 API 主域同域）。
+    # 为空时回退请求 origin。它只用于外壳自身的 CSP，不决定制品跑在哪。
     WEB_PUBLISH_SHARE_ORIGIN: str = ''
+    # 制品内容域（usercontent 隔离域，形如 https://usercontent.example.cn）：/content 与
+    # /assets/* 落这里。**必须与外壳/API 不同域**——制品带 allow-same-origin 时能读本域
+    # cookie/storage，同域就意味着它能读外壳注入的 view ticket、并同源调 /api/。
+    # 该域的 nginx 只反代 /s/*，不得暴露 /api/、不得放任何登录态（见部署 vhost 注释）。
+    # 为空则回退外壳 origin：此时制品退回 opaque origin（无 allow-same-origin），
+    # localStorage/cookie 在制品里不可用——这是安全兜底，不是 bug。
+    WEB_PUBLISH_CONTENT_ORIGIN: str = ''
     # Growth 落地页的受信任外壳向公开表单 API 回流时使用的 origin；为空则与分享域同源。
     # 跨域部署时必须同时把 WEB_PUBLISH_SHARE_ORIGIN 加入 CORS_ALLOWED_ORIGINS。
     GROWTH_PUBLIC_FORM_API_ORIGIN: str = ''

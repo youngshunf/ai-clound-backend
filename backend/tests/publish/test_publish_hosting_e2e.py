@@ -1,7 +1,8 @@
 """通用网页发布与分享（模块 18，P3）托管 + 公开查看 /s/{slug} 进程内 HTTP E2E（真实 PG，零 mock）。
 
 覆盖（DoD）：
-  - /content CSP：sandbox allow-scripts allow-forms + 显式 host-source（opaque origin 不写 'self'）+ connect-src 'none' 断外联
+  - /content CSP：sandbox + 显式 host-source；**制品落独立内容域才给 allow-same-origin**（同域必退 opaque）
+  - 外壳 iframe 指向内容域绝对 URL（跨域才保得住外壳注入的 view ticket）
   - 四态访问：private 凭票 / unlisted 凭链接 / password 限速+票 / public 直放；缺票 401
   - 过期 410 / 撤销 410 / 不存在 404
   - unlisted/private/password 恒 X-Robots-Tag noindex；public(默认不收录)亦 noindex；public+allow_indexing 才放收录
@@ -33,6 +34,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_publish.api.v1.open.hosting import (
     _content_csp,
+    _content_is_isolated,
     _share_origin,
     _viewer_shell_html,
 )
@@ -57,20 +59,36 @@ def _uid() -> str:
 
 
 def test_content_csp_is_sandbox_with_host_source() -> None:
-    csp = _content_csp('https://share.example.com')
+    csp = _content_csp('https://usercontent.example.com', isolated=True)
     # allow-forms 只让浏览器派发 submit 事件给受控 postMessage 脚本；form-action 仍禁止直接外发。
     assert csp.startswith('sandbox allow-scripts allow-forms')
-    assert "connect-src 'none'" in csp  # 断数据外联
-    assert 'https://share.example.com' in csp  # 显式 host-source（不是 'self'）
-    assert "img-src 'self'" not in csp  # opaque origin 下 'self' 永不匹配，绝不用
+    assert 'https://usercontent.example.com' in csp  # 显式 host-source（不是 'self'）
     assert "base-uri 'none'" in csp
-    assert "form-action 'none'" in csp
+    assert "form-action 'none'" in csp  # 表单仍不许直接外发
 
 
-def test_content_csp_no_allow_same_origin() -> None:
-    # sandbox 不含 allow-same-origin（否则脚本可读父页）
-    csp = _content_csp('https://share.example.com')
+def test_isolated_content_gets_same_origin_and_external_api() -> None:
+    """制品落在独立内容域时，必须拿到真实 origin 与外呼能力。
+
+    没有 allow-same-origin，localStorage/sessionStorage/IndexedDB/cookie 一律抛
+    SecurityError（2026-08-20 实测）；connect-src 锁死则调不了任何外部 API。
+    这两条是「客户端动态站」的全部前提，掉一条产品能力就没了。
+    """
+    csp = _content_csp('https://usercontent.example.com', isolated=True)
+    assert 'allow-same-origin' in csp
+    assert 'connect-src https:' in csp
+    assert "connect-src 'none'" not in csp
+
+
+def test_non_isolated_content_never_gets_same_origin() -> None:
+    """制品与外壳/API 同域时**绝不**给 allow-same-origin——安全兜底，不是可选项。
+
+    同域下给了它，制品就能读该域 cookie、读外壳注入的 view ticket、并同源调 /api/。
+    配置项填错（把 CONTENT_ORIGIN 指回 API 主域）时必须退回 opaque origin。
+    """
+    csp = _content_csp('https://api.example.com', isolated=False)
     assert 'allow-same-origin' not in csp
+    assert csp.startswith('sandbox allow-scripts allow-forms;')
 
 
 def test_growth_form_broker_keeps_untrusted_content_on_post_message_boundary() -> None:
@@ -93,8 +111,10 @@ def test_growth_form_broker_keeps_untrusted_content_on_post_message_boundary() -
     assert 'Idempotency-Key' in shell
     assert 'X-Publish-Form-Token' in shell
     assert 'event.source!==frame.contentWindow' in shell
-    assert 'sandbox="allow-scripts allow-forms"' in shell
-    assert 'allow-same-origin' not in shell
+    # ⚠️ token 不被制品读到，靠的**不再是** opaque origin（制品已拿 allow-same-origin 以启用
+    # localStorage），而是「制品落在独立内容域、与本外壳跨域」。守卫见
+    # test_shell_iframe_points_at_isolated_content_origin——那条才是真正的红线。
+    assert 'sandbox="allow-scripts allow-forms allow-same-origin"' in shell
 
 
 def test_regular_publish_shell_does_not_install_growth_form_broker() -> None:
@@ -165,7 +185,8 @@ async def test_unlisted_shell_and_noindex(host: SimpleNamespace) -> None:
     r = await host.client.get(f'/s/{site["slug"]}')
     assert r.status_code == 200, r.text
     assert '测试发布' in r.text
-    assert 'sandbox="allow-scripts allow-forms"' in r.text  # 外壳用 sandbox iframe
+    # 外壳用 sandbox iframe；same-origin 由制品侧 CSP 按内容域是否独立兜底（见 _content_csp）
+    assert 'sandbox="allow-scripts allow-forms allow-same-origin"' in r.text
     # iframe 必须委派 fullscreen 权限：否则沙箱 opaque origin 子帧内「放映」requestFullscreen 被静默拒绝，
     # 只剩 CSS 放映态（铺满 iframe≠真·全屏）→ 用户报「点放映只是浏览器全屏」。回归守卫。
     assert 'allow="fullscreen"' in r.text
@@ -287,8 +308,80 @@ async def test_content_streams_real_artifact_with_csp(host: SimpleNamespace) -> 
     assert b'HELLO-PUBLISH' in r.content  # 服务端代吐真内容
     csp = r.headers.get('Content-Security-Policy', '')
     assert csp.startswith('sandbox allow-scripts allow-forms')  # 直开 /content 也被沙箱
-    assert "connect-src 'none'" in csp
+    # 本用例未配 CONTENT_ORIGIN（内容域=请求域），必须退回 opaque origin
+    assert 'allow-same-origin' not in csp
     assert r.headers.get('X-Content-Type-Options') == 'nosniff'
+
+
+async def test_shell_iframe_points_at_isolated_content_origin(host: SimpleNamespace) -> None:
+    """外壳 iframe 必须指向**内容域的绝对 URL**——这是 view ticket 不被制品读走的根本保证。
+
+    制品现在带 allow-same-origin（localStorage 需要它），所以只要它与外壳同域就能
+    `parent` 读到外壳注入的 token。相对路径会把制品拉回外壳域 → 同源 → token 失守。
+    这条守的是那个「相对 vs 绝对」的一字之差。
+    """
+    from backend.core.conf import settings
+
+    site = await _make_site(host, visibility='public')
+    original = settings.WEB_PUBLISH_CONTENT_ORIGIN
+    settings.WEB_PUBLISH_CONTENT_ORIGIN = 'https://usercontent.example.com'
+    try:
+        r = await host.client.get(f'/s/{site["slug"]}')
+        assert r.status_code == 200, r.text
+        # iframe 指向内容域绝对 URL，而不是把制品拉回外壳域的相对路径
+        assert 'src="https://usercontent.example.com/s/' in r.text
+        assert f'src="/s/{site["slug"]}/content"' not in r.text
+        # 外壳 CSP 必须显式放行内容域，否则 iframe 被自己的 CSP 拦掉
+        assert 'frame-src https://usercontent.example.com' in r.headers.get('Content-Security-Policy', '')
+    finally:
+        settings.WEB_PUBLISH_CONTENT_ORIGIN = original
+
+
+def _fake_request(host: str, *, proto: str = 'https') -> Any:
+    """模拟经 nginx 反代的请求：url.scheme 恒 http，真实协议在 X-Forwarded-Proto。"""
+    return SimpleNamespace(
+        url=SimpleNamespace(scheme='http', netloc=host),
+        headers={'host': host, 'x-forwarded-proto': proto},
+    )
+
+
+def test_isolation_verdict_follows_the_origin_actually_requested() -> None:
+    """isolated 判定必须看**这一次请求实际打在哪个域**，不是两个配置项的比较。
+
+    浏览器判同源看的是制品被加载的真实 origin。/content 在切换内容域后**仍然**能从 API
+    主域访问到（旧分享链接、官网旧构建都会这样打），那一次访问里的制品就真的在 API 主域上——
+    照配置发 allow-same-origin 等于把该域 cookie 交出去。这条守的就是那个「配置说了不算、
+    实际打到哪才算」的差别。
+
+    ⚠️ 别把这条写成走 /content 的 e2e：站点无真实制品时 content 直接 410、响应**没有 CSP 头**，
+    `'allow-same-origin' not in ''` 会假绿——判定存在、向量缺席。
+    """
+    from backend.core.conf import settings
+
+    original_share = settings.WEB_PUBLISH_SHARE_ORIGIN
+    original_content = settings.WEB_PUBLISH_CONTENT_ORIGIN
+    try:
+        settings.WEB_PUBLISH_SHARE_ORIGIN = 'https://api.example.com'
+        settings.WEB_PUBLISH_CONTENT_ORIGIN = 'https://usercontent.example.com'
+
+        # 打在内容域上 → 隔离成立，可给 same-origin
+        assert _content_is_isolated(_fake_request('usercontent.example.com')) is True
+        # 同一个制品从 API 主域被访问（旧链接/旧构建）→ 制品此刻真在主域，必须退回 opaque
+        assert _content_is_isolated(_fake_request('api.example.com')) is False
+        # 打在任何第三方 host 上也不算隔离
+        assert _content_is_isolated(_fake_request('evil.example.com')) is False
+        # 协议必须以 X-Forwarded-Proto 为准：反代后 url.scheme 是 http，不读这个头会永远比不上
+        assert _content_is_isolated(_fake_request('usercontent.example.com', proto='http')) is False
+
+        # 配置把内容域填回外壳域 → 即便请求打在它上面也不算隔离
+        settings.WEB_PUBLISH_CONTENT_ORIGIN = 'https://api.example.com'
+        assert _content_is_isolated(_fake_request('api.example.com')) is False
+        # 未配置 → 一律不隔离
+        settings.WEB_PUBLISH_CONTENT_ORIGIN = ''
+        assert _content_is_isolated(_fake_request('usercontent.example.com')) is False
+    finally:
+        settings.WEB_PUBLISH_SHARE_ORIGIN = original_share
+        settings.WEB_PUBLISH_CONTENT_ORIGIN = original_content
 
 
 def test_share_origin_fallback() -> None:
