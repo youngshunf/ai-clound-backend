@@ -35,6 +35,27 @@ def _text_form_data(form_data: Any) -> dict[str, str]:
     return data
 
 
+def _wechat_headers(request: Request) -> dict[str, str]:
+    """把请求头**整份**交给 wechatpayv3 验签，不再手挑几个。
+
+    ⚠️ 这里曾手工挑 4 个头（Timestamp / Nonce / Signature / Serial），**漏了
+    `Wechatpay-Signature-Type`**。而 `wechatpayv3/core.py::_verify_signature` 第一件事就是：
+
+        signature_type = headers.get(signature_type_mark, '')
+        if signature_type != 'WECHATPAY2-SHA256-RSA2048':
+            raise Exception(f'wechatpayv3 does not support this algorithm: {signature_type}')
+
+    于是**每一个**微信回调都在验签前就抛异常，日志里是「does not support this algorithm: 」
+    （冒号后为空）——微信支付回调从来没有成功过一次，用户付了钱订单永远停在待支付。
+    2026-08-21 用真实 1 分钱支付复现并定位。
+
+    改成整份透传而不是补上第 5 个头，是因为「漏一个头」这件事会重演：库支持三套头命名
+    （原生 / django / fastapi），Starlette 的 header key 是小写，整份传进去正好命中
+    fastapi 那一支，将来微信再加头也不用改这里。
+    """
+    return dict(request.headers)
+
+
 @router.post(
     '/notify/{channel_id}',
     summary='统一支付回调',
@@ -69,12 +90,7 @@ async def unified_pay_notify(
             body = await request.body()
             raw_data = body.decode('utf-8')
             log.info(f'微信支付回调 channel={channel_id}: {raw_data[:500]}')
-            headers = {
-                'Wechatpay-Timestamp': request.headers.get('Wechatpay-Timestamp', ''),
-                'Wechatpay-Nonce': request.headers.get('Wechatpay-Nonce', ''),
-                'Wechatpay-Signature': request.headers.get('Wechatpay-Signature', ''),
-                'Wechatpay-Serial': request.headers.get('Wechatpay-Serial', ''),
-            }
+            headers = _wechat_headers(request)
             notify_data = client.verify_callback(headers, raw_data)
 
             trade_state = notify_data.get('trade_state')
@@ -158,12 +174,7 @@ async def unified_refund_notify(
             body = await request.body()
             raw_data = body.decode('utf-8')
             log.info(f'微信退款回调 channel={channel_id}: {raw_data[:500]}')
-            headers = {
-                'Wechatpay-Timestamp': request.headers.get('Wechatpay-Timestamp', ''),
-                'Wechatpay-Nonce': request.headers.get('Wechatpay-Nonce', ''),
-                'Wechatpay-Signature': request.headers.get('Wechatpay-Signature', ''),
-                'Wechatpay-Serial': request.headers.get('Wechatpay-Serial', ''),
-            }
+            headers = _wechat_headers(request)
             notify_data = client.verify_callback(headers, raw_data)
             # 微信 V3 退款回调：event_type=REFUND.SUCCESS/ABNORMAL/CLOSED，resource 内含 out_refund_no/refund_status。
             resource_value = notify_data.get('resource') if isinstance(notify_data, dict) else None
@@ -240,12 +251,7 @@ async def unified_contract_notify(
         if code.startswith('wx'):
             body = await request.body()
             raw_data = body.decode('utf-8')
-            headers = {
-                'Wechatpay-Timestamp': request.headers.get('Wechatpay-Timestamp', ''),
-                'Wechatpay-Nonce': request.headers.get('Wechatpay-Nonce', ''),
-                'Wechatpay-Signature': request.headers.get('Wechatpay-Signature', ''),
-                'Wechatpay-Serial': request.headers.get('Wechatpay-Serial', ''),
-            }
+            headers = _wechat_headers(request)
             notify_data = client.verify_callback(headers, raw_data)
             change_type = notify_data.get('change_type')
             if change_type == 'ADD':
