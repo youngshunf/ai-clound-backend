@@ -11,6 +11,7 @@ function-calling Runtime 只能发起 `tools/list` 中的工具调用。为在�
 from __future__ import annotations
 
 import json
+import logging
 
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
     from backend.app.mcp.server import HasnCloudMcpServer
 
+logger = logging.getLogger(__name__)
+
 # 不可被 tool.call 转发的元工具（防自循环 + 语义无意义）。
 _NON_DISPATCHABLE = frozenset({
     "hasn.cloud.tool.call",
@@ -32,6 +35,125 @@ _NON_DISPATCHABLE = frozenset({
     "hasn.local.tool.search",
     "hasn.tool.search",
 })
+
+
+def _declared_types(schema: Any) -> list[str]:
+    """取 schema 声明的 JSON 类型列表（兼容 `"integer"` 与 `["string", "null"]` 两种写法）。"""
+    if not isinstance(schema, dict):
+        return []
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        return [declared]
+    if isinstance(declared, list):
+        return [t for t in declared if isinstance(t, str)]
+    return []
+
+
+def _matches_declared(value: Any, types: list[str]) -> bool:
+    """值是否已经满足任一声明类型——满足就绝不改动它（只治真正错型的，不做无谓转换）。"""
+    for t in types:
+        if t == "null" and value is None:
+            return True
+        if t == "boolean" and isinstance(value, bool):
+            return True
+        # bool 是 int 子类，判数值类型时必须先排除，否则 True 会被当成合法 integer。
+        if t == "integer" and isinstance(value, int) and not isinstance(value, bool):
+            return True
+        if t == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            return True
+        if t == "string" and isinstance(value, str):
+            return True
+        if t == "array" and isinstance(value, list):
+            return True
+        if t == "object" and isinstance(value, dict):
+            return True
+    return False
+
+
+def _parse_json_container(text: str, types: list[str]) -> Any | None:
+    """把 JSON 字符串还原成 array/object；解析失败或还原出的类型不在声明内 → None（不采用）。"""
+    try:
+        decoded = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(decoded, list) and "array" in types:
+        return decoded
+    if isinstance(decoded, dict) and "object" in types:
+        return decoded
+    return None
+
+
+def _coerce_scalar(value: Any, types: list[str]) -> Any | None:
+    """标量还原：字符串→整数/浮点/布尔、数值→字符串。转不动返回 None（表示不采用）。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if "integer" in types:
+            try:
+                return int(text)
+            except ValueError:
+                pass
+        if "number" in types:
+            try:
+                return float(text)
+            except ValueError:
+                pass
+        if "boolean" in types and text.lower() in ("true", "false"):
+            return text.lower() == "true"
+        return None
+    # bool 不参与转字符串，否则 True 会变成 'True' 这种谁都不想要的值。
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and "string" in types:
+        return str(value)
+    return None
+
+
+def coerce_params_to_schema(schema: Any, value: Any) -> Any:
+    """按 JSON Schema 宽容还原「被 Runtime/LLM 序列化过」的入参，转不动一律原样返回。
+
+    治的是一类跨 Runtime 的稳定行为：function-calling 侧常把嵌套容器序列化成 JSON 字符串
+    （``pages='[{"position":0,...}]'``）、把数值当字符串填（``position="0"``、``deck_id=21``）。
+    `_extract_params` 只还原了**顶层** params 这一层，字段值这一层此前无人还原，于是凡是
+    input_schema 里带 integer/array/object 的工具，经本元工具转发时一律 `input_validation_failed`
+    ——本仓 126 个注册工具里有 33 个连必填字段都是非 string，deck 的
+    `page.write` / `page.write_batch` / `outline.set` 是撞得最狠的那三个。
+
+    三条保守边界，保证「宽容接收」不退化成「猜」：
+    - 值已满足任一声明类型 → 原样不动；
+    - 字符串还原成容器时，还原结果的类型必须落在声明内才采用；
+    - 任何转不动的情况都**原样返回**，交给 `_validate_params` 如实报 invalid（零 fake，
+      错型仍然报错，只是不再把「本可还原的形态」也一并判死）。
+
+    纯函数、不改入参（容器一律新建），确保 ask_gate 的 args_hash 对同一逻辑调用稳定。
+    """
+    types = _declared_types(schema)
+
+    # object：递归还原已声明的属性；未声明字段原样透传（与 input_binding 的附加式取向一致）。
+    if isinstance(value, dict):
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(properties, dict):
+            return value
+        return {
+            key: (coerce_params_to_schema(properties[key], item) if key in properties else item)
+            for key, item in value.items()
+        }
+
+    # array：逐元素按 items 还原。
+    if isinstance(value, list):
+        items = schema.get("items") if isinstance(schema, dict) else None
+        if not isinstance(items, dict):
+            return value
+        return [coerce_params_to_schema(items, item) for item in value]
+
+    if not types or _matches_declared(value, types):
+        return value
+
+    # 字符串承载的容器：还原后继续向下递归（内层同样可能被序列化/错型）。
+    if isinstance(value, str):
+        container = _parse_json_container(value.strip(), types)
+        if container is not None:
+            return coerce_params_to_schema(schema, container)
+
+    coerced = _coerce_scalar(value, types)
+    return value if coerced is None else coerced
 
 
 class ToolCallTool(BaseTool):
@@ -110,6 +232,11 @@ class ToolCallTool(BaseTool):
         if inner_tool is None:
             raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f"Tool not found: {name}")
 
+        # 字段值级宽容还原：`_extract_params` 只把**顶层** params 从字符串还原成 dict，
+        # 字段值本身被 Runtime/LLM 序列化（position="0"、pages='[{...}]'）时仍会被下面的
+        # 严格类型校验挡掉。此处按内层 schema 再还原一层，转不动的原样保留、照旧报错。
+        params = coerce_params_to_schema(inner_tool.input_schema, params)
+
         # schema-on-error（§9.4）：仅参数 schema 校验失败时回吐内层完整 schema 供修正；
         # 业务失败（维度② 不可达、额度等）由内层工具透传，不附 schema。
         validation_error = self._validate_params(inner_tool, params)
@@ -117,6 +244,8 @@ class ToolCallTool(BaseTool):
             return validation_error
 
         # 委托统一调用管线：维度① 三态闸门 + 维度② + 审计全落内层。
+        # 传还原后的 params——内层 handler 拿到的必须与通过校验的是同一份，否则
+        # `int(args['deck_id'])` / `list(args['pages'])` 这类取值会拿到字符串再炸一次。
         return await self._server.call_tool(agent_context, name, params)
 
     def _extract_params(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -178,6 +307,17 @@ class ToolCallTool(BaseTool):
                     missing.append(key)
             else:
                 invalid.setdefault(path or "(root)", error.message)
+
+        # 服务端留痕：本分支是 `return` 而非 raise，且 tool.call 落在 `_DISPATCH_TOOL_NAMES` 里
+        # （`_should_audit_call` 直接 False，审计按设计落内层）——可内层工具**压根没被调到**，
+        # 于是分身在此卡住多少次，审计与日志两侧都一片空白。deck 三个写工具的字段值序列化
+        # bug 能长期无声，正是因为这里不出声。按日志分级：分身可据 schema 修正后重试，记 warn。
+        logger.warning(
+            "[tool.call] 内层入参校验未通过 tool=%s missing=%s invalid=%s",
+            inner_tool.name,
+            missing,
+            sorted(invalid),  # 只记字段名，不记值——入参可能含整页 HTML 等大段内容
+        )
 
         return {
             "ok": False,

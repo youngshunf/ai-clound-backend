@@ -1,0 +1,212 @@
+{
+  "setup_create": {
+    "is_error": false,
+    "payload": {
+      "deck_id": "12655",
+      "status": "draft",
+      "deck": {
+        "id": 12655,
+        "owner_id": "h_47094e96-ead5-4180-959a-8a28fac942e6",
+        "title": "E2E·字段值序列化回归",
+        "topic": null,
+        "status": "draft",
+        "language": "zh",
+        "outline": null,
+        "design_contract": null,
+        "style_profile_id": null,
+        "page_count": 0,
+        "cover_asset_id": null,
+        "source": "agent",
+        "bound_agent_id": "a_3dbae149-919e-4ab5-956e-c5147d4f1ac9",
+        "platform_project_id": null,
+        "owner_scope": "personal",
+        "enterprise_id": null,
+        "visibility": "private",
+        "rev": 0,
+        "created_time": "2026-08-22T09:34:57.437047+08:00",
+        "updated_time": null,
+        "my_permission": "manager",
+        "relation": "owner"
+      },
+      "uri": "hasn://deck/12655"
+    }
+  },
+  "D1_page_write_stringified_int": {
+    "is_error": false,
+    "payload": {
+      "written": 1,
+      "rejected": [],
+      "pages": [
+        {
+          "id": 2396,
+          "deck_id": 12655,
+          "owner_id": "h_47094e96-ead5-4180-959a-8a28fac942e6",
+          "position": 0,
+          "title": "封面",
+          "html": "<div class=\"w-full h-full flex items-center justify-center\"><h1>唤星天使轮</h1></div>",
+          "notes": null,
+          "layout_intent": null,
+          "status": "generated",
+          "render_state": null,
+          "thumb_asset_id": null,
+          "rev": 0,
+          "created_time": "2026-08-22T01:34:57.567459+00:00",
+          "updated_time": null
+        }
+      ],
+      "uri": "hasn://deck/12655"
+    }
+  },
+  "D2_write_batch_json_string": {
+    "is_error": false,
+    "payload": {
+      "written": 2,
+      "rejected": [],
+      "pages": [
+        {
+          "id": 2396,
+          "deck_id": 12655,
+          "owner_id": "h_47094e96-ead5-4180-959a-8a28fac942e6",
+          "position": 0,
+          "title": "封面",
+          "html": "<div class=\"w-full h-full flex items-center justify-center\"><h1>唤星天使轮</h1></div>",
+          "notes": null,
+          "layout_intent": null,
+          "status": "generated",
+          "render_state": null,
+          "thumb_asset_id": null,
+          "rev": 0,
+          "created_time": "2026-08-22T01:34:57.567459+00:00",
+          "updated_time": null
+        },
+        {
+          "id": 2397,
+          "deck_id": 12655,
+          "owner_id": "h_47094e96-ead5-4180-959a-8a28fac942e6",
+          "position": 1,
+          "title": "执行摘要",
+          "html": "<div class=\"w-full h-full flex items-center justify-center\"><h1>唤星天使轮</h1></div>",
+          "notes": null,
+          "layout_intent": null,
+          "status": "generated",
+          "render_state": null,
+          "thumb_asset_id": null,
+          "rev": 0,
+          "created_time": "2026-08-22T01:34:57.663685+00:00",
+          "updated_time": null
+        },
+        {
+          "id": 2398,
+          "deck_id": 12655,
+          "owner_id": "h_47094e96-ead5-4180-959a-8a28fac942e6",
+          "position": 2,
+          "title": "问题四缺",
+          "html": "<div class=\"w-full h-full flex items-center justify-center\"><h1>唤星天使轮</h1></div>",
+          "notes": null,
+          "layout_intent": null,
+          "status": "generated",
+          "render_state": null,
+          "thumb_asset_id": null,
+          "rev": 0,
+          "created_time": "2026-08-22T01:34:57.664837+00:00",
+          "updated_time": null
+        }
+      ],
+      "uri": "hasn://deck/12655"
+    }
+  },
+  "D3_outline_set_json_string": {
+    "is_error": false,
+    "payload": {
+      "deck": {
+        "id": 12655,
+        "owner_id": "h_47094e96-ead5-4180-959a-8a28fac942e6",
+        "title": "E2E·字段值序列化回归",
+        "topic": null,
+        "status": "draft",
+        "language": "zh",
+        "outline": {
+          "items": [
+            {
+              "title": "封面"
+            },
+            {
+              "title": "执行摘要"
+            },
+            {
+              "title": "问题四缺"
+            }
+          ]
+        },
+        "design_contract": null,
+        "style_profile_id": null,
+        "page_count": 3,
+        "cover_asset_id": null,
+        "source": "agent",
+        "bound_agent_id": "a_3dbae149-919e-4ab5-956e-c5147d4f1ac9",
+        "platform_project_id": null,
+        "owner_scope": "personal",
+        "enterprise_id": null,
+        "visibility": "private",
+        "rev": 4,
+        "created_time": "2026-08-22T01:34:57.437047+00:00",
+        "updated_time": "2026-08-22T09:34:57.762307+08:00"
+      },
+      "uri": "hasn://deck/12655"
+    }
+  },
+  "D4_genuine_type_error_still_rejected": {
+    "is_error": false,
+    "payload": {
+      "ok": false,
+      "error": "input_validation_failed",
+      "tool": "hasn.deck.page.write",
+      "missing": [],
+      "invalid": {
+        "position": "'第一页' is not of type 'integer'"
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "deck_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "html": {
+            "type": "string",
+            "minLength": 1,
+            "description": "单页 16:9 创意 HTML 片段（只传主体；引擎自动包骨架并注入 Tailwind/Chart.js/anime.js/PPT 运行时——勿传 <html>/<head>/<body>/<script src>/<link>/@font-face/完整文档）。图表：用 PPT.createChart(canvasOrSelector, config)，禁直接 new Chart()；且图表父容器必须有固定像素高（如 class=\"h-[300px]\" 或 aspect 比例类）——flex-1/h-full/仅百分比/仅 min-height 会被量到约 0 高而渲染空白（导出/截图尤甚）；简单条形/占比图优先用纯 CSS（flex 高度比例）更稳。动画用 PPT.animate(targets, params)：scale 自动导出为 zoom，小幅 translateY:[正值,0] 自动导出为 rise，其他位移按运动方向导出为 fly-up/fly-down/fly-left/fly-right；需精确指定时可在元素写 data-anim=\"fade|wipe-up|wipe-down|wipe-left|wipe-right|rise|zoom|fly-up|fly-down|fly-left|fly-right\" + data-anim-step=\"N\" 归步；其中 fly-* 后缀表示运动方向，显式 data-anim 优先。这些效果会进入应用内放映并导出为 PPTX 原生入场动画；未知值才降级 fade。初始态必须可见（入场用 opacity:[0,1] 等参数，勿用 opacity-0/visibility:hidden 作默认）。"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deck_id",
+          "position",
+          "html"
+        ]
+      },
+      "schema_hash": "sha256:655540c6bdc53d599215ab2cfacfd78c0baadd4961cebe370f40ffa51dabe7e0"
+    }
+  },
+  "readback_positions": [
+    0,
+    1,
+    2
+  ],
+  "summary_ok": true
+}

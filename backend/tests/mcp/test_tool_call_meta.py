@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any
 
 import pytest
@@ -332,3 +334,211 @@ async def test_call_tool_no_stamp_leaves_session_empty(monkeypatch: pytest.Monke
     server = _session_server(monkeypatch)
     result = await server.call_tool(_ctx(), 'hasn.stub.session_echo', {})
     assert result == {'ctxvar_session': None, 'field_session': None}
+
+
+# ── 字段值级序列化还原（线上 bug：deck 三个写工具一律 input_validation_failed）──────────
+#
+# 现象：分身经 tool.call 调 hasn.deck.page.write / page.write_batch / outline.set 全部返回
+# input_validation_failed，而同域的 create / page.edit 正常——差别是前三个的**必填字段含
+# 非 string 类型**（position:integer、pages:array），后两个全是 string。
+# 根因：`_extract_params` 只把顶层 params 从字符串还原成 dict，字段值这一层无人还原；
+# function-calling Runtime 常把嵌套容器序列化成 JSON 字符串、把数值当字符串填，撞上
+# Draft202012Validator 的严格类型校验就整调用判死。
+
+
+class _ShapeTool(_StubTool):
+    """带 integer / array / object 字段的工具——复刻 deck 写工具的入参形状。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.stub.shape'
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'deck_id': {'type': 'string', 'minLength': 1},
+                'position': {'type': 'integer', 'minimum': 0},
+                'pages': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'position': {'type': 'integer', 'minimum': 0},
+                            'html': {'type': 'string', 'minLength': 1},
+                        },
+                        'required': ['position', 'html'],
+                    },
+                },
+                'design_contract': {'type': ['object', 'null']},
+                'confirm': {'type': 'boolean'},
+            },
+            'required': ['deck_id'],
+        }
+
+
+def _shape_server(monkeypatch: pytest.MonkeyPatch) -> HasnCloudMcpServer:
+    server = _server(monkeypatch)
+    server.tool_registry.register(_ShapeTool())
+    return server
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('label', 'params', 'expected'),
+    [
+        ('整数被当作字符串填', {'deck_id': '21', 'position': '0'}, {'deck_id': '21', 'position': 0}),
+        ('字符串字段被填成整数', {'deck_id': 21}, {'deck_id': '21'}),
+        (
+            '数组被序列化成 JSON 字符串',
+            {'deck_id': '21', 'pages': '[{"position": 0, "html": "<div>x</div>"}]'},
+            {'deck_id': '21', 'pages': [{'position': 0, 'html': '<div>x</div>'}]},
+        ),
+        (
+            '数组元素内的整数被字符串化',
+            {'deck_id': '21', 'pages': [{'position': '2', 'html': '<div>x</div>'}]},
+            {'deck_id': '21', 'pages': [{'position': 2, 'html': '<div>x</div>'}]},
+        ),
+        (
+            '双重序列化：JSON 串内的整数也是串',
+            {'deck_id': '21', 'pages': '[{"position": "2", "html": "<div>x</div>"}]'},
+            {'deck_id': '21', 'pages': [{'position': 2, 'html': '<div>x</div>'}]},
+        ),
+        (
+            '对象被序列化成 JSON 字符串',
+            {'deck_id': '21', 'design_contract': '{"palette": "deep-blue"}'},
+            {'deck_id': '21', 'design_contract': {'palette': 'deep-blue'}},
+        ),
+        ('布尔被当作字符串填', {'deck_id': '21', 'confirm': 'true'}, {'deck_id': '21', 'confirm': True}),
+    ],
+)
+async def test_tool_call_coerces_serialized_field_values(
+    monkeypatch: pytest.MonkeyPatch, label: str, params: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    """字段值被 Runtime 序列化时应还原后放行，且**内层 handler 收到的就是还原后的值**。"""
+    server = _shape_server(monkeypatch)
+    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.shape', 'params': params})
+    assert result == {'echo': expected}, label
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('label', 'params', 'bad_field'),
+    [
+        ('真错型：整数位填了纯文字', {'deck_id': '21', 'position': '第一页'}, 'position'),
+        ('真错型：数组位填了非 JSON 文本', {'deck_id': '21', 'pages': '封面、目录、正文'}, 'pages'),
+        ('还原出的类型不符：串解出来是对象而非数组', {'deck_id': '21', 'pages': '{"position": 0}'}, 'pages'),
+        ('越界仍判：position 为负', {'deck_id': '21', 'position': '-1'}, 'position'),
+        ('布尔位填了别的词', {'deck_id': '21', 'confirm': 'maybe'}, 'confirm'),
+    ],
+)
+async def test_tool_call_still_rejects_genuine_type_errors(
+    monkeypatch: pytest.MonkeyPatch, label: str, params: dict[str, Any], bad_field: str
+) -> None:
+    """宽容还原不得退化成猜：转不动的一律原样交给校验器如实报错（零 fake）。"""
+    server = _shape_server(monkeypatch)
+    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.shape', 'params': params})
+    assert result['ok'] is False, label
+    assert result['error'] == 'input_validation_failed', label
+    assert bad_field in result['invalid'], label
+
+
+@pytest.mark.asyncio
+async def test_tool_call_missing_required_still_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """缺必填仍走 schema-on-error，不因还原层而被吞掉。"""
+    server = _shape_server(monkeypatch)
+    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.shape', 'params': {'position': 1}})
+    assert result['ok'] is False
+    assert 'deck_id' in result['missing']
+
+
+@pytest.mark.asyncio
+async def test_tool_call_leaves_wellformed_params_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """已合规的入参绝不改动——还原层只治真正错型的，避免 args_hash 漂移。"""
+    server = _shape_server(monkeypatch)
+    params = {'deck_id': '21', 'position': 3, 'pages': [{'position': 0, 'html': '<p>x</p>'}], 'confirm': False}
+    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.shape', 'params': params})
+    assert result == {'echo': params}
+
+
+def test_coerce_does_not_mutate_input() -> None:
+    """纯函数：不得就地改写调用方的 dict（ask_gate args_hash 依赖确定性）。"""
+    from backend.app.mcp.tools.tool_call import coerce_params_to_schema
+
+    schema = {'type': 'object', 'properties': {'n': {'type': 'integer'}}}
+    raw = {'n': '5'}
+    coerced = coerce_params_to_schema(schema, raw)
+    assert coerced == {'n': 5}
+    assert raw == {'n': '5'}  # 原 dict 未被改动
+
+
+_DECK_SERIALIZED_PAYLOADS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    # tool → (Runtime 实际发来的形态, 内层 handler 应当收到的形态)
+    'hasn.deck.page.write': (
+        {'deck_id': 21, 'position': '0', 'html': '<div>x</div>'},
+        {'deck_id': '21', 'position': 0, 'html': '<div>x</div>'},
+    ),
+    'hasn.deck.page.write_batch': (
+        {'deck_id': '21', 'pages': '[{"position": "0", "html": "<div>x</div>"}]'},
+        {'deck_id': '21', 'pages': [{'position': 0, 'html': '<div>x</div>'}]},
+    ),
+    'hasn.deck.outline.set': (
+        {'deck_id': '21', 'pages': '[{"title": "\\u5c01\\u9762"}]'},
+        {'deck_id': '21', 'pages': [{'title': '封面'}]},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tool_name', sorted(_DECK_SERIALIZED_PAYLOADS))
+async def test_real_deck_write_tools_accept_serialized_params(monkeypatch: pytest.MonkeyPatch, tool_name: str) -> None:
+    """回归钉子：用**真实 deck input_schema** 钉住线上撞到的那三个工具。
+
+    stub 形状会随手改漂移，这条直接吃 DECK_TOOLS 的真 schema，并且**走 execute 全路径**
+    （只把最内层 call_tool 换成探针，不连 DB）——既守住还原逻辑本身，也守住它确实接在了
+    转发路径上。deck 侧若再把 position/pages 的声明收窄回去，本测试会红。
+    """
+    server = _server(monkeypatch)
+    # deck 工具由 HasnCloudMcpServer.__init__ 启动期注册，此处直接取真实注册项（不重复注册）。
+    assert server.tool_registry.get_tool(tool_name) is not None, f'{tool_name} 未在启动期注册'
+
+    seen: dict[str, Any] = {}
+
+    async def _probe(_ctx_arg: object, name: str, params: dict[str, Any]) -> dict[str, Any]:  # noqa: RUF029
+        seen['name'] = name
+        seen['params'] = params
+        return {'ok': True}
+
+    monkeypatch.setattr(server, 'call_tool', _probe)
+
+    sent, expected = _DECK_SERIALIZED_PAYLOADS[tool_name]
+    result = await _call_tool(server).execute(_ctx(), {'name': tool_name, 'params': sent})
+
+    assert result == {'ok': True}, f'{tool_name} 仍被判 input_validation_failed：{result}'
+    assert seen['name'] == tool_name
+    # 内层 handler（_deck_id / _upsert_pages）拿到的必须是还原后的形态，否则会在取值处再炸一次。
+    assert seen['params'] == expected
+
+
+@pytest.mark.asyncio
+async def test_tool_call_validation_failure_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """入参校验失败必须在服务端留痕。
+
+    本分支 return 而非 raise，且 tool.call 在 `_DISPATCH_TOOL_NAMES` 里 → `_should_audit_call`
+    返回 False、内层工具又压根没被调到，审计两侧皆空。没有这条日志，分身卡在这里的次数
+    在运维侧完全不可见（deck 字段值序列化 bug 长期无声即此因）。
+    """
+    server = _shape_server(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger='backend.app.mcp.tools.tool_call'):
+        result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.shape', 'params': {'position': '第一页'}})
+    assert result['error'] == 'input_validation_failed'
+    records = [r for r in caplog.records if 'hasn.stub.shape' in r.getMessage()]
+    assert records, '校验失败未产生任何服务端日志'
+    message = records[0].getMessage()
+    assert records[0].levelno == logging.WARNING  # 可重试/可自愈 → warn，不是 error
+    assert 'deck_id' in message  # 缺的必填字段名进日志
+    assert 'position' in message  # 错型的字段名进日志
+    assert '第一页' not in message  # 只记字段名，不记值（入参可能含整页 HTML）
