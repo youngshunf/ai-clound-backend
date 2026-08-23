@@ -188,7 +188,7 @@ async def handle_knowledge_upload_document(
     """knowledge.upload_document：content_text(纯文本) 或 asset_uri(已在私有桶的真实文件) 二选一上传并索引。
 
     - content_text（纯文本内容）→ **一律落原生文档**（可编辑/有版本/Markdown 渲染/在线预览最好/正文逐字保留，
-      且同样推进引擎索引可检索）。知识库铁律「原生优先，能不落 file 就不落」：正文超 5000 字**不再自动回落 file**，
+      且同样推进引擎索引可检索）。知识库铁律「原生优先，能不落 file 就不落」：正文超 15000 字**不再自动回落 file**，
       而是如实拒绝，逼分身拆成多篇更聚焦的原生文档 + 深链 hasn://knowledge/documents/{doc_id} 互连
       （file 编辑成本高，原生才可编辑）。
     - asset_uri(hasn://asset/...) → 取桶字节建 file 文档副本（真实二进制文件，如 PDF/docx/图片——
@@ -219,7 +219,7 @@ async def handle_knowledge_upload_document(
             )
         else:
             # 原生优先（知识库铁律）：纯文本内容一律落原生文档，与 write_doc 语义一致。
-            # 超 5000 字**不再自动回落 file**——create_native_document 内的 _validate_native_content
+            # 超 15000 字**不再自动回落 file**——create_native_document 内的 _validate_native_content
             # 会如实拒绝并引导拆成多篇 + 深链互连（file 编辑成本高，原生才可编辑）。
             result = await knowledge_service.create_native_document(
                 db,

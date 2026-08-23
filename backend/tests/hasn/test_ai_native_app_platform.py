@@ -59,7 +59,7 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
     manifest = KNOWLEDGE_AI_NATIVE_MANIFEST
 
     assert manifest['app_id'] == 'knowledge'
-    assert manifest['version'] == '2.3.0'
+    assert manifest['version'] == '2.4.0'
     assert manifest['workspace_scope'] == ['personal', 'enterprise']
     assert manifest['collaboration_mode'] == 'workspace_shared'
     assert manifest['capabilities'][0]['tool_id'] == 'knowledge.search'
@@ -70,6 +70,7 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
     # 本地与云端 Runtime 同一通路；`commit_document` 退役（上传即自动解析，D6）。
     # 2.1.0：补齐 kb 生命周期 + 文档 列/删；2.2.0：update_kb / move_document；
     # 2.3.0：原生文档 5000 字上限 + 文档深链保存时强校验 + 新增只读预检工具 check_links。
+    # 2.4.0：原生文档正文上限上调到 15000 字。
     tool_ids = [t['tool_id'] for t in manifest['tools']]
     assert tool_ids == [
         'knowledge.search',

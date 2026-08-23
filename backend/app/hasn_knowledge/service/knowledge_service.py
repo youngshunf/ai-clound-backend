@@ -45,13 +45,15 @@ if TYPE_CHECKING:
 
 # 文件上传上限（对齐 hasn_assets file 限额）
 MAX_FILE_SIZE = 50 * 1024 * 1024
-# 原生文档正文上限（5000 字符，按 Unicode 码点计——中文 1 字 = 1）。
+# 原生文档正文上限（15000 字符，按 Unicode 码点计——中文 1 字 = 1）。
 # 知识库铁律「原生优先，能不落 file 就不落」：原生文档可编辑、有版本、Markdown 渲染最好，
 # 定位为「小而互连的 wiki 式笔记」。内容超限即应拆成多篇更聚焦的原生文档，
 # 用深链 hasn://knowledge/documents/{doc_id} 互相关联，而非堆成一篇长文，
 # 也**不**自动回落 file（file 编辑成本高）——create/update/upload 三条写入路径超限均如实拒绝、引导拆分。
 # 只有真实二进制文件（PDF/docx/图片，经 asset_uri 上传）才落 file 文档，由引擎切块承载。
-MAX_NATIVE_CONTENT_CHARS = 5000
+# 2026-08-23 由 5000 上调到 15000：原口径对一篇完整技术说明/会议纪要都不够写，
+# 逼出的是「为凑字数硬拆」而不是「按主题拆」，反而让知识库更碎。
+MAX_NATIVE_CONTENT_CHARS = 15000
 # 文档深链 URI：hasn://knowledge/documents/{doc_id}，{doc_id} 为云端权威文档 id（纯数字）。
 # 正文里无论裸写还是包在 Markdown 链接 [标题](hasn://knowledge/documents/123) 中都能被捕获。
 # 客户端无关 + 云端权威 id（见父仓 CLAUDE.md「hasn:// 资源地址客户端无关」「本地 ID 永不上 URI」两铁律）。
@@ -1151,7 +1153,7 @@ class KnowledgeService:
     # ---------- native documents（D9）----------
 
     def _validate_native_content(self, content: str) -> None:
-        # 按字符数（Unicode 码点）卡 5000 字上限；超限直接拒绝并引导拆分 + 深链互连，
+        # 按字符数（Unicode 码点）卡 15000 字上限；超限直接拒绝并引导拆分 + 深链互连，
         # 不静默截断（截断会丢内容），也不自动降级为 file——原生优先原则：native 可编辑、
         # 编辑成本低，长内容应拆成多篇聚焦的 native 文档 + 深链互连，而非落成难改的 file。
         length = len(content)
