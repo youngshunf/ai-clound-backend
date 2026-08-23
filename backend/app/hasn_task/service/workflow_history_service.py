@@ -55,6 +55,20 @@ def _snapshot_node_keys(graph_snapshot: Any) -> list[str]:
     return keys
 
 
+def _nodes_brief(snapshot_keys: list[str], node_runs: Sequence[HasnWorkflowNodeRun]) -> list[dict[str, Any]]:
+    """按图快照声明序给出 `[{node_key, status}]`——历史卡片画链路点阵要的最小事实。
+
+    只带 `node_key` 与 `status`：展示名归模板（消费端 daemon 用本机模板镜像 join），账本这边
+    没有也不该有。快照未声明但账本里存在的节点补在末尾（与 `get_scenario_view` 同一口径），
+    否则脱离父定义的历史会漏掉节点。
+    """
+    by_key = {node_run.node_key: node_run for node_run in node_runs}
+    declared = set(snapshot_keys)
+    ordered = [key for key in snapshot_keys if key in by_key]
+    ordered.extend(node_run.node_key for node_run in sorted(node_runs, key=lambda item: item.id) if node_run.node_key not in declared)
+    return [{'node_key': key, 'status': by_key[key].status} for key in ordered]
+
+
 def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
     """解码 `(created_time DESC, workflow_run_uuid DESC)` 的不透明游标。"""
     if cursor is None:
@@ -117,6 +131,7 @@ class WorkflowHistoryService:
             'status': run.status,
             'advance_mode': run.advance_mode,
             'progress': {'done': done, 'total': total},
+            'nodes_brief': _nodes_brief(snapshot_keys, node_runs),
             'output_summary': run.output_summary,
             'started_at': _iso(run.started_at),
             'finished_at': _iso(run.finished_at),

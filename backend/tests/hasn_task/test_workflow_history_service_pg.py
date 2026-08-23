@@ -141,6 +141,12 @@ async def test_history_list_keeps_orphan_run_and_filters_project(env: SimpleName
     assert item['project_id'] == project_id
     assert item['definition_state'] == 'missing'
     assert item['progress'] == {'done': 1, 'total': 2}
+    # 链路点阵所需的逐节点执行态：按图快照声明序给，只带 node_key + status（展示名归模板）。
+    # 缺它时消费端只有 progress 聚合数，历史卡上一个状态点都画不出来。
+    assert item['nodes_brief'] == [
+        {'node_key': 'research', 'status': 'done'},
+        {'node_key': 'summary', 'status': 'failed'},
+    ]
     assert item['capabilities']['can_mutate'] is False
 
 
