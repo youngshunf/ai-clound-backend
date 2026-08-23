@@ -259,7 +259,22 @@ class AgentTaskService:
             payload={'task': payload},
             hasn_id=agent_hasn_id,
         )
-        await hasn_sync_service.gateway.save_task_event(db, owner_id=owner_id, node_id=CLOUD_AGENT_NODE_ID, event=event)
+        # manage_inbox=False：本路径是**云端直发**，不是 hasn-node 经 sync 协议推上来的事件。
+        # `hasn_sync.hasn_sync_inbox_events` 是**节点同步入口的收件账本**，只有 astra_sync_service
+        # 有表权限；而 Agent API 跑在通用会话（= astra_python_backend，见 db.py 的
+        # `async_db_session = python_backend_db_session`）上，碰它必然 permission denied（R3 最小权限
+        # 按设计拒绝，不是漏授权）。
+        # 而且这里管 inbox 本就没有意义：上面的 client_event_id 是**每次调用新生成的随机 UUID**，
+        # 收件账本的去重查询永远命中不了，只会往账本里堆没人读的死行。
+        # 关掉后本路径只写 hasn_task + 经 SECURITY DEFINER 的 hasn_sync.append_event 追加下行事件，
+        # 二者都在 python 角色权限内——与 SyncInboxWorker 的业务 handler 完全同构（它也传 False）。
+        await hasn_sync_service.gateway.save_task_event(
+            db,
+            owner_id=owner_id,
+            node_id=CLOUD_AGENT_NODE_ID,
+            event=event,
+            manage_inbox=False,
+        )
         # LF-P3：任务变更后向该 owner 在线节点 push hasn.sync.invalidate{kind:tasks}，
         # 在线 daemon 秒级对账任务镜像 → daemon→webui 失效桥 → 任务页即时刷新（不再绑死轮询）。
         from backend.app.hasn.service.sync_invalidate_service import KIND_TASKS, bump_owner

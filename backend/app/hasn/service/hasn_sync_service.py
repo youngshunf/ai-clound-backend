@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
@@ -97,6 +98,10 @@ TASK_SYNC_EVENT_TYPES = {'task.created', 'task.updated', 'task.deleted'}
 _SYNC_EVENTS = SCHEMA_NAMES.sync_table('hasn_sync_events')
 _SYNC_INBOX_EVENTS = SCHEMA_NAMES.sync_table('hasn_sync_inbox_events')
 
+# 任务运行摘要事件的 append_event producer 标识（须匹配 `^[a-z][a-z0-9_]{0,39}$`）。
+# 与 source_event_id 一起构成该事件的幂等键，替代此前那句需要 sync 角色的预检 SELECT。
+_TASK_RUN_SUMMARY_PRODUCER = 'task_run'
+
 
 class SyncGateway(Protocol):
     async def pull_events(
@@ -120,7 +125,20 @@ class SyncGateway(Protocol):
     async def existing_client_event_revision(
         self, db: AsyncSession, *, owner_id: str, node_id: str, client_event_id: str
     ) -> int | None: ...
-    async def save_task_event(self, db: AsyncSession, *, owner_id: str, node_id: str, event: ClientEvent) -> int | None: ...
+    # manage_inbox：是否维护 hasn-node 同步入口的收件账本（`hasn_sync_inbox_events`）。
+    # 只有**节点经 sync 协议推上来**的事件才该置 True（需 astra_sync_service 角色）；
+    # 云端直发（Agent API / 内置播种）与 SyncInboxWorker 的业务回放一律 False，
+    # 否则会在 astra_python_backend 角色下 permission denied。此前 Protocol 漏声明该形参，
+    # mypy 因而拦不住调用方传参——补齐后签名与实现一致。
+    async def save_task_event(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        node_id: str,
+        event: ClientEvent,
+        manage_inbox: bool = True,
+    ) -> int | None: ...
     async def emit_memory_event(
         self,
         db: AsyncSession,
@@ -924,29 +942,26 @@ class SqlAlchemySyncGateway:
             },
         )
         stored = dict(result.mappings().one())
-        existing_event = await db.execute(
-            sa.text(
-                f"""
-                SELECT event_id
-                FROM {_SYNC_EVENTS}
-                WHERE owner_id = :owner_id
-                  AND event_type = 'task_run.summary_reported'
-                  AND payload->>'dedupe_key' = :dedupe_key
-                LIMIT 1
-                """
-            ),
-            {'owner_id': owner_id, 'dedupe_key': stored['dedupe_key']},
+        # 去重交给 `hasn_sync.append_event` 自己的 (producer, source_event_id, owner_id) 幂等键，
+        # **不再**先 SELECT 一把 hasn_sync_events 探边：
+        #   1. 本方法跑在通用会话（= astra_python_backend）上，而该角色按 R3 最小权限**没有**
+        #      hasn_sync 表权限，那句预检 SELECT 必然 permission denied（生产实测在炸）；
+        #      append_event 是 SECURITY DEFINER，函数体内的同一份查重反而跑得通。
+        #   2. 预检 + 追加本就不是原子的，并发下两个请求可能双双查空再双双追加；交给函数内的
+        #      唯一键则一次到位，没有 TOCTOU 窗口。
+        # source_event_id 上限 64 字符，而 run_summary.dedupe_key 是 varchar(200)（线上实测最长
+        # 86），因此取其 sha256 十六进制（定长 64）作幂等键——确定性映射，同 key 必同摘要。
+        await self._append_sync_event(
+            db,
+            owner_id=owner_id,
+            hasn_id=agent_hasn_id,
+            event_type='task_run.summary_reported',
+            aggregate_type='task_run',
+            aggregate_id=stored['run_uuid'],
+            payload=_task_run_summary_event_payload(stored),
+            producer=_TASK_RUN_SUMMARY_PRODUCER,
+            source_event_id=hashlib.sha256(str(stored['dedupe_key']).encode()).hexdigest(),
         )
-        if existing_event.mappings().first() is None:
-            await self._append_sync_event(
-                db,
-                owner_id=owner_id,
-                hasn_id=agent_hasn_id,
-                event_type='task_run.summary_reported',
-                aggregate_type='task_run',
-                aggregate_id=stored['run_uuid'],
-                payload=_task_run_summary_event_payload(stored),
-            )
         return _task_run_summary_response_payload(stored)
 
     async def existing_client_event_revision(
