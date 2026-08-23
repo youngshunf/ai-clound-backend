@@ -390,7 +390,10 @@ class SourceReleaseService:
                 icon_url = existing.icon_url
 
         metadata = package.metadata
-        name = str(metadata['name'])
+        # 展示名优先取 `display_name`。`name` 按 Agent Skills 规范是**标识符**——只含 a-z0-9 与
+        # 连字符且必须等于目录名（https://agentskills.io/specification），直接拿它当展示名，
+        # 市场里就会显示成 `knowledge-base` 这种 slug。与 publish_agent_template 同口径。
+        name = str(metadata.get('display_name') or metadata['name'])
         description = str(metadata['description'])
         body = extract_skill_body(package.markdown)
         detected = translation_service.detect_language(f'{name}\n{description}\n{body[:2000]}')
