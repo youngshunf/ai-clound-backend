@@ -186,18 +186,40 @@ async def resolve_frozen_skill_bundles(db: AsyncSession, stored_refs: Any) -> li
             log.warning(f'技能包 {package_id}@{version} 成员不可冻结，本次不下发 Runtime: {exc}')
             continue
 
+        # `content_hash` 必须描述**本次真正下发的那份 `hermes_yaml`**，不能沿用安装时的冻结值。
+        #
+        # 技能包重发会**原地覆盖**同一个版本行的 `hermes_yaml`（同 version 不新建行），而分身
+        # 安装时冻结的 hash 不会跟着变。此前这里下发的是「冻结 hash + 当前 yaml」——两个不同时点
+        # 的东西拼在一起，Runtime 侧 `provision.rs` 按 `sha256(hermes_yaml) != content_hash`
+        # 直接判死，报「技能包 X@Y 的 definition 指纹不一致」，该分身所有需要这个包的派发全挂。
+        # 2026-08-23 线上实际发生过：改了 18 个 bundle.yaml 重发，装了它们的分身当场全失效。
+        #
+        # 冻结语义不受影响：**冻结锁的是 `(package_id, version)`**，上面的查询始终按冻结版本取行、
+        # 绝不跟随 latest；而 `hermes_yaml` 本来就一直取当前行内容，从没按冻结 hash 回溯过历史内容
+        # （版本行被原地覆盖，历史内容根本不存在）。所以下发当前 hash 是**让指纹与载荷自洽**，
+        # 不是放宽版本冻结。
+        #
+        # 安装时的冻结值改由 `frozen_content_hash` 如实带出，`bundle_drift` 继续如实报告漂移——
+        # 它们是观测信号，不再当作会打死分身的判据。
         resolved.append({
             'package_id': package_id,
             'version': version,
-            'content_hash': frozen_hash,
+            'content_hash': current_hash,
             'bundle_slug': str(ref.get('bundle_slug') or row.bundle_slug or ''),
             'command_key': row.command_key,
             'hermes_yaml': hermes_yaml,
             'member_skill_ids': member_ids,
             'member_skills': member_skills,
             'bundle_drift': current_hash != frozen_hash,
+            'frozen_content_hash': frozen_hash,
             'current_content_hash': current_hash,
         })
+        if current_hash != frozen_hash:
+            log.warning(
+                f'技能包 {package_id}@{version} 定义已被原地重发覆盖'
+                f'（安装时冻结 {frozen_hash} → 当前 {current_hash}）；'
+                f'本次按当前定义下发以保证指纹自洽'
+            )
     return resolved
 
 

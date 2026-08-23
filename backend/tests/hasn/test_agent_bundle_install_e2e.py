@@ -297,3 +297,54 @@ async def test_install_bundle_is_idempotent(e2e) -> None:
     # skill_bundles 仍只有一条
     profile = await _get_profile(c)
     assert len(profile['skill_bundles']) == 1
+
+
+async def test_republished_bundle_ships_hash_that_matches_shipped_yaml(e2e) -> None:
+    """技能包**原地重发**后，下发的 content_hash 必须描述下发的那份 hermes_yaml。
+
+    复现线上真事故（2026-08-23）：改了 bundles/*/bundle.yaml 重发，
+    `marketplace_template_version` 的同一个 1.0.0 行被原地覆盖（同 version 不新建行），
+    但分身安装时冻结的 content_hash 不变。此前 Profile 把「冻结 hash + 当前 yaml」拼在一起下发，
+    Runtime 的 provision.rs 按 sha256(hermes_yaml) != content_hash 硬失败，报
+    「技能包 X@Y 的 definition 指纹不一致」，装了该包的分身相关派发全挂。
+    """
+    c = e2e.client
+
+    installed = await _install(c, e2e.agent_hasn, e2e.package_id)
+    frozen_hash = installed['bundle']['content_hash']
+    assert frozen_hash == f'sha256:{hashlib.sha256(e2e.hermes_yaml.encode()).hexdigest()}'
+
+    # 模拟「同版本原地重发」：只改 hermes_yaml，不动 version。
+    republished_yaml = e2e.hermes_yaml + 'instruction: |\n  重发后新增的一行\n'
+    republished_hash = f'sha256:{hashlib.sha256(republished_yaml.encode()).hexdigest()}'
+    assert republished_hash != frozen_hash, '构造失败：重发后指纹必须与冻结值不同，否则本测试恒真'
+    await e2e.session.execute(
+        text(
+            'UPDATE hasn_marketplace.marketplace_template_version '
+            'SET hermes_yaml = :yaml WHERE template_id = :tid AND version = :ver'
+        ),
+        {'yaml': republished_yaml, 'tid': e2e.package_id, 'ver': '1.0.0'},
+    )
+    await e2e.session.flush()
+
+    profile = await _get_profile(c)
+    bundle = profile['skill_bundles'][0]
+
+    # Runtime 侧的真实判据：sha256(下发的 hermes_yaml) 必须等于下发的 content_hash。
+    assert bundle['hermes_yaml'] == republished_yaml
+    assert (
+        f'sha256:{hashlib.sha256(bundle["hermes_yaml"].encode()).hexdigest()}'
+        == bundle['content_hash']
+    ), f'指纹与载荷不自洽，Runtime 会判 definition 指纹不一致：{bundle["content_hash"]}'
+    assert bundle['content_hash'] == republished_hash
+
+    # 漂移如实上报（观测信号），冻结值如实带出，但不再当作打死分身的判据。
+    assert bundle['bundle_drift'] is True
+    assert bundle['frozen_content_hash'] == frozen_hash
+    assert bundle['current_content_hash'] == republished_hash
+
+    # 版本冻结不受影响：仍按冻结版本取行，未跟随 latest。
+    assert bundle['version'] == '1.0.0'
+
+    # 纯读路径修正：不写库、不 bump revision（bump 会让全量已装分身 re-provision 扇出重启）。
+    assert profile['profile_revision'] == installed['profile_revision']
