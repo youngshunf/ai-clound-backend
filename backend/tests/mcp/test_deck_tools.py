@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import operator
 import uuid
 
@@ -339,6 +340,14 @@ async def test_deck_lifecycle_roundtrip_real_db() -> None:
         #      html_length 仍在，分身据此核对内容没被截断。
         assert 'html' not in edited['page'], 'page.edit 不得回显 HTML 正文'
         assert edited['page']['html_length'] == len(_VALID_HTML)
+        # 逐字校验位：分身手工转写出过繁简同形字（牽/牵），肉眼和字符数都看不出，
+        # 此前只能靠回显全部页做 diff 才抓得到。哈希把那次 200KB 压成每页 64 字符。
+        _expected_digest = hashlib.sha256(_VALID_HTML.encode('utf-8')).hexdigest()
+        assert edited['page']['html_sha256'] == _expected_digest
+        assert all(p['html_sha256'] == _expected_digest for p in batch['pages'])
+        # 同形异体字必须判为不同——这是本校验位存在的全部理由。
+        assert hashlib.sha256('牵'.encode()).hexdigest() != hashlib.sha256('牽'.encode()).hexdigest()
+        assert len('牵') == len('牽'), '同形字长度相同，所以 html_length 抓不到它们'
         assert all('html' not in p for p in batch['pages']), 'page.write_batch 不得回显 HTML 正文'
         assert [p['position'] for p in batch['pages']] == [0, 1], 'write_batch 只回本次写入的那几页'
         assert batch['total_pages'] == 2

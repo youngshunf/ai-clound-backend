@@ -21,6 +21,7 @@ deck_id / page_id 工具入参是 string，service 收 int（统一 `int(...)`�
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from collections.abc import Awaitable, Callable
@@ -126,17 +127,21 @@ def _subject(ctx: AgentContext) -> Subject:
 def _page_brief(page: dict[str, Any], *, include_html: bool = False, include_notes: bool = False) -> dict[str, Any]:
     """页投影：默认只回定位与状态字段，`html` 正文不回显。
 
-    `html_length` 是留给分身的**廉价校验位**——分身写完想确认内容没被截断时比对字符数即可，
-    不必把整段 HTML 拉回上下文再逐字比。`notes`（演讲备注）通常只有几行，读工具会带上，
+    `html_sha256` 是留给分身的**逐字校验位**，这条不能省：分身手工转写整篇时出过繁简同形字
+    （`牽` vs `牵`），肉眼与字符数都发现不了——此前只能靠把全部页 HTML 回显回去做 diff 才抓得到。
+    哈希把那次 200KB 的回显压成每页 64 字符，而判据比 diff 还严（任何一个码点不同即不同）。
+    `html_length` 保留作粗判（截断一眼可见）。`notes`（演讲备注）通常只有几行，读工具会带上，
     因为分身批量改写前需要先取回它以免丢失。
     """
+    html = str(page.get('html') or '')
     out: dict[str, Any] = {
         'id': page['id'],
         'position': page['position'],
         'title': page['title'],
         'status': page['status'],
         'rev': page['rev'],
-        'html_length': len(str(page.get('html') or '')),
+        'html_length': len(html),
+        'html_sha256': hashlib.sha256(html.encode('utf-8')).hexdigest(),
     }
     if include_notes:
         out['notes'] = page.get('notes')
@@ -569,7 +574,9 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_page_write_batch,
         'desc': (
             '批量写多页 HTML（主力）。逐页骨架校验；不合格页进 rejected 让你重写，合格页落库。'
-            '只回本次写入页的摘要（不回显你刚传的 HTML；html_length 可用来核对是否被截断）。'
+            '只回本次写入页的摘要，不回显你刚传的 HTML——'
+            '**要逐字确认落库内容与你的终稿一致，比对 html_sha256**（对你那份 HTML 取 UTF-8 sha256，'
+            '相等即逐字相同；繁简同形字这类肉眼与字符数都看不出的差异，只有它抓得到）。'
         ),
         'schema': {
             'type': 'object',
