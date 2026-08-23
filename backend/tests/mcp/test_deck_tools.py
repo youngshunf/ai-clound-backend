@@ -335,6 +335,27 @@ async def test_deck_lifecycle_roundtrip_real_db() -> None:
         )
         assert edited['page']['title'] == '改后标题'
 
+        # 8.1) 写点回显不含 HTML 正文（省分身上下文）：只改一个标题不该把整页 HTML 退回来。
+        #      html_length 仍在，分身据此核对内容没被截断。
+        assert 'html' not in edited['page'], 'page.edit 不得回显 HTML 正文'
+        assert edited['page']['html_length'] == len(_VALID_HTML)
+        assert all('html' not in p for p in batch['pages']), 'page.write_batch 不得回显 HTML 正文'
+        assert [p['position'] for p in batch['pages']] == [0, 1], 'write_batch 只回本次写入的那几页'
+        assert batch['total_pages'] == 2
+        assert all('html' not in p for p in reordered['pages']), 'page.reorder 不得回显 HTML 正文'
+        # outline.set 的回显不带刚写进去的 outline / design_contract。
+        outline_echo = await _tool('hasn.deck.outline.set').execute(
+            ctx, {'deck_id': deck_id, 'pages': [{'title': '封面'}, {'title': '要点'}]}
+        )
+        assert 'outline' not in outline_echo['deck'] and 'design_contract' not in outline_echo['deck']
+
+        # 8.2) get 默认只回页摘要 + notes；要读回原文得显式开 include_html。
+        brief = await _tool('hasn.deck.get').execute(ctx, {'deck_id': deck_id})
+        assert all('html' not in p for p in brief['pages']), 'get 默认不返回页 HTML'
+        assert all('notes' in p for p in brief['pages']), 'get 仍需带回 notes（分身批量改写前要取回）'
+        full = await _tool('hasn.deck.get').execute(ctx, {'deck_id': deck_id, 'include_html': True})
+        assert all(p['html'] == _VALID_HTML for p in full['pages']), 'include_html=true 必须回得到原文'
+
         # 9) 删一页 → 剩 1 页
         await _tool('hasn.deck.page.delete').execute(ctx, {'deck_id': deck_id, 'page_id': page_ids[0]})
         after = await _tool('hasn.deck.get').execute(ctx, {'deck_id': deck_id})
@@ -343,6 +364,13 @@ async def test_deck_lifecycle_roundtrip_real_db() -> None:
         # 10) 样式：list 返回（内置 37 ∪ owner）；get 不存在 → 报错
         styles = await _tool('hasn.deck.style.list').execute(ctx, {})
         assert isinstance(styles['styles'], list)
+        # 挑样式只需要 slug/label/description；每个风格上千字的 design_contract + style_prompt
+        # 不该为了「列一下有哪些风格」全量进分身上下文——详情走 style.get。
+        assert styles['styles'], '内置样式不应为空'
+        for s in styles['styles']:
+            assert set(s) == {'slug', 'label', 'description', 'source'}, f'style.list 回了多余字段：{sorted(s)}'
+        one = await _tool('hasn.deck.style.get').execute(ctx, {'style_id': styles['styles'][0]['slug']})
+        assert 'design_contract' in one['style'], 'style.get 必须仍能取到完整详情'
         with pytest.raises(Exception):
             await _tool('hasn.deck.style.get').execute(ctx, {'style_id': f'no_such_{uuid.uuid4().hex[:8]}'})
 

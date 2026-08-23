@@ -115,6 +115,59 @@ def _subject(ctx: AgentContext) -> Subject:
     return Subject.agent(ctx.agent_hasn_id, _owner_hasn_id(ctx))
 
 
+# ── 返回体投影（省上下文）─────────────────────────────────────────────────────────
+# 这些工具的调用方是**分身**，返回体直接进它的上下文并按 token 计费。service 层的
+# `_page_dict` / `_deck_dict` / `_style_profile_dict` 是给 REST 面（webui 要拿全量渲染）用的，
+# 原样透传给分身会把分身**刚刚自己传上来的内容**再回显一遍：一页 16:9 创意 HTML 常有几 KB 到
+# 几十 KB，改一个标题也要付整页的钱，批量写更是一次回显整份 PPT。写点一律只回「定位 + 校验」
+# 所需的字段，正文不回显；要读回正文走读工具并显式开 `include_html`。
+
+
+def _page_brief(page: dict[str, Any], *, include_html: bool = False, include_notes: bool = False) -> dict[str, Any]:
+    """页投影：默认只回定位与状态字段，`html` 正文不回显。
+
+    `html_length` 是留给分身的**廉价校验位**——分身写完想确认内容没被截断时比对字符数即可，
+    不必把整段 HTML 拉回上下文再逐字比。`notes`（演讲备注）通常只有几行，读工具会带上，
+    因为分身批量改写前需要先取回它以免丢失。
+    """
+    out: dict[str, Any] = {
+        'id': page['id'],
+        'position': page['position'],
+        'title': page['title'],
+        'status': page['status'],
+        'rev': page['rev'],
+        'html_length': len(str(page.get('html') or '')),
+    }
+    if include_notes:
+        out['notes'] = page.get('notes')
+    if include_html:
+        out['html'] = page.get('html')
+    return out
+
+
+def _deck_brief(deck: dict[str, Any]) -> dict[str, Any]:
+    """deck 投影：去掉 `outline` / `design_contract` 两个大字段。
+
+    写点（create / outline.set）回显它们等于把分身刚传的大纲原样退回；分身要读大纲用
+    `hasn.deck.get`，那里保留完整 deck。
+    """
+    keep = (
+        'id',
+        'title',
+        'topic',
+        'status',
+        'language',
+        'style_profile_id',
+        'page_count',
+        'source',
+        'bound_agent_id',
+        'platform_project_id',
+        'visibility',
+        'rev',
+    )
+    return {k: deck[k] for k in keep if k in deck}
+
+
 def _deck_id(args: dict[str, Any]) -> int:
     try:
         return int(args['deck_id'])
@@ -146,14 +199,20 @@ def _resolve_create_project_id(args: dict[str, Any]) -> str | None:
 
 async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: list[dict[str, Any]]) -> Any:
     """按 position 序数 upsert 多页（复刻 daemon write_pages）：逐页骨架校验，不合格进 rejected，
-    合格页已有该位 → update_page，否则 create_page（status=generated）。existing 在循环前取一次。"""
+    合格页已有该位 → update_page，否则 create_page（status=generated）。existing 在循环前取一次。
+
+    返回体只含**本次写入的那几页**的摘要，不再回显整个 deck 的全部页：写 1 页却回 30 页全量
+    HTML，既是纯浪费也会随 deck 变长而越来越贵。`total_pages` 由 existing + 新建数直接算出，
+    因此写完也不再多打一次全表读。
+    """
     subject = _subject(ctx)
     # 先验 deck 归属/权限（不存在/跨户 → NotFound），而非逐页 fail。
     await deck_service.get_deck(db, subject=subject, deck_id=deck_id)
     existing = (await deck_service.list_pages(db, subject=subject, deck_id=deck_id))['items']
     by_position = {int(p['position']): p for p in existing}
 
-    written = 0
+    written: list[dict[str, Any]] = []
+    created = 0
     rejected: list[dict[str, Any]] = []
     for page in sorted(pages_input, key=lambda p: int(p.get('position', 0))):
         position = int(page['position'])
@@ -166,14 +225,14 @@ async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: l
         notes = page.get('notes')
         occupant = by_position.get(position)
         if occupant is not None:
-            await deck_service.update_page(
+            saved = await deck_service.update_page(
                 db,
                 subject=subject,
                 page_id=int(occupant['id']),
                 fields={'title': title, 'html': html, 'notes': notes, 'status': 'generated'},
             )
         else:
-            await deck_service.create_page(
+            saved = await deck_service.create_page(
                 db,
                 subject=subject,
                 deck_id=deck_id,
@@ -183,12 +242,20 @@ async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: l
                 notes=notes,
                 status='generated',
             )
-        written += 1
+            created += 1
+        written.append(_page_brief(saved))
 
-    pages_after = (await deck_service.list_pages(db, subject=subject, deck_id=deck_id))['items']
     # register-on-write：写页即登记（覆盖 page.write / page.write_batch 两个 handler）。
     registration = await _register_deck_artifact(db, ctx, deck_id)
-    return merge_resource_uri({'written': written, 'rejected': rejected, 'pages': pages_after}, registration)
+    return merge_resource_uri(
+        {
+            'written': len(written),
+            'rejected': rejected,
+            'pages': written,
+            'total_pages': len(existing) + created,
+        },
+        registration,
+    )
 
 
 # ── handlers ─────────────────────────────────────────────────────────────────────
@@ -214,15 +281,22 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     )
     # register-on-write：建 deck 即登记进工作会话资源栏 / 分身产物 tab（不等 finalize）。
     registration = await _register_deck_artifact(db, ctx, int(deck['id']), title=title)
-    return merge_resource_uri({'deck_id': str(deck['id']), 'status': deck['status'], 'deck': deck}, registration)
+    return merge_resource_uri(
+        {'deck_id': str(deck['id']), 'status': deck['status'], 'deck': _deck_brief(deck)}, registration
+    )
 
 
 async def _h_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """取 deck 详情。deck 本体回完整（outline / design_contract 是分身接着要用的输入）；
+    页默认只回摘要 + notes，正文 HTML 要显式 `include_html=true` 才回——一份 30 页的 deck
+    全量 HTML 有几百 KB，而分身多数时候只是想知道有哪些页、各页什么标题。"""
     subject = _subject(ctx)
     deck_id = _deck_id(args)
+    include_html = bool(args.get('include_html') or False)
     deck = await deck_service.get_deck(db, subject=subject, deck_id=deck_id)
     pages = await deck_service.list_pages(db, subject=subject, deck_id=deck_id)
-    return {'deck': deck, 'pages': pages['items']}
+    items = [_page_brief(p, include_html=include_html, include_notes=True) for p in pages['items']]
+    return {'deck': deck, 'pages': items}
 
 
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -246,7 +320,8 @@ async def _h_outline_set(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
     deck = await deck_service.update_deck(db, subject=_subject(ctx), deck_id=_deck_id(args), fields=fields)
     # register-on-write：写大纲即登记（标题取 deck 权威标题）。
     registration = await _register_deck_artifact(db, ctx, _deck_id(args), title=str(deck.get('title') or '') or None)
-    return merge_resource_uri({'deck': deck}, registration)
+    # 只回 deck 摘要：刚写进去的 outline / design_contract 原样退回没有信息量。
+    return merge_resource_uri({'deck': _deck_brief(deck)}, registration)
 
 
 async def _h_page_write_batch(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -259,7 +334,11 @@ async def _h_page_write(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any
 
 
 async def _h_page_edit(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """按 page_id 局部更新（仅传需改字段）。HTML 非空时做骨架校验（对齐 daemon edit_page 语义）。"""
+    """按 page_id 局部更新（仅传需改字段）。HTML 非空时做骨架校验（对齐 daemon edit_page 语义）。
+
+    返回只回页摘要。此前回显整页 `html`，让「只改一个标题」也要付整页 HTML 的 token——
+    分身实测因此绕开本工具、改用 write_batch 搬运整页，正是被这个回显逼的。
+    """
     fields: dict[str, Any] = {}
     if args.get('html') is not None:
         html = str(args['html'])
@@ -280,7 +359,7 @@ async def _h_page_edit(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     except (KeyError, TypeError, ValueError):
         # 返回体里没有可用的 deck_id——登记不了、URI 也算不出来，照 §3.2 省略 uri 字段。
         pass
-    return merge_resource_uri({'page': page}, registration)
+    return merge_resource_uri({'page': _page_brief(page)}, registration)
 
 
 async def _h_page_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -294,7 +373,8 @@ async def _h_page_reorder(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
     result = await deck_service.reorder_pages(
         db, subject=_subject(ctx), deck_id=_deck_id(args), ordered_page_ids=ordered
     )
-    return {'pages': result['items']}
+    # 重排只改 position，回显整份 HTML 与本次动作完全无关。
+    return {'pages': [_page_brief(p) for p in result['items']]}
 
 
 async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -344,8 +424,17 @@ async def _h_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_style_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """列样式：只回挑选所需的 slug / label / description / source。
+
+    完整 `design_contract` + `style_prompt` 每个风格都有上千字，内置 37 个一起回等于让分身为了
+    挑一个 slug 读完整本样式手册。选定后用 `style.get` 取那一个的详情。
+    """
     result = await deck_service.list_style_profiles(db, owner_id=_owner_hasn_id(ctx))
-    return {'styles': result['items']}
+    styles = [
+        {'slug': s['slug'], 'label': s['label'], 'description': s['description'], 'source': s['source']}
+        for s in result['items']
+    ]
+    return {'styles': styles, 'total': len(styles)}
 
 
 async def _h_style_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -426,8 +515,21 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'get',
         'write': False,
         'handler': _h_get,
-        'desc': '取 deck 详情（含全部页摘要 / outline / design_contract）。确定性读。',
-        'schema': {'type': 'object', 'properties': dict(_DECK_ID), 'required': ['deck_id']},
+        'desc': (
+            '取 deck 详情（outline / design_contract + 全部页摘要：id/position/title/status/notes/html_length）。'
+            '页正文默认不返回，确需读回原文时才传 include_html=true。确定性读。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                **_DECK_ID,
+                'include_html': {
+                    'type': ['boolean', 'null'],
+                    'description': '是否返回每页完整 HTML（默认 false；整份 deck 的 HTML 很长，只在要读回原文时开）',
+                },
+            },
+            'required': ['deck_id'],
+        },
         'resource_access': _RA_DECK_VIEWER,
     },
     {
@@ -465,7 +567,10 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'page.write_batch',
         'write': True,
         'handler': _h_page_write_batch,
-        'desc': '批量写多页 HTML（主力）。逐页骨架校验；不合格页进 rejected 让你重写，合格页落库。',
+        'desc': (
+            '批量写多页 HTML（主力）。逐页骨架校验；不合格页进 rejected 让你重写，合格页落库。'
+            '只回本次写入页的摘要（不回显你刚传的 HTML；html_length 可用来核对是否被截断）。'
+        ),
         'schema': {
             'type': 'object',
             'properties': {
@@ -480,7 +585,10 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'page.write',
         'write': True,
         'handler': _h_page_write,
-        'desc': '写单页 HTML（按 position 序数 upsert，幂等）。骨架不合格则进 rejected。',
+        'desc': (
+            '写单页 HTML（按 position 序数 upsert，幂等）。骨架不合格则进 rejected。'
+            '只回该页摘要，不回显你刚传的 HTML。'
+        ),
         'schema': {
             'type': 'object',
             'properties': {
@@ -498,7 +606,11 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'page.edit',
         'write': True,
         'handler': _h_page_edit,
-        'desc': '编辑某页（按 page_id 局部更新；仅传需要改的字段）。HTML 非空时做骨架校验。',
+        'desc': (
+            '编辑某页（按 page_id 局部更新；仅传需要改的字段）。HTML 非空时做骨架校验。'
+            '只改标题 / 备注时就只传那一个字段，返回只回页摘要、不回显 HTML——'
+            '改单个字段用本工具比用 page.write 重传整页便宜得多。'
+        ),
         'schema': {
             'type': 'object',
             'properties': {
@@ -570,7 +682,7 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'style.list',
         'write': False,
         'handler': _h_style_list,
-        'desc': '列可复用样式（系统内置 37 风格 ∪ 本 owner 自定义）。确定性读。',
+        'desc': '列可复用样式（系统内置 37 风格 ∪ 本 owner 自定义），只回 slug/label/description；详情用 style.get。确定性读。',
         'schema': {'type': 'object', 'properties': {}},
     },
     {
