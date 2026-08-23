@@ -33,7 +33,11 @@ from backend.app.hasn.schema.hasn_contacts_business import (
 from backend.app.hasn.service.hasn_auth import hasn_auth
 from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
 from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import RelationGatewayError
-from backend.app.hasn_im.application.provider import get_realtime_gateway, get_relation_gateway
+from backend.app.hasn_im.application.provider import (
+    get_presence_query,
+    get_realtime_gateway,
+    get_relation_gateway,
+)
 from backend.app.hasn_im.ports.relation_gateway import RelationGateway
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.common.response.response_code import CustomResponse
@@ -42,6 +46,7 @@ from backend.database.db import CurrentImSession, CurrentSession
 
 router = APIRouter(prefix='/contacts', tags=['HASN Contacts'])
 _realtime_gateway = get_realtime_gateway()
+_presence_query = get_presence_query()
 
 
 async def _resolve_star_id(db, target_star_id: str) -> tuple[Any, str | None]:
@@ -371,6 +376,11 @@ async def list_contacts(
     hasn_id = auth.get('effective_id', auth['hasn_id'])
     contacts = await hasn_contacts_dao.list_contacts(db, hasn_id, relation_type=relation_type)
 
+    # peer 是分身的联系人行，其 peer 也要带**实时在线态**（与 owned_agents 同源）。
+    # 一次性批量取，避免在下面的循环里逐行打 Redis（N+1）。
+    agent_peer_ids = [c.peer_id for c in contacts if c.peer_type == 'agent' and c.peer_id]
+    agent_peer_online = await _presence_query.get_online_map(agent_peer_ids) if agent_peer_ids else {}
+
     items = []
     for c in contacts:
         # 查 peer 信息（使用 hasn_id）
@@ -436,6 +446,12 @@ async def list_contacts(
                     name=peer_name,
                     type=c.peer_type,
                     avatar=getattr(peer_info, 'avatar', None),
+                    # 分身 peer 才有在线态；人的 peer 保持 None（不造假）。
+                    online_status=(
+                        ('online' if agent_peer_online.get(c.peer_id) else 'offline')
+                        if c.peer_type == 'agent'
+                        else None
+                    ),
                 ),
                 relation_type=c.relation_type,
                 trust_level=c.trust_level,

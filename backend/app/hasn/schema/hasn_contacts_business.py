@@ -22,6 +22,15 @@ class HasnContactPeerOut(BaseModel):
     type: str  # human / agent
     avatar: str | None = None
     status: str = 'active'
+    # peer 本身就是「他人的分身」（直接把好友的分身加为联系人）时的**实时在线态**，
+    # 与 owned_agents 同源（Redis presence + 节点存活 + 就绪键，走 get_online_map）。
+    # peer 是人时保持 None——不造假，消费方按「无 presence」处理。
+    #
+    # ⚠️ 这个字段**必须声明在这里**，否则 service 层算出来也会被 Pydantic 静默丢掉：
+    # 2026-08-23 实测，`_build_contact_detail` 早就回填了 peer.online_status，但
+    # 本模型没有这一格 + 列表端点手搓 peer 时没传，两处叠加导致好友分身在对方客户端
+    # 恒显示离线、并被 WebUI 的「在线态硬门控」禁掉输入框（分身实际在线且能收消息）。
+    online_status: str | None = None
 
 
 # add_source「添加来源」合法取值（与 hasn_contact_requests.add_source 字典对齐）
