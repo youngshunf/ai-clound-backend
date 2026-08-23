@@ -1,16 +1,19 @@
 """桌面端发布产物流式上传的回归契约。"""
 
+import functools
 import hashlib
 import inspect
 
 from collections.abc import AsyncIterator
 
+import httpx
 import pytest
 
 from starlette.requests import Request
 
 from backend.app.hasn_release.api.v1.ci.release import _required_content_length, ci_upload
 from backend.app.hasn_release.schema.release import CiMultipartCompleteRequest, CiMultipartInitRequest
+from backend.app.hasn_release.service import release_service as release_service_module
 from backend.app.hasn_release.service.release_service import ReleaseService, _HashingSizedStream, _stage_release_upload
 from backend.common.exception import errors
 
@@ -94,12 +97,70 @@ def test_ci_multipart_complete_is_idempotent_after_provider_session_disappears()
 
 
 def test_ci_multipart_complete_verifies_stored_bytes_sha256() -> None:
-    complete_source = inspect.getsource(ReleaseService.ci_multipart_complete)
+    """落桶校验必须走 CDN 回读，**不得**走 S3 端点。
 
-    assert 'StorageService.sha256_on_storage' in complete_source
+    2026-08-23 实测：七牛写入 AK 对这个公共桶既无 HeadObject 权限（403 PermissionDenied），
+    也被禁止从 S3 端点 GetObject（403 GetObjectBlocked），因此
+    `StorageService.sha256_on_storage`（S3 GET）在生产上**永远不可能成功**。
+
+    ⚠️ 本断言此前写的是 `'StorageService.sha256_on_storage' in complete_source` —— 那是一条
+    纯字符串存在性检查：字符串在就绿，完全不能证明那条调用跑得通。该校验 2026-08-11 引入后
+    从未在生产成功执行过（0.3.4 发布早于它落地），v0.3.5 首次真正跑到这一步就连续 29 次 500，
+    而这条测试全程是绿的。所以现在正反两侧都钉：必须用 CDN 摘要，且不许退回 S3 读。
+    """
+    complete_source = inspect.getsource(ReleaseService.ci_multipart_complete)
+    # 只看代码行：注释里会写「为什么不用 sha256_on_storage」，不剥掉注释这条反向断言会被自己绊倒。
+    code_only = '\n'.join(
+        line for line in complete_source.splitlines() if not line.lstrip().startswith('#')
+    )
+
+    assert '_public_release_object_digest' in code_only
+    assert 'sha256_on_storage' not in code_only, 'S3 端点读在这个桶上恒 403，不许退回去'
     assert 'stored_size != obj.file_size' in complete_source
     assert 'stored_sha256 != obj.sha256' in complete_source
     assert 'sha256=stored_sha256' in complete_source
+
+
+@pytest.mark.asyncio
+async def test_public_release_object_digest_streams_and_hashes_real_bytes(monkeypatch) -> None:
+    """行为断言（不是源码 grep）：摘要函数确实按流读完整对象并算出正确 SHA-256。"""
+    payload = bytes(range(256)) * 8192  # 2 MiB，跨多个 1 MiB 分块
+    expected = hashlib.sha256(payload).hexdigest()
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen['url'] = str(request.url)
+        seen['accept_encoding'] = request.headers.get('accept-encoding')
+        return httpx.Response(200, content=payload)
+
+    monkeypatch.setattr(
+        release_service_module.httpx,
+        'AsyncClient',
+        functools.partial(httpx.AsyncClient, transport=httpx.MockTransport(handler)),
+    )
+
+    result = await release_service_module._public_release_object_digest('https://cdn.example/a.dmg')
+
+    assert result == (expected, len(payload))
+    assert seen['url'] == 'https://cdn.example/a.dmg'
+    # identity 编码是硬要求：CDN 若 gzip 回传，算出来的是压缩流的哈希，与本地文件永不相等。
+    assert seen['accept_encoding'] == 'identity'
+
+
+@pytest.mark.asyncio
+async def test_public_release_object_digest_returns_none_on_http_error(monkeypatch) -> None:
+    """读不通时返回 None（由调用方决定是重传还是报错），不得抛穿或谎报成功。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, content=b'<Error><Code>GetObjectBlocked</Code></Error>')
+
+    monkeypatch.setattr(
+        release_service_module.httpx,
+        'AsyncClient',
+        functools.partial(httpx.AsyncClient, transport=httpx.MockTransport(handler)),
+    )
+
+    assert await release_service_module._public_release_object_digest('https://cdn.example/a.dmg') is None
 
 
 @pytest.mark.parametrize(

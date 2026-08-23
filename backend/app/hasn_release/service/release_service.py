@@ -61,6 +61,7 @@ from backend.app.hasn_release.schema.release import (
 )
 from backend.common.exception import errors
 from backend.common.llm import LLMError, llm_client
+from backend.common.log import log
 from backend.core.conf import settings
 from backend.plugin.s3.service.storage_service import StorageService
 from backend.utils.timezone import timezone
@@ -134,6 +135,37 @@ async def _public_release_object_size(download_url: str) -> int | None:
         return int(raw_size) if raw_size.isdigit() else None
     except (httpx.HTTPError, OSError, ValueError):
         return None
+
+
+async def _public_release_object_digest(download_url: str) -> tuple[str, int] | None:
+    """经公共 CDN 流式读回对象，返回 (sha256, 字节数)；读不到返回 None。
+
+    **为什么不走 S3 端点**：七牛的写入 AK 对这个公共桶既没有 HeadObject 权限
+    （403 PermissionDenied），也不允许从 S3 端点取对象（403 `GetObjectBlocked`）。
+    `StorageService.sha256_on_storage` 正是走 S3 GET，因此在这个桶上**永远不可能成功**。
+    2026-08-23 实测：该校验自 2026-08-11 引入后从未在生产成功执行过（0.3.4 发布早于它落地），
+    v0.3.5 首次真正跑到这一步就连续 29 次 500、重试耗尽，二十多分钟的打包白跑。
+
+    改读 CDN 还更强：它校验的是**桌面端最终真正下载的那个地址**上的字节，而不是另一条
+    我们自己都读不通的内部链路。分块流式更新摘要，不把几百 MB 读进内存。
+    """
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        # 大包按 CDN 带宽算，300MB 量级留足超时；只读不写，失败即返回 None 由调用方决定。
+        timeout = httpx.Timeout(connect=20.0, read=120.0, write=20.0, pool=20.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=True) as client:
+            async with client.stream(
+                'GET', download_url, headers={'Accept-Encoding': 'identity'}
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(1024 * 1024):
+                    digest.update(chunk)
+                    total += len(chunk)
+    except (httpx.HTTPError, OSError) as exc:
+        log.warning('CDN 回读发布对象失败 url=%s: %s', download_url, exc)
+        return None
+    return digest.hexdigest(), total
 
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
@@ -1133,16 +1165,18 @@ class ReleaseService:
         # complete_multipart_upload 已在供应商侧成功、但随后 HEAD/响应链路瞬时失败时，
         # 客户端会用同一会话重试；此时供应商已删除 upload_id。先认领大小与 SHA-256
         # 都匹配的对象，使完成接口具备幂等性；同大小异内容必须覆盖修复。
-        # 七牛写入 AK 没有 HeadObject 权限，因此不能用 S3 stat；公共 CDN HEAD 同时
-        # 验证了桌面端最终实际消费的地址。
+        #
+        # 大小与摘要**都**经公共 CDN 读：七牛写入 AK 对这个桶既无 HeadObject 权限，
+        # 也被禁止从 S3 端点 GetObject（详见 `_public_release_object_digest` 的注释），
+        # 走 `StorageService.sha256_on_storage` 必然 403。CDN 同时还是桌面端最终实际
+        # 消费的地址，校验它比校验一条我们自己都读不通的内部链路更有意义。
         completed_size = await _public_release_object_size(download_url)
         stored_sha256: str | None = None
         stored_size = completed_size
         if completed_size == obj.file_size:
-            stored_sha256, stored_size = await StorageService.sha256_on_storage(
-                storage,
-                object_key=obj.object_key,
-            )
+            digest = await _public_release_object_digest(download_url)
+            if digest is not None:
+                stored_sha256, stored_size = digest
         if stored_size != obj.file_size or stored_sha256 != obj.sha256:
             await StorageService.complete_multipart_on_storage(
                 storage,
@@ -1157,10 +1191,10 @@ class ReleaseService:
                 await asyncio.sleep(1)
             if completed_size != obj.file_size:
                 raise errors.ServerError(msg='multipart 完成后的对象大小与本地文件不一致')
-            stored_sha256, stored_size = await StorageService.sha256_on_storage(
-                storage,
-                object_key=obj.object_key,
-            )
+            digest = await _public_release_object_digest(download_url)
+            if digest is None:
+                raise errors.ServerError(msg='multipart 完成后无法经 CDN 回读对象校验 SHA-256')
+            stored_sha256, stored_size = digest
         if stored_size != obj.file_size:
             raise errors.ServerError(msg='multipart 落桶对象大小与本地文件不一致')
         if stored_sha256 != obj.sha256:
