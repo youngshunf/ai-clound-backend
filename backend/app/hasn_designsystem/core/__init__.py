@@ -37,14 +37,15 @@ from .derive import (
     render_design_tokens_json,
     render_tailwind_v4_css,
 )
-from .gallery_projection import slice_gallery_scene, summarize_gallery
-from .schema import (
-    TOKEN_SCHEMA,
-    TokenSpec,
-    all_schema_names,
-    is_allowed_extension,
-    spec_for,
+from .gallery_compose import (
+    GalleryParts,
+    compose_gallery,
+    normalize_scene_input,
+    remove_scene,
+    split_gallery,
+    upsert_scene,
 )
+from .gallery_projection import slice_gallery_scene, summarize_gallery
 from .scenes import (
     DEFAULT_REQUIRED_SCENES,
     SCENE_STANDARDS,
@@ -53,6 +54,13 @@ from .scenes import (
     detect_scenes,
     is_known_scene,
     known_scene_ids,
+)
+from .schema import (
+    TOKEN_SCHEMA,
+    TokenSpec,
+    all_schema_names,
+    is_allowed_extension,
+    spec_for,
 )
 
 __all__ = [
@@ -63,6 +71,7 @@ __all__ = [
     'TOKEN_SCHEMA',
     'Binding',
     'DesignSystemContract',
+    'GalleryParts',
     'SceneComponent',
     'SceneStandard',
     'SourceToken',
@@ -70,6 +79,7 @@ __all__ = [
     'all_schema_names',
     'binding_to_dict',
     'compile_tokens',
+    'compose_gallery',
     'derive',
     'detect_scenes',
     'extract_components',
@@ -77,12 +87,16 @@ __all__ = [
     'is_allowed_extension',
     'is_known_scene',
     'known_scene_ids',
+    'normalize_scene_input',
+    'remove_scene',
     'render_contract_css',
     'render_design_tokens_json',
     'render_tailwind_v4_css',
     'slice_gallery_scene',
     'spec_for',
+    'split_gallery',
     'summarize_gallery',
+    'upsert_scene',
     'validate',
     'validate_token_outputs',
 ]
