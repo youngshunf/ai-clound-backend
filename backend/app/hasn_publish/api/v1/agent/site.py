@@ -36,7 +36,9 @@ async def _agent(request: Request, db: AsyncSession, *scopes: str) -> AgentToken
 
 class AgentCreateSiteRequest(BaseModel):
     kind: str = Field(default='page')
-    title: str = Field(default='', max_length=200)
+    # 分身必须给名字：无 default＝缺字段 422，min_length=1＝空串 422，纯空白由 service 的
+    # normalize_title 拦。主人在「网页发布」里靠这个名字认出是哪个站，不能落成「未命名」。
+    title: str = Field(min_length=1, max_length=200, description='展示标题（必填）')
     asset_id: str = Field(min_length=1, max_length=40)
     runtime: str = Field(default='single-html')
     content_hash: str = Field(default='', max_length=64)
@@ -59,6 +61,11 @@ class AgentUpdateSiteRequest(BaseModel):
     content_hash: str = Field(default='', max_length=64)
     size_bytes: int = Field(default=0, ge=0)
     manifest_json: dict | None = Field(default=None)
+    title: str | None = Field(default=None, max_length=200, description='可选：随内容更新一并改名')
+
+
+class AgentRenameSiteRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200, description='新展示标题（去空白后必须非空）')
 
 
 class AgentSetVisibilityRequest(BaseModel):
@@ -82,7 +89,8 @@ async def agent_create_site(
         owner_id=agent.owner_hasn_id,
         publisher_agent_id=agent.agent_hasn_id,
         kind=body.kind,
-        title=body.title,
+        # 纯空白标题 Pydantic 的 min_length 拦不住（长度够），这里过一遍归一：去空白后为空即 400。
+        title=publish_service.normalize_title(body.title),
         asset_id=body.asset_id,
         runtime=body.runtime,
         content_hash=body.content_hash,
@@ -137,8 +145,25 @@ async def agent_update_site(
         content_hash=body.content_hash,
         size_bytes=body.size_bytes,
         manifest_json=body.manifest_json,
+        title=body.title,
     )
     return response_base.success(data=data)
+
+
+@router.patch(
+    '/sites/{site_id}/title',
+    summary='Agent 改展示标题（纯元数据，不发新 revision）',
+    dependencies=[DependsAgentJwtAuth],
+    name='publish_agent_rename',
+)
+async def agent_rename_site(
+    request: Request, db: CurrentSessionTransaction, site_id: int, body: AgentRenameSiteRequest
+) -> ResponseModel:
+    agent = await _agent(request, db, _SCOPE_WRITE)
+    data = await publish_service.rename_site(
+        db, owner_id=agent.owner_hasn_id, site_id=site_id, title=body.title
+    )
+    return response_base.success(data={'site': data})
 
 
 @router.patch(

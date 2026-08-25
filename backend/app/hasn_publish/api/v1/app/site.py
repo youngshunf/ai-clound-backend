@@ -49,6 +49,13 @@ class UpdateSiteRequest(BaseModel):
     content_hash: str = Field(default='', max_length=64)
     size_bytes: int = Field(default=0, ge=0)
     manifest_json: dict | None = Field(default=None)
+    title: str | None = Field(
+        default=None, max_length=200, description='可选：随内容更新一并改名；不传＝保留原名'
+    )
+
+
+class RenameSiteRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200, description='新展示标题（去空白后必须非空）')
 
 
 class SetVisibilityRequest(BaseModel):
@@ -145,8 +152,23 @@ async def update_site(
         content_hash=body.content_hash,
         size_bytes=body.size_bytes,
         manifest_json=body.manifest_json,
+        title=body.title,
     )
     return response_base.success(data=data)
+
+
+@router.patch(
+    '/sites/{site_id}/title',
+    summary='改展示标题（纯元数据，不发新 revision）',
+    dependencies=[DependsJwtAuth],
+    name='publish_app_rename',
+)
+async def rename_site(
+    request: Request, db: CurrentSessionTransaction, site_id: int, body: RenameSiteRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await publish_service.rename_site(db, owner_id=owner_id, site_id=site_id, title=body.title)
+    return response_base.success(data={'site': data})
 
 
 @router.patch(

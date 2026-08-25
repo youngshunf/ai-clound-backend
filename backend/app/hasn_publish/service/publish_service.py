@@ -44,6 +44,8 @@ VISIBILITY_ORDER = ('private', 'password', 'unlisted', 'public')
 # 'design'：OpenPencil 矢量设计成品对外发布（doc27 §P3-C / OP-P3-9，A 成品分享复用 M18；同为开放字符串，无 DDL 变更）。
 VALID_KINDS = ('deck', 'report', 'page', 'dashboard', 'video', 'design', 'other')
 MAX_REVISIONS_PER_SITE = 20
+# 标题长度上限：与 app/agent 两侧请求模型的 max_length 同源，改这里就要一起改（列宽 200）。
+MAX_TITLE_LEN = 200
 VIEW_TICKET_TTL_SECONDS = 600  # 10 分钟
 _VIEW_TICKET_TYPE = 'publish_view_ticket'
 FORM_ACCESS_TOKEN_TTL_SECONDS = 600
@@ -281,6 +283,20 @@ class PublishService:
         return kind if kind in VALID_KINDS else 'other'
 
     @staticmethod
+    def normalize_title(title: str | None) -> str:
+        """归一展示标题：去首尾空白 → 必须非空 → 限长。
+
+        零 fake：不给「未命名」这类兜底值——发布方没给名字就是没给，当场报错让它补，
+        而不是落一条主人在列表里认不出来的记录。
+        """
+        normalized = (title or '').strip()
+        if not normalized:
+            raise errors.RequestError(msg='发布标题不能为空')
+        if len(normalized) > MAX_TITLE_LEN:
+            raise errors.RequestError(msg=f'发布标题不能超过 {MAX_TITLE_LEN} 个字符')
+        return normalized
+
+    @staticmethod
     async def _resolve_owned_project_id(
         db: AsyncSession,
         *,
@@ -419,7 +435,11 @@ class PublishService:
             owner_id=owner_id,
             publisher_agent_id=publisher_agent_id,
             kind=PublishService._validate_kind(kind),
-            title=title or '未命名',
+            # 没给标题就**存空**，不再兜底成 '未命名'——那是个假名字：它在主人的「网页发布」
+            # 里长得和真标题一模一样（黑体、不可疑），主人既认不出这是哪个站，也看不出
+            # 「这里缺一个名字」。空标题由展示层各自降级（访客外壳已有 `title or '分享'`，
+            # WebUI 显示成可点的「起个名字」入口），数据层保持诚实。
+            title=(title or '').strip(),
             slug=slug,
             source_app=source_app,
             source_ref=source_ref,
@@ -475,10 +495,14 @@ class PublishService:
         content_hash: str = '',
         size_bytes: int = 0,
         manifest_json: dict | None = None,
+        title: str | None = None,
     ) -> dict[str, Any]:
         site = await PublishService._get_owned(db, owner_id=owner_id, site_id=site_id)
         if not asset_id:
             raise errors.RequestError(msg='缺少制品 asset_id')
+        # title 给了才改（不给＝只换内容，保留原名）；给了就必须是合法名字，不接受空串抹掉标题。
+        if title is not None:
+            site.title = PublishService.normalize_title(title)
 
         # content_hash 去重：site 内同 hash 复用 revision（仅移动指针）
         if content_hash:
@@ -597,6 +621,20 @@ class PublishService:
             site.allow_indexing = allow_indexing if site.visibility == 'public' else False
         if site.visibility != 'public':
             site.allow_indexing = False
+        site.rev += 1
+        await db.flush()
+        return site_to_dict(site)
+
+    @staticmethod
+    async def rename_site(
+        db: AsyncSession, *, owner_id: str, site_id: int, title: str
+    ) -> dict[str, Any]:
+        """改展示标题（纯元数据，不发新 revision、不动 slug/URL/可见性）。
+
+        与 update_site 分开：改名不该产生一个新版本，也不该要求调用方重新上传制品。
+        """
+        site = await PublishService._get_owned(db, owner_id=owner_id, site_id=site_id)
+        site.title = PublishService.normalize_title(title)
         site.rev += 1
         await db.flush()
         return site_to_dict(site)
