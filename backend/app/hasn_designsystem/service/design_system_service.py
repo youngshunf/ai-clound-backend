@@ -1,7 +1,12 @@
 """设计系统生成应用（app_id=designsystem）云端业务服务。
 
-云端是**权威存储**：确定性 token 契约引擎（compile/derive/validate/extract）在 daemon 本地 Rust
-crate 跑，云端不重算，只存分身/人算好的 tokens.css + 派生产物 + 评分报告，并维护版本与同步水位。
+云端是**权威存储**：存 tokens.css + 派生产物 + 评分报告，并维护版本与同步水位。
+
+⚠️ 「云端不重算」这句**已随 TOOLMIG 作废**：确定性契约引擎（compile/derive/validate/extract）已
+Python 移植进 :mod:`backend.app.hasn_designsystem.core`，云端自己就能算。整包 ``save`` 仍沿用旧口径
+（分身给什么存什么，保持兼容），而**分片写入路径（DSPUT）由云端现算全部派生物**——见
+:meth:`DesignSystemService.put_content`。派生物本就是纯函数的输出，让分身把算好的结果再序列化一遍
+穿过 tool.call，是这条链路上最没必要的那部分体积。
 
 可见域（list_visible）：builtin ∪ owner ∪ 企业（共享 ACL 在 P9 接 resource_share 补齐）。
 owner 隔离：写操作强制 owner_hasn_id == subject.owner_hasn_id；builtin（is_builtin）跨 owner 只读。
@@ -24,6 +29,10 @@ from sqlalchemy import func, or_, select
 
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
+from backend.app.hasn_designsystem.core.components import extract_components
+from backend.app.hasn_designsystem.core.contract import validate as validate_token_contract
+from backend.app.hasn_designsystem.core.derive import derive as derive_from_tokens
+from backend.app.hasn_designsystem.core.gallery_compose import remove_scene, upsert_scene
 from backend.app.hasn_designsystem.core.gallery_health import assess_gallery_health
 from backend.app.hasn_designsystem.core.gallery_projection import (
     slice_gallery_scene,
@@ -64,6 +73,58 @@ _REVISION_CONTENT = (
     'components_manifest_json',
     'token_contract_report_json',
 )
+
+
+# ── DSPUT·分片写入：由服务端现算的派生内容字段 ────────────────────────────────────
+# 这四项都是 tokens.css / components.html 经确定性纯函数得到的**函数值**，不是独立信息。整包 save
+# 时代它们要由分身算好再回传，于是几十 KB 的 manifest 与报告白白穿过一次 tool.call 的双重 JSON
+# 序列化——而这正是实测 41% 调用「生成不出合法 JSON」的体积来源。分片路径一律云端现算。
+# 真源：只有这两项是分身真正创作的内容，其余内容字段都是它们的函数。
+_CONTENT_SOURCE_FIELDS = ('tokens_css', 'components_html')
+
+_SERVER_DERIVED_FIELDS = (
+    'design_tokens_json',
+    'tailwind_css',
+    'token_contract_report_json',
+    'components_manifest_json',
+)
+
+
+def _recompute_derived(content: dict[str, Any], *, brand_id: str, generated_at: str) -> dict[str, Any]:
+    """按 ``tokens_css`` + ``components_html`` 现算全部派生物，返回**新的** content（不改入参）。
+
+    真源缺失时对应派生物原样保留（不清空、不臆造）——建壳后只写了 design.md 的中间态是合法的，
+    此时还没有 tokens.css 可算。
+    """
+    out = dict(content)
+    tokens_css = out.get('tokens_css')
+    html = out.get('components_html')
+    tokens_css = tokens_css if isinstance(tokens_css, str) and tokens_css.strip() else None
+    html = html if isinstance(html, str) and html.strip() else None
+
+    if tokens_css is not None:
+        out['token_contract_report_json'] = validate_token_contract(tokens_css, generated_at, html)
+        derived = derive_from_tokens(tokens_css, generated_at)
+        # render_design_tokens_json 返回的是渲染好的 JSON **文本**，而 DB 列是 JSONB → 存 dict。
+        out['design_tokens_json'] = json.loads(derived['design_tokens_json'])
+        out['tailwind_css'] = derived['tailwind_v4_css']
+    if html is not None:
+        out['components_manifest_json'] = extract_components(brand_id, html, tokens_css)
+    return out
+
+
+def _score_from_report(report: Any) -> tuple[int | None, str | None, bool]:
+    """从契约报告里取 ``(score, grade, recommend_rebuild)``；报告形状不对时一律返回空，不猜。"""
+    summary = report.get('summary') if isinstance(report, dict) else None
+    if not isinstance(summary, dict):
+        return None, None, False
+    score = summary.get('score')
+    grade = summary.get('grade')
+    return (
+        score if isinstance(score, int) and not isinstance(score, bool) else None,
+        grade if isinstance(grade, str) and grade else None,
+        bool(summary.get('recommendRebuild')),
+    )
 
 
 def _content_hash(payload: dict[str, Any]) -> str:
@@ -466,46 +527,15 @@ class DesignSystemService:
 
         # 分身写满必填字段时，在设计系统状态事务内登记完成卡 outbox 命令。状态提交后即使
         # API/worker 崩溃，relay 仍能恢复投递；业务事务失败则命令一并回滚。
-        should_notify = (
-            advance_current
-            and subject.kind == 'agent'
-            and d.completed_notified_at is None
-            and _content_complete(content)
+        completion_card = await self._emit_completion_card_if_needed(
+            db,
+            d=d,
+            subject=subject,
+            content=content,
+            now=now,
+            im_gateway=im_gateway,
+            advance_current=advance_current,
         )
-        completion_card: dict[str, Any] | None = None
-        if should_notify:
-            # DSGAL：交叉 owner 要求与实际画廊场景，把覆盖提示压进完成卡摘要。
-            preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
-            hint = _scene_coverage_hint(
-                _scene_coverage_annotation(
-                    _normalize_required_scenes(d.required_scenes),
-                    _authoritative_scenes(content.get('components_html')),
-                )
-            )
-            if hint:
-                preview = f'{preview} · 画廊 {hint}'
-            from backend.app.hasn.service.hasn_sessions_service import (
-                emit_designsystem_completion_card,
-            )
-
-            delivery = await emit_designsystem_completion_card(
-                db,
-                owner_id=owner,
-                agent_id=subject.hasn_id,
-                design_system_id=str(d.id),
-                title=d.name,
-                summary=preview,
-                im_gateway=im_gateway,
-            )
-            if delivery.get('command_id'):
-                d.completed_notified_at = now
-                completion_card = {
-                    'design_system_id': str(d.id),
-                    'title': d.name,
-                    'summary': preview,
-                    'delivery_command_id': delivery['command_id'],
-                    'delivery_state': delivery['status'],
-                }
 
         await db.commit()
         await db.refresh(d)
@@ -516,6 +546,330 @@ class DesignSystemService:
         # 完成信号仅用于工具返回清理与诊断；投递命令已在 save 事务中持久化。
         out['completion_card'] = completion_card
         return out
+
+    # ── DSPUT·分片写入（create → put_* → finalize）───────────────────────────────────
+    # 整包 save 的问题不在业务逻辑，在**入参体积**：改一个场景也要把全部场景 HTML 一起重发，
+    # 经 tool.call 套一层 JSON 后分身要一次吐出 2 万-4.5 万字符的双重转义串。实测 104 次调用
+    # 66% 失败，其中 41% 卡在「生成不出合法 JSON」。分片路径让每次入参只带**本次真正要改的那一块**，
+    # 未提供的字段由服务端从当前版继承、派生物由服务端现算——两者都不再经过分身的手。
+
+    async def create_shell(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        slug: str,
+        name: str,
+        category: str | None = None,
+        source_kind: str = 'generated',
+        required_scenes: list[str] | None = None,
+        platform_project_id: str | UUID | None = None,
+        enterprise_id: int | None = None,
+    ) -> dict[str, Any]:
+        """建一套空设计系统的壳，只要 ``slug`` + ``name``，**不落任何 revision**。
+
+        同 owner 撞 slug 视为命中存量（与 save 的幂等口径一致），返回既有那套——分身重试建壳不会
+        造出第二套，也不会覆盖已有内容。
+
+        不落空 revision 是有意的：revision 表示「一版内容」，空壳没有内容。这样
+        :func:`_content_complete` 天然为 False，详情页四区块如实显示为空，不会出现「有版本号但全空」。
+        """
+        owner = subject.owner_hasn_id
+        existing = (
+            await db.execute(
+                select(DesignSystem).where(
+                    DesignSystem.owner_hasn_id == owner,
+                    DesignSystem.slug == slug,
+                    DesignSystem.deleted_time.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            out = _ds_dict(existing)
+            out['created'] = False  # 幂等命中：如实告诉调用方这次没有新建
+            return out
+
+        d = DesignSystem(
+            owner_hasn_id=owner,
+            name=name,
+            slug=slug,
+            category=category,
+            source_kind=source_kind,
+            enterprise_id=enterprise_id,
+            content_hash='',
+        )
+        if required_scenes is not None:
+            d.required_scenes = _normalize_required_scenes(required_scenes)
+        db.add(d)
+        await db.flush()
+        if platform_project_id is not None:
+            await project_service.assert_owned(db, owner=owner, pk=platform_project_id)
+            d.platform_project_id = UUID(str(platform_project_id))
+        # AppCollab：创建即绑定生成它的分身（与 save 同 bind-only-if-unbound 口径）。
+        if d.bound_agent_id is None and subject.kind == 'agent':
+            d.bound_agent_id = subject.hasn_id
+        await db.commit()
+        await db.refresh(d)
+        out = _ds_dict(d)
+        out['created'] = True
+        return out
+
+    async def put_content(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        design_system_id: int,
+        patch: dict[str, Any],
+        note: str | None = None,
+        required_scenes: list[str] | None = None,
+        skip_if_unchanged: bool = False,
+        im_gateway: ImGateway | None = None,
+    ) -> dict[str, Any]:
+        """部分内容写入：**未提供的字段从当前版继承**，派生物由服务端现算，落一版新 revision。
+
+        ``patch`` 只放本次真正要改的键（``tokens_css`` / ``design_md`` / ``components_html``）。
+        这正是分片相对整包替换的核心差别——整包 save 里「没传」等于「清空」（实测漏传
+        ``components_html`` 让画廊从 13/13 变 0/13，而 save 照样返回 200、score 仍是 100）；
+        这里「没传」等于「不动」。
+
+        权限：先按读权限断言（无权者不该借写接口读到内容），写权限由 :meth:`save` 兜底判定。
+        """
+        d = await self._get_alive(db, design_system_id)
+        await self._assert_can_read(db, d, subject.owner_hasn_id)
+
+        current: dict[str, Any] = {}
+        if d.current_revision_id is not None:
+            rev = await db.get(Revision, d.current_revision_id)
+            if rev is not None:
+                current = {k: getattr(rev, k) for k in _REVISION_CONTENT}
+
+        unknown = [k for k in patch if k not in _REVISION_CONTENT]
+        if unknown:
+            raise errors.RequestError(msg=f'不认识的内容字段: {unknown}（可写：{list(_REVISION_CONTENT)}）')
+        merged = {**current, **patch}
+        # 只有真源（tokens.css / components.html）动了才重算派生物。派生物是真源的函数，真源没变
+        # 结果就没变——而重算会把新的 generatedAt 时间戳写进报告，让 content_hash 每次都不同，
+        # finalize 这种「什么都没改」的调用就会永远落一版冗余 revision（且永远判 unchanged=False）。
+        if any(key in patch for key in _CONTENT_SOURCE_FIELDS):
+            merged = _recompute_derived(merged, brand_id=d.slug, generated_at=timezone.now().isoformat())
+        score, grade, recommend_rebuild = _score_from_report(merged.get('token_contract_report_json'))
+
+        if skip_if_unchanged and d.current_revision_id is not None and _content_hash(merged) == d.content_hash:
+            # 内容与当前版逐字节相同（finalize 的常态）→ 不落冗余版本，但**完成判定与发卡照做**：
+            # 首次「写全」很可能正发生在最后那次 put，此刻才是该发卡的时刻。
+            now = timezone.now()
+            completion_card = await self._emit_completion_card_if_needed(
+                db, d=d, subject=subject, content=merged, now=now, im_gateway=im_gateway
+            )
+            if required_scenes is not None:
+                d.required_scenes = _normalize_required_scenes(required_scenes)
+            d.updated_time = now
+            await db.commit()
+            await db.refresh(d)
+            out = _ds_dict(d)
+            out['revision'] = None
+            out['unchanged'] = True
+            out['pending'] = False
+            out['completion_card'] = completion_card
+            out['content_complete'] = _content_complete(merged)
+            return out
+
+        out = await self.save(
+            db,
+            subject=subject,
+            design_system_id=design_system_id,
+            # slug/name 取库里现值：更新存量时它们不该由调用方再给一遍——slug 在 save 的白名单里
+            # 本就改不动（传了静默忽略），name 让分身每次原样回传只会带来「传错就静默改名」的风险。
+            slug=d.slug,
+            name=d.name,
+            content=merged,
+            category=None,
+            source_kind=d.source_kind,
+            score=score,
+            grade=grade,
+            recommend_rebuild=recommend_rebuild,
+            note=note,
+            required_scenes=required_scenes,
+            im_gateway=im_gateway,
+        )
+        out['unchanged'] = False
+        # 完整度是「能不能说做完了」的唯一判据，显式回出去——别让分身自己数五项必填。
+        out['content_complete'] = _content_complete(merged)
+        return out
+
+    async def put_gallery_scene(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        design_system_id: int,
+        scene: str,
+        html: str,
+        note: str | None = None,
+        im_gateway: ImGateway | None = None,
+    ) -> dict[str, Any]:
+        """按**交付物场景**写组件画廊：该场景整体替换，**其余场景原地不动**。
+
+        单次入参只带一个场景的 markup（几 KB），而不是整包画廊（几十 KB）。写入前读回当前整包在
+        服务端合并——大数据始终留在服务端，不往返分身。
+        """
+        d = await self._get_alive(db, design_system_id)
+        await self._assert_can_read(db, d, subject.owner_hasn_id)
+        current_html = None
+        if d.current_revision_id is not None:
+            rev = await db.get(Revision, d.current_revision_id)
+            current_html = rev.components_html if rev is not None else None
+        try:
+            merged_html = upsert_scene(current_html, scene, html)
+        except ValueError as exc:  # 未知场景 / 空 markup / 场景与 markup 不符 → 如实回给分身
+            raise errors.RequestError(msg=str(exc)) from exc
+
+        out = await self.put_content(
+            db,
+            subject=subject,
+            design_system_id=design_system_id,
+            patch={'components_html': merged_html},
+            note=note or f'写入场景 {scene}',
+            im_gateway=im_gateway,
+        )
+        out['scene'] = scene.strip().lower()
+        return out
+
+    async def remove_gallery_scene(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        design_system_id: int,
+        scene: str,
+        im_gateway: ImGateway | None = None,
+    ) -> dict[str, Any]:
+        """从画廊里删掉一个场景。没删到时如实回 ``removed=False``，不假装成功。"""
+        d = await self._get_alive(db, design_system_id)
+        await self._assert_can_read(db, d, subject.owner_hasn_id)
+        current_html = None
+        if d.current_revision_id is not None:
+            rev = await db.get(Revision, d.current_revision_id)
+            current_html = rev.components_html if rev is not None else None
+        merged_html, removed = remove_scene(current_html, scene)
+        if not removed:
+            out = _ds_dict(d)
+            out['removed'] = False
+            out['scene'] = scene.strip().lower()
+            return out
+        out = await self.put_content(
+            db,
+            subject=subject,
+            design_system_id=design_system_id,
+            patch={'components_html': merged_html},
+            note=f'移除场景 {scene}',
+            im_gateway=im_gateway,
+        )
+        out['removed'] = True
+        out['scene'] = scene.strip().lower()
+        return out
+
+    async def finalize(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        design_system_id: int,
+        required_scenes: list[str] | None = None,
+        im_gateway: ImGateway | None = None,
+    ) -> dict[str, Any]:
+        """定稿：重算派生物 → 完整度判定（够格则发完成卡）→ 场景覆盖自查报告一并回给分身。
+
+        **不需要分身再传任何内容**——要定的稿已经在库里了。把「重算 + 发卡 + 自查」收进一次调用，
+        是为了消掉「分身 save 完自己判断算不算完成、又忘了调 check_scenes」这条一直靠纪律维持的
+        环节：技能里反复强调「save 后汇报前必须 check_scenes」，而纪律是会漏的，闸门不会。
+        """
+        out = await self.put_content(
+            db,
+            subject=subject,
+            design_system_id=design_system_id,
+            patch={},
+            note='定稿',
+            required_scenes=required_scenes,
+            skip_if_unchanged=True,
+            im_gateway=im_gateway,
+        )
+        out['scene_report'] = await self.scene_coverage_report(
+            db,
+            design_system_id=design_system_id,
+            viewer_owner_hasn_id=subject.owner_hasn_id,
+        )
+        # ⚠️ complete 取「五项必填是否真的写全」，**不是**「发过完成卡没有」：completed_notified_at
+        # 只是发卡幂等水位，owner 本人操作永远不发卡（没有分身可署名），拿它当完整度会让
+        # owner 路径恒为 False。两个概念在这里必须分开。
+        out['complete'] = bool(out.get('content_complete'))
+        return out
+
+    async def _emit_completion_card_if_needed(
+        self,
+        db: AsyncSession,
+        *,
+        d: DesignSystem,
+        subject: Subject,
+        content: dict[str, Any],
+        now: Any,
+        im_gateway: ImGateway | None,
+        advance_current: bool = True,
+    ) -> dict[str, Any] | None:
+        """内容首次写全 → 在当前事务内登记「设计系统已完成·查看」卡的 outbox 命令。
+
+        从 :meth:`save` 里原样抽出，供整包 save 与分片 finalize **共用同一份判定**——完成判定
+        （五项必填全非空）与幂等水位（``completed_notified_at``）只能有一处口径，两条写入路径
+        各写一份迟早分叉：一条发卡、另一条不发，而两边看起来都「按设计做了」。
+
+        返回非 None 表示本次登记了投递命令（调用方据此在 post-commit 回填水位）。
+        """
+        should_notify = (
+            advance_current
+            and subject.kind == 'agent'
+            and d.completed_notified_at is None
+            and _content_complete(content)
+        )
+        if not should_notify:
+            return None
+
+        # DSGAL：交叉 owner 要求与实际画廊场景，把覆盖提示压进完成卡摘要。
+        preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
+        hint = _scene_coverage_hint(
+            _scene_coverage_annotation(
+                _normalize_required_scenes(d.required_scenes),
+                _authoritative_scenes(content.get('components_html')),
+            )
+        )
+        if hint:
+            preview = f'{preview} · 画廊 {hint}'
+        from backend.app.hasn.service.hasn_sessions_service import (
+            emit_designsystem_completion_card,
+        )
+
+        delivery = await emit_designsystem_completion_card(
+            db,
+            # 与抽出前逐字保持 subject.owner_hasn_id：发卡路径要求 advance_current，
+            # 而 advance_current 已蕴含 d.owner_hasn_id == subject.owner_hasn_id（协作方改别人的
+            # 设计系统只落待确认版、不发卡），两者在这条路径上恒等——但不借等价性改写它。
+            owner_id=subject.owner_hasn_id,
+            agent_id=subject.hasn_id,
+            design_system_id=str(d.id),
+            title=d.name,
+            summary=preview,
+            im_gateway=im_gateway,
+        )
+        if not delivery.get('command_id'):
+            return None
+        d.completed_notified_at = now
+        return {
+            'design_system_id': str(d.id),
+            'title': d.name,
+            'summary': preview,
+            'delivery_command_id': delivery['command_id'],
+            'delivery_state': delivery['status'],
+        }
 
     async def mark_completion_notified(self, db: AsyncSession, design_system_id: int) -> None:
         """完成卡投递成功后回填 completed_notified_at（工具 post-commit 调，独立事务，自提交）。
