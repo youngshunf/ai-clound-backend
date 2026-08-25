@@ -230,10 +230,40 @@ async def test_tool_call_nested_params_take_precedence_over_flatten(monkeypatch:
 
 @pytest.mark.asyncio
 async def test_tool_call_params_invalid_json_string_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """params 串不是合法 JSON → 报**入参错误**，绝不再报 TOOL_NOT_FOUND。
+
+    旧行为把它塞进 TOOL_NOT_FOUND(9209)：分身看到「工具不存在」只会去换工具名重试，而真因是
+    自己这段 JSON 写坏了。实测某分身 41% 的 designsystem.save 卡在这条上。反向断言钉住这次改判——
+    退回 9209 即红。
+    """
     server = _server(monkeypatch)
     with pytest.raises(McpToolError) as exc:
         await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'params': '{not json'})
-    assert exc.value.code == McpErrorCode.TOOL_NOT_FOUND
+    assert exc.value.code == McpErrorCode.INVALID_CALL_ARGUMENTS
+    assert exc.value.code != McpErrorCode.TOOL_NOT_FOUND  # 反向：不得退回旧码
+    assert 'params' in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_tool_call_oversized_bad_json_advises_sharding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """超大 params 串坏掉时，错误要点破真因（一次塞太多）并指出分片/句柄这条出路。"""
+    server = _server(monkeypatch)
+    huge = '{"content": "' + 'x' * 9000  # 未闭合，且超过 8000 字符的「过大」阈值
+    with pytest.raises(McpToolError) as exc:
+        await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'params': huge})
+    assert exc.value.code == McpErrorCode.INVALID_CALL_ARGUMENTS
+    assert '分片' in exc.value.message  # 给出出路，而不是只说「不合法」
+    assert str(len(huge)) in exc.value.message  # 把实际长度摆出来，分身才知道自己塞了多少
+
+
+@pytest.mark.asyncio
+async def test_tool_call_small_bad_json_does_not_advise_sharding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """反向：小 params 坏掉是纯语法问题，不该甩「入参太大」这个不对症的建议。"""
+    server = _server(monkeypatch)
+    with pytest.raises(McpToolError) as exc:
+        await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'params': '{not json'})
+    assert '分片' not in exc.value.message
+    assert '转义' in exc.value.message
 
 
 def test_tool_call_schema_advertises_open_params(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -542,3 +572,152 @@ async def test_tool_call_validation_failure_is_logged(
     assert 'deck_id' in message  # 缺的必填字段名进日志
     assert 'position' in message  # 错型的字段名进日志
     assert '第一页' not in message  # 只记字段名，不记值（入参可能含整页 HTML）
+
+
+# ── `name` 撞键：tool.call 的「目标工具名」与内层工具自己的 `name` 入参同名 ──────────────
+# 实测事故（2026-08-25，生产 content_operator 分身）：`hasn.designsystem.save` 的必填 `name` 是
+# 设计系统展示名，分身把它放在顶层 → 转发层拿它去查注册表 → 报
+# `TOOL_NOT_FOUND: 昆明即时宠物零售 · 专业猫舍设计系统`，连撞两次触发 runtime 的
+# repeated_exact_failure_warning。放进 params 又会被 tool.call 自己判「缺 name」——两条路都堵死。
+# 同形状的还有 task / workflow 域共 5 处 schema。
+
+
+class _NamedTool(BaseTool):
+    """自身带**必填 `name`** 字段的内层工具（designsystem.save / task.* / workflow.* 的形状）。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.stub.named'
+
+    @property
+    def description(self) -> str:
+        return 'stub tool whose own input schema has a required `name` field'
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {'name': {'type': 'string'}, 'slug': {'type': 'string'}},
+            'required': ['name', 'slug'],
+            'additionalProperties': False,
+        }
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        return {'echo': arguments}
+
+
+def _named_server(monkeypatch: pytest.MonkeyPatch) -> HasnCloudMcpServer:
+    server = _server(monkeypatch)
+    server.tool_registry.register(_NamedTool())
+    return server
+
+
+@pytest.mark.asyncio
+async def test_tool_key_carries_target_so_inner_name_survives_flattening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用 `tool` 指定目标 → 平铺在顶层的业务 `name` 必须如实抵达内层。
+
+    这是撞键的正解：`_extract_params` 只排除**实际承载目标名的那个键**。若它退回旧写法
+    （硬排除 `("name","params")`），内层 `name` 在平铺形态下结构性不可达，本用例即红。
+    """
+    server = _named_server(monkeypatch)
+    result = await _call_tool(server).execute(
+        _ctx(), {'tool': 'hasn.stub.named', 'name': '昆明即时宠物零售 · 专业猫舍设计系统', 'slug': 'kunming-pet'}
+    )
+    assert result == {'echo': {'name': '昆明即时宠物零售 · 专业猫舍设计系统', 'slug': 'kunming-pet'}}
+
+
+@pytest.mark.asyncio
+async def test_tool_key_wins_over_name_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个键都在时以 `tool` 为准——否则 `name` 里的业务值仍会被当成工具名。"""
+    server = _named_server(monkeypatch)
+    result = await _call_tool(server).execute(
+        _ctx(), {'tool': 'hasn.stub.named', 'params': {'name': '展示名', 'slug': 's'}, 'name': '展示名'}
+    )
+    assert result == {'echo': {'name': '展示名', 'slug': 's'}}
+
+
+@pytest.mark.asyncio
+async def test_both_name_keys_holding_same_tool_name_do_not_leak_inward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`tool` 与 `name` 装的是同一个工具名时，别把工具名当业务字段塞进内层。"""
+    server = _named_server(monkeypatch)
+    result = await _call_tool(server).execute(
+        _ctx(), {'tool': 'hasn.stub.named', 'name': 'hasn.stub.named', 'slug': 's', 'params': {'name': 'n'}}
+    )
+    assert result == {'echo': {'name': 'n'}} or result['error'] == 'input_validation_failed'
+
+
+@pytest.mark.asyncio
+async def test_business_name_mistaken_for_tool_name_gets_actionable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """业务名被当成工具名 → 报入参错误并给出正确形状，而不是「工具不存在」。"""
+    server = _named_server(monkeypatch)
+    with pytest.raises(McpToolError) as exc:
+        await _call_tool(server).execute(
+            _ctx(), {'name': '昆明即时宠物零售 · 专业猫舍设计系统', 'slug': 'kunming-pet'}
+        )
+    assert exc.value.code == McpErrorCode.INVALID_CALL_ARGUMENTS
+    assert exc.value.code != McpErrorCode.TOOL_NOT_FOUND  # 反向：不得再报「工具不存在」
+    assert 'tool' in exc.value.message and 'params' in exc.value.message  # 给出正确形状
+    assert '昆明即时宠物零售 · 专业猫舍设计系统' in exc.value.message  # 点名是哪个值被误当工具名
+
+
+@pytest.mark.asyncio
+async def test_genuinely_unknown_canonical_name_still_reports_tool_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """反向：长得就是 canonical name 却查不到 → 仍报 TOOL_NOT_FOUND。
+
+    两种失败必须分得开——把它们合并成同一个码，等于用一个模糊错误换掉两个精确错误。
+    """
+    server = _named_server(monkeypatch)
+    with pytest.raises(McpToolError) as exc:
+        await _call_tool(server).execute(_ctx(), {'tool': 'hasn.nosuch.action', 'params': {}})
+    assert exc.value.code == McpErrorCode.TOOL_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_missing_target_name_is_argument_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个名字键都没有 → 入参错误（此前报 TOOL_NOT_FOUND，同样是错码）。"""
+    server = _named_server(monkeypatch)
+    with pytest.raises(McpToolError) as exc:
+        await _call_tool(server).execute(_ctx(), {'params': {'name': 'n', 'slug': 's'}})
+    assert exc.value.code == McpErrorCode.INVALID_CALL_ARGUMENTS
+
+
+@pytest.mark.asyncio
+async def test_validation_failure_ships_copyable_example(monkeypatch: pytest.MonkeyPatch) -> None:
+    """校验失败必须附一个可逐字照抄的 `{tool, params}` 示例。
+
+    完整 schema 只说「字段叫什么、什么类型」，从不示范「该放在哪一层」——实测分身拿着 schema
+    仍反复把内层字段平铺到顶层。
+    """
+    server = _named_server(monkeypatch)
+    result = await _call_tool(server).execute(_ctx(), {'tool': 'hasn.stub.named', 'params': {}})
+    assert result['error'] == 'input_validation_failed'
+    example = result['example']
+    assert example['tool'] == 'hasn.stub.named'  # 示例用 tool 键，不用会撞名的 name
+    assert set(example['params']) == {'name', 'slug'}  # 必填字段都在 params 里
+    assert 'name' not in example  # 反向：业务 name 绝不出现在顶层
+
+
+@pytest.mark.asyncio
+async def test_how_to_fix_warns_about_name_collision_only_when_relevant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """内层有 `name` 字段且它确实缺失时，才点破撞键陷阱；无关工具不发这条噪声。"""
+    server = _named_server(monkeypatch)
+    collided = await _call_tool(server).execute(_ctx(), {'tool': 'hasn.stub.named', 'params': {'slug': 's'}})
+    assert 'name' in collided['how_to_fix'] and '工具' in collided['how_to_fix']
+
+    plain = await _call_tool(server).execute(_ctx(), {'tool': 'hasn.stub.act', 'params': {}})
+    assert 'params' in plain['how_to_fix']
+    assert '会被当成' not in plain['how_to_fix']  # 反向：无 name 字段的工具不发撞键警告

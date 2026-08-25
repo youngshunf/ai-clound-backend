@@ -49,6 +49,15 @@ class McpErrorCode(Enum):
     # 三级取值优先级（显式入参 ＞ ContextVar 继承 ＞ 全局兜底）全落空后结构化拒绝——分身据此回头
     # 问主人「这个场景挂到哪个项目下」，而不是随便挑一个项目。取下一个空位 9220。
     PROJECT_REQUIRED = "MCP_9220"
+    # tool.call 转发层的**入参**不合法（doc03 §9.4 之外的一类）：目标工具名缺失/不像工具名、
+    # `params` 不是对象也不是合法 JSON 对象串。此前这三种都被塞进 TOOL_NOT_FOUND(9209)，
+    # 于是「我的 JSON 写坏了」在分身眼里长成「这个工具不存在」——它只会去换工具名重试，
+    # 而真正该做的是把入参改小/改对。取下一个空位 9221。
+    # ⚠️ 本码**只存在于云端**：本文件开头那句「Mirrors the Rust hasn-mcp::error::McpErrorCode」
+    # 对 9215 及以后**已经不成立**（云端 9215=APPROVAL_REQUIRED / 9216=QUOTA_EXCEEDED /
+    # 9217=TRUST_LEVEL_INSUFFICIENT，Rust 侧 9215=TrustLevelInsufficient / 9216、9217=G3 应用
+    # 权益门，语义早已分叉且各自注释都记了原因）。新增码不要照着那句去 Rust 侧补一个同号的。
+    INVALID_CALL_ARGUMENTS = "MCP_9221"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"
