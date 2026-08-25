@@ -84,6 +84,9 @@ _SCOPE_WRITE = 'designsystem:write'
 _RA_DS_VIEWER = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'viewer'}]
 _RA_DS_VIEWER_OPT = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'viewer', 'required': False}]
 _RA_DS_EDITOR = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'editor', 'required': False}]
+# 分片写工具的 design_system_id 是必填（写的一定是存量），故 required 不放开——缺 id 直接被门拦下，
+# 而不是像 save 那样滑到「新建」语义上去。
+_RA_DS_EDITOR_REQUIRED = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'editor'}]
 
 
 async def _bump_designsystem_sync(db: Any, owner_hasn_id: str) -> None:
@@ -120,6 +123,22 @@ def _req_str(arguments: dict[str, Any], key: str) -> str:
     value = _str(arguments, key)
     if not value:
         raise RuntimeError(f"designsystem: '{key}' 必填且非空")
+    return value
+
+
+def _req_int(arguments: dict[str, Any], key: str) -> int:
+    """取一个必填正整数入参（分片写工具的 design_system_id）。
+
+    宽容接收字符串形态的数字：tool.call 层已有 coerce_params_to_schema 做类型还原，但分片工具也可能
+    被直接调用（渐进式暴露之外的路径），这里再兜一层比让分身撞一次类型错更省事。
+    """
+    value = arguments.get(key)
+    if isinstance(value, bool):
+        value = None
+    elif isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"designsystem: '{key}' 必填，且是正整数（设计系统 id，见 create/list 的返回）")
     return value
 
 
@@ -234,6 +253,43 @@ def _project_get_to_summary(full: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def _register_designsystem_artifact(
+    agent_context: AgentContext, data: dict[str, Any]
+) -> ArtifactRegistration | None:
+    """register-on-write（对齐 deck ``_register_deck_artifact``）：把该设计系统登记进 ``hasn_artifacts``
+    （``resource_uri=hasn://designsystem/{云端权威 id}``），带 work_session_id → 出现在「工作会话资源栏 /
+    分身产物 tab」，且可点开设计系统详情查看（治「分身建/改了设计系统，工作会话产物列表却看不到」）。
+
+    幂等 upsert（键 ``(agent, designsystem:{id}, hasn://designsystem/{id})``）——反复写只一条 active 行、
+    会话归属只进不退。独立事务、失败只 warn，绝不影响写结果。
+
+    doc36 U1：走**公共接缝** ``register_app_resource_artifact``（此前绕过接缝直调 service，故 ``ROLLOUT``
+    守卫覆盖不到 designsystem）。整包 save 与分片 create/put_*/finalize **共用本函数**：登记口径只有一处，
+    否则「哪条路径登记了、哪条没登记」会变成又一个只能靠人记住的差别。
+    """
+    ds_id = data.get('id')
+    if not isinstance(ds_id, int):
+        return None
+    title = data.get('name') if isinstance(data.get('name'), str) else None
+    try:
+        async with async_db_session.begin() as db:
+            return await register_app_resource_artifact(
+                db,
+                app_id='designsystem',
+                resource_kind='designsystem.spec',
+                server_id=str(ds_id),
+                # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`agent_context.session_id`
+                # 是运行时/逻辑会话语义，直传会污染工作会话列；缺省走 ContextVar 两级权威。
+                agent_hasn_id=agent_context.agent_hasn_id,
+                owner_hasn_id=_owner_hasn_id(agent_context),
+                title=(title or '').strip() or '设计系统',
+                source_tool='hasn.designsystem.save',
+            )
+    except Exception as e:  # 独立事务本身开/提交失败（接缝内部已吞登记错），仍 best-effort
+        log.warning('[designsystem] register-on-write 事务失败（非致命）: %s', e)
+        return None
+
+
 class DesignSystemImportTool(BaseTool):
     """`hasn.designsystem.import`：shadcn/github/screenshot/url → tokens.css 草稿（cloud-hosted）。"""
 
@@ -314,8 +370,20 @@ class DesignSystemSaveTool(BaseTool):
             'type': 'object',
             'properties': {
                 'design_system_id': {'type': 'integer', 'description': '可选：存量设计系统 id（缺省=新建）'},
-                'slug': {'type': 'string', 'description': 'owner 内唯一短名'},
-                'name': {'type': 'string', 'description': '展示名'},
+                'slug': {
+                    'type': 'string',
+                    'description': (
+                        'owner 内唯一短名。**只在新建时需要**——更新存量（给了 design_system_id）时'
+                        '本字段不生效（slug 建库后改不动），不必再传。'
+                    ),
+                },
+                'name': {
+                    'type': 'string',
+                    'description': (
+                        '展示名。**只在新建时需要**——更新存量时缺省即保持原名；传了会改名，'
+                        '所以不打算改名就别传。'
+                    ),
+                },
                 'content': {
                     'type': 'object',
                     'description': (
@@ -344,7 +412,13 @@ class DesignSystemSaveTool(BaseTool):
                     'description': '可选：新建设计系统挂靠的平台项目 id；缺字段时自动继承当前工作项目',
                 },
             },
-            'required': ['slug', 'name', 'content'],
+            # 只有 content 无条件必填。slug/name 的必填性**取决于是不是新建**，由 execute 按场景校验
+            # 并给出分场景的错误——写死 required=['slug','name','content'] 会把「更新存量」这条
+            # 完全正当的调用判死：分身传 {design_system_id, content} 是语义正确的，却收到
+            # missing=[slug,name]，而 slug 在更新路径上根本不生效（service 白名单明写不许改 slug）。
+            # 实测这占该工具全部失败的 22%。JSON Schema 的 if/then 能表达这层依赖，但 LLM 对它的
+            # 遵循度远不如「必填清单短 + 错误信息分场景说清楚」。
+            'required': ['content'],
         }
 
     @property
@@ -357,16 +431,15 @@ class DesignSystemSaveTool(BaseTool):
         return _RA_DS_EDITOR
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        slug = _req_str(arguments, 'slug')
-        name = _req_str(arguments, 'name')
         content = arguments.get('content')
         if not content or not isinstance(content, dict):
             raise RuntimeError("designsystem.save: 'content' 必填（四层契约产物对象）")
+        design_system_id = _opt_int(arguments, 'design_system_id')
+        slug, name = await self._resolve_identity(arguments, design_system_id)
 
         recommend = arguments.get('recommend_rebuild')
         # required_scenes：仅当入参显式带 key 才透传（缺省=不改，避免每次 save 抹掉 owner 已设的场景要求）。
         required_scenes = _str_list(arguments, 'required_scenes') if 'required_scenes' in arguments else None
-        design_system_id = _opt_int(arguments, 'design_system_id')
         platform_project_id = _resolve_save_platform_project_id(
             arguments,
             is_create=design_system_id is None,
@@ -401,46 +474,39 @@ class DesignSystemSaveTool(BaseTool):
         # save 已在状态事务内登记可靠完成卡命令；提交后只做既有 register-on-write：
         # 把该设计系统登记进 hasn_artifacts（hasn://designsystem/{id}），带上
         #    work_session_id → 出现在「工作会话资源栏 / 分身产物 tab」，可点开设计系统详情查看。
-        registration = await self._register_designsystem_artifact_best_effort(agent_context, data)
+        registration = await _register_designsystem_artifact(agent_context, data)
         data.pop('completion_card', None)  # 内部完成信号，不外露给调用分身
         # doc36 §3.2：返回体带 `uri`——分身存完规范当场知道怎么打开它，不必二次查询。
         return merge_resource_uri(data, registration)
 
     @staticmethod
-    async def _register_designsystem_artifact_best_effort(
-        agent_context: AgentContext, data: dict[str, Any]
-    ) -> ArtifactRegistration | None:
-        """register-on-write（对齐 deck `_register_deck_artifact`）：**每次 save** 都把该设计系统登记进
-        `hasn_artifacts`（resource_uri=`hasn://designsystem/{云端权威 id}`），带 work_session_id →
-        出现在「工作会话资源栏 / 分身产物 tab」，且可点开设计系统详情查看（治「分身建/改了设计系统，
-        工作会话产物列表却看不到」）。幂等 upsert（键 `(agent, designsystem:{id}, hasn://designsystem/{id})`）
-        ——反复 save 只一条 active 行、会话归属只进不退。独立事务、失败只 warn，绝不影响 save 结果。
+    async def _resolve_identity(arguments: dict[str, Any], design_system_id: int | None) -> tuple[str, str]:
+        """按「新建 / 更新存量」分场景解析 slug + name。
 
-        doc36 U1：改走**公共接缝** `register_app_resource_artifact`（此前绕过接缝直调 service，
-        故 `ROLLOUT` 守卫覆盖不到 designsystem）。返回 `ArtifactRegistration` 供 save 把 `uri` 放进返回体。
+        - 新建：两者都必填，缺了给的错误要直接说清楚「新建才需要」，而不是笼统的 missing。
+        - 更新存量：缺省即从库里取现值——slug 在更新路径上本就不生效，name 缺省即保持原名。
+          这样分身传 ``{design_system_id, content}`` 就能更新，不必先查一遍再原样回传两个字段
+          （原样回传还多一层风险：name 抄错就静默改名）。
         """
-        ds_id = data.get('id')
-        if not isinstance(ds_id, int):
-            return None
-        title = data.get('name') if isinstance(data.get('name'), str) else None
-        try:
-            async with async_db_session.begin() as db:
-                return await register_app_resource_artifact(
-                    db,
-                    app_id='designsystem',
-                    resource_kind='designsystem.spec',
-                    server_id=str(ds_id),
-                    # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`agent_context.session_id`
-                    # 是运行时/逻辑会话语义，直传会污染工作会话列；缺省走
-                    # ContextVar 两级权威。
-                    agent_hasn_id=agent_context.agent_hasn_id,
-                    owner_hasn_id=_owner_hasn_id(agent_context),
-                    title=(title or '').strip() or '设计系统',
-                    source_tool='hasn.designsystem.save',
+        if design_system_id is None:
+            slug = _str(arguments, 'slug')
+            name = _str(arguments, 'name')
+            missing = [key for key, value in (('slug', slug), ('name', name)) if not value]
+            if missing:
+                raise RuntimeError(
+                    f'designsystem.save: 新建设计系统需要 {missing}（更新存量请改传 design_system_id，'
+                    f'那时 slug/name 都不必给）'
                 )
-        except Exception as e:  # 独立事务本身开/提交失败（接缝内部已吞登记错），仍 best-effort
-            log.warning('[designsystem] register-on-write 事务失败（非致命）: %s', e)
-            return None
+            return slug, name  # type: ignore[return-value]
+
+        from backend.app.hasn_designsystem.model.design_system import DesignSystem
+
+        async with async_db_session() as db:
+            d = await db.get(DesignSystem, design_system_id)
+        if d is None or d.deleted_time is not None:
+            raise RuntimeError(f'designsystem.save: 设计系统 {design_system_id} 不存在')
+        # 显式传了就尊重（改名是正当操作），没传就用现值。
+        return _str(arguments, 'slug') or d.slug, _str(arguments, 'name') or d.name
 
 
 class DesignSystemListTool(BaseTool):
@@ -943,10 +1009,342 @@ class DesignSystemExtractComponentsTool(BaseTool):
         return core_extract_components(brand_id, fixture_html, tokens_css=_str(arguments, 'tokens_css'))
 
 
+# ══ DSPUT·分片写入工具（create → put_* → finalize）══════════════════════════════════
+# 为什么要这一组：整包 save 的问题不在业务逻辑，在**入参体积**。改一个场景也要把全部场景 HTML
+# 一起重发，经 hasn.cloud.tool.call 再套一层 JSON 后，分身要一次无差错吐出 2 万-4.5 万字符的
+# 双重转义串。实测（2026-08-25 生产分身）104 次 save 调用 66% 失败，其中 41% 卡在「生成不出
+# 合法 JSON」。分片让每次只带**本次真正要改的那一块**：未提供的字段服务端从当前版继承，
+# 派生物（design-tokens.json / tailwind / 契约报告 / 组件清单）服务端现算——分身不再回传它们。
+#
+# 形状对齐 deck 域（create → outline.set → page.write 逐页 → finalize），那是同一问题已经验证
+# 过的解法；designsystem 是平台上最后一个还在整包吞吐的域。
+
+
+class _DesignSystemShardWriteTool(BaseTool):
+    """分片写入工具的公共面（platform / cloud / designsystem:write）。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return [_SCOPE_WRITE]
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        """默认不声明资源门（``create`` 没有实例可判——声明 required=False 是个假闸门）。
+
+        显式声明 None 而不是干脆不定义这个属性：后者让「这个工具有没有资源门」只能靠
+        ``getattr(tool, 'resource_access', None)` 去猜，判定器和测试都读不出「作者是想清楚了才不设」
+        还是「忘了设」。
+        """
+        return None
+
+    @staticmethod
+    def _subject(agent_context: AgentContext) -> tuple[Subject, str]:
+        owner_hasn_id = _owner_hasn_id(agent_context)
+        return Subject.agent(agent_context.agent_hasn_id, owner_hasn_id), owner_hasn_id
+
+    @staticmethod
+    async def _post_write(agent_context: AgentContext, data: dict[str, Any]) -> dict[str, Any]:
+        """写成功后的统一收尾：清掉内部完成信号 + register-on-write + 回填 uri。"""
+        registration = await _register_designsystem_artifact(agent_context, data)
+        data.pop('completion_card', None)  # 内部完成信号，不外露给调用分身
+        return merge_resource_uri(data, registration)
+
+
+class DesignSystemCreateTool(_DesignSystemShardWriteTool):
+    """`hasn.designsystem.create`：建一套空设计系统的壳，拿到 id 后再逐块写。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.create'
+
+    @property
+    def description(self) -> str:
+        return (
+            '新建一套设计系统的**壳**（只要 slug + name，不写任何内容），返回 {id, slug, name, uri}。'
+            '拿到 id 后用 put_tokens / put_design / put_gallery 逐块写，最后 finalize 定稿。'
+            '同 slug 重复调用幂等命中已有那套（created=false），不会造出第二套、也不覆盖已有内容。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'slug': {'type': 'string', 'description': 'owner 内唯一短名（建库后不可改，取个稳定的）'},
+                'name': {'type': 'string', 'description': '展示名（后续可改）'},
+                'category': {'type': 'string', 'description': '可选：品类'},
+                'source_kind': {
+                    'type': 'string',
+                    'description': '可选：generated / imported_shadcn / imported_github / ...（缺省 generated）',
+                },
+                'required_scenes': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': (
+                        '可选：组件画廊要求覆盖的交付物场景（brand_website/deck/poster/mobile；'
+                        '缺省 [brand_website]）'
+                    ),
+                },
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'format': 'uuid',
+                    'description': '可选：挂靠的平台项目 id；缺字段时自动继承当前工作项目',
+                },
+            },
+            'required': ['slug', 'name'],
+        }
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        subject, owner_hasn_id = self._subject(agent_context)
+        required_scenes = _str_list(arguments, 'required_scenes') if 'required_scenes' in arguments else None
+        platform_project_id = _resolve_save_platform_project_id(arguments, is_create=True)
+        async with async_db_session() as db:
+            data = await design_system_service.create_shell(
+                db,
+                subject=subject,
+                slug=_req_str(arguments, 'slug'),
+                name=_req_str(arguments, 'name'),
+                category=_str(arguments, 'category'),
+                source_kind=_str(arguments, 'source_kind') or 'generated',
+                required_scenes=required_scenes,
+                platform_project_id=platform_project_id,
+            )
+            await _bump_designsystem_sync(db, owner_hasn_id)
+        return await self._post_write(agent_context, data)
+
+
+class DesignSystemPutTokensTool(_DesignSystemShardWriteTool):
+    """`hasn.designsystem.put_tokens`：写 tokens.css（真源），派生物与评分由服务端现算。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.put_tokens'
+
+    @property
+    def description(self) -> str:
+        return (
+            '写这套设计系统的 tokens.css（四层 token 契约真源）。'
+            '**design-tokens.json / tailwind-v4.css / 契约评分报告由云端现算，不要自己传**——'
+            '它们是 tokens.css 的确定性函数值。返回 {id, revision, score, grade, preview_swatches}。'
+            '其它内容（设计说明、组件画廊）不受影响。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'design_system_id': {'type': 'integer', 'description': '目标设计系统 id（create/list 返回的）'},
+                'tokens_css': {'type': 'string', 'description': '完整的 :root{} tokens.css 文本'},
+                'note': {'type': 'string', 'description': '可选：版本备注'},
+            },
+            'required': ['design_system_id', 'tokens_css'],
+        }
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        return _RA_DS_EDITOR_REQUIRED
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        subject, owner_hasn_id = self._subject(agent_context)
+        async with async_db_session() as db:
+            data = await design_system_service.put_content(
+                db,
+                subject=subject,
+                design_system_id=_req_int(arguments, 'design_system_id'),
+                patch={'tokens_css': _req_str(arguments, 'tokens_css')},
+                note=_str(arguments, 'note'),
+            )
+            await _bump_designsystem_sync(db, owner_hasn_id)
+        return await self._post_write(agent_context, data)
+
+
+class DesignSystemPutDesignTool(_DesignSystemShardWriteTool):
+    """`hasn.designsystem.put_design`：写 design.md（设计说明，创意部分）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.put_design'
+
+    @property
+    def description(self) -> str:
+        return (
+            '写这套设计系统的设计说明 design.md（创意与用法说明）。'
+            'tokens.css 与组件画廊不受影响。返回 {id, revision}。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'design_system_id': {'type': 'integer', 'description': '目标设计系统 id'},
+                'design_md': {'type': 'string', 'description': 'Markdown 正文'},
+                'note': {'type': 'string', 'description': '可选：版本备注'},
+            },
+            'required': ['design_system_id', 'design_md'],
+        }
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        return _RA_DS_EDITOR_REQUIRED
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        subject, owner_hasn_id = self._subject(agent_context)
+        async with async_db_session() as db:
+            data = await design_system_service.put_content(
+                db,
+                subject=subject,
+                design_system_id=_req_int(arguments, 'design_system_id'),
+                patch={'design_md': _req_str(arguments, 'design_md')},
+                note=_str(arguments, 'note'),
+            )
+            await _bump_designsystem_sync(db, owner_hasn_id)
+        return await self._post_write(agent_context, data)
+
+
+class DesignSystemPutGalleryTool(_DesignSystemShardWriteTool):
+    """`hasn.designsystem.put_gallery`：按交付物场景写组件画廊，一次一个场景。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.put_gallery'
+
+    @property
+    def description(self) -> str:
+        return (
+            '按**交付物场景**写组件画廊，一次写一个场景（brand_website/deck/poster/mobile）。'
+            '该场景整体替换，**其余场景原地不动**——所以不必把整包画廊重发一遍。'
+            'html 可以是 get_gallery(scene=…) 取回的完整文档改完直接回传，也可以是裸的 '
+            '<section data-ds-scene="…">…</section>。组件清单由云端现抽，不要自己传。'
+            '返回 {id, revision, scene, 该场景覆盖情况}。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'design_system_id': {'type': 'integer', 'description': '目标设计系统 id'},
+                'scene': {
+                    'type': 'string',
+                    'description': '场景 id：brand_website / deck / poster / mobile',
+                },
+                'html': {
+                    'type': 'string',
+                    'description': (
+                        '该场景的组件画廊 markup（自包含可渲染：要么元素内联 style="…var(--token)…"，'
+                        '要么 <style> 里写全组件类规则）。带 <style> 时整体替换画廊共享样式。'
+                    ),
+                },
+                'note': {'type': 'string', 'description': '可选：版本备注'},
+            },
+            'required': ['design_system_id', 'scene', 'html'],
+        }
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        return _RA_DS_EDITOR_REQUIRED
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        subject, owner_hasn_id = self._subject(agent_context)
+        design_system_id = _req_int(arguments, 'design_system_id')
+        async with async_db_session() as db:
+            data = await design_system_service.put_gallery_scene(
+                db,
+                subject=subject,
+                design_system_id=design_system_id,
+                scene=_req_str(arguments, 'scene'),
+                html=_req_str(arguments, 'html'),
+                note=_str(arguments, 'note'),
+            )
+            await _bump_designsystem_sync(db, owner_hasn_id)
+            # 写完当场回该场景的实测覆盖——分身不必再单独调 check_scenes 才知道缺哪几件。
+            report = await design_system_service.scene_coverage_report(
+                db, design_system_id=design_system_id, viewer_owner_hasn_id=owner_hasn_id
+            )
+        scene_id = data.get('scene')
+        data['scene_coverage'] = next(
+            (s for s in report.get('scenes', []) if s.get('id') == scene_id),
+            None,
+        )
+        return await self._post_write(agent_context, data)
+
+
+class DesignSystemFinalizeTool(_DesignSystemShardWriteTool):
+    """`hasn.designsystem.finalize`：定稿——完整度判定 + 场景自查 + 发完成卡。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.finalize'
+
+    @property
+    def description(self) -> str:
+        return (
+            '定稿这套设计系统：判完整度（五项必填是否真写全）、实检各场景覆盖、够格则给主人发完成卡。'
+            '**不需要再传任何内容**——要定的稿已经在库里了。返回 {id, complete, scene_report, uri}。'
+            '只有 complete=true 才能对主人说「做完了」；scene_report.scenes[].missing 会告诉你还缺哪几件。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'design_system_id': {'type': 'integer', 'description': '目标设计系统 id'},
+                'required_scenes': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': '可选：顺带更新「要求覆盖哪些场景」（缺省=不改）',
+                },
+            },
+            'required': ['design_system_id'],
+        }
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        return _RA_DS_EDITOR_REQUIRED
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        subject, owner_hasn_id = self._subject(agent_context)
+        required_scenes = _str_list(arguments, 'required_scenes') if 'required_scenes' in arguments else None
+        async with async_db_session() as db:
+            data = await design_system_service.finalize(
+                db,
+                subject=subject,
+                design_system_id=_req_int(arguments, 'design_system_id'),
+                required_scenes=required_scenes,
+            )
+            await _bump_designsystem_sync(db, owner_hasn_id)
+        return await self._post_write(agent_context, data)
+
+
 DESIGNSYSTEM_TOOLS: list[BaseTool] = [
     # 云端权威（操作云端数据）
     DesignSystemImportTool(),
     DesignSystemSaveTool(),
+    # 分片写入（DSPUT；整包 save 的入参体积在 tool.call 上撑不住 → 建壳后逐块写，最后定稿）
+    DesignSystemCreateTool(),
+    DesignSystemPutTokensTool(),
+    DesignSystemPutDesignTool(),
+    DesignSystemPutGalleryTool(),
+    DesignSystemFinalizeTool(),
     DesignSystemListTool(),
     DesignSystemGetTool(),
     # 组件画廊按需取（DSGET；get 默认瘦身不带画廊，分身参考/编辑组件时按需取，可按场景切片省 token）

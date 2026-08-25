@@ -47,8 +47,10 @@ from backend.utils.timezone import timezone
 # 落地真相：写类 2 工具（import/save）/ 读类（含纯函数 + 场景自查）7 工具。
 # check_scenes 是云端专属自查工具（DSGAL；读设计系统 required_scenes × 当前 HTML 实检覆盖 → 缺什么/怎么补），
 # 无本地 Rust 孪生（读云端 DB，非纯函数），读类无 scope。
-_WRITE_TOOLS = {'import', 'save'}
-_READ_TOOLS = {'compile_tokens', 'derive', 'validate', 'extract_components', 'list', 'get', 'check_scenes'}
+# ⚠️ 不再手抄工具名单。原先这里写死 _WRITE_TOOLS/_READ_TOOLS 两个集合，与 manifest 对账——两边都是
+# 手抄的，于是 `get_gallery` 工具落地了、manifest 没登记、这份名单也没写，三方「一致」地漏掉同一个，
+# 而测试名叫 match_landed_tools 却一路绿到 2026-08-25 才被发现。对账基准必须是**落地真相**
+# （DESIGNSYSTEM_TOOLS），不是另一份人写的清单。
 _WRITE_SCOPE = 'designsystem:write'
 _PUBLISH_SCOPE = 'designsystem:publish'
 
@@ -76,22 +78,30 @@ def test_designsystem_in_builtin_registry() -> None:
 
 
 def test_designsystem_capabilities_match_landed_tools() -> None:
-    """9 个 capability，mcp_name 全 hasn.designsystem.*；写类 designsystem:write、读类无 scope（与落地一致）。"""
-    caps = DESIGNSYSTEM_AI_NATIVE_MANIFEST['capabilities']
-    names = {c['tool_id'].split('.', 1)[1] for c in caps}
-    assert names == _WRITE_TOOLS | _READ_TOOLS, f'工具集与落地不一致: {names}'
-    assert len(caps) == 9
+    """manifest 的 capability 集合必须与**落地工具集**逐个对上，且 scope 与工具自己声明的一致。
 
+    对账基准是 `DESIGNSYSTEM_TOOLS`（落地真相）而非手抄名单：新增/退役一个工具却忘了动 manifest，
+    这条当场红——这正是 `get_gallery` 曾经漏登记而无人发现的那道缺口。
+    """
+    from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
+
+    caps = DESIGNSYSTEM_AI_NATIVE_MANIFEST['capabilities']
+    cap_names = {c['mcp_name'] for c in caps}
+    landed = {t.name for t in DESIGNSYSTEM_TOOLS}
+    assert cap_names == landed, (
+        f'manifest 与落地工具集不一致——只在工具里: {sorted(landed - cap_names)}；'
+        f'只在 manifest 里: {sorted(cap_names - landed)}'
+    )
+    assert len(caps) == len(cap_names), 'capability 的 mcp_name 有重复'
+
+    scope_by_name = {t.name: t.required_scopes for t in DESIGNSYSTEM_TOOLS}
     for cap in caps:
         assert cap['mcp_name'].startswith('hasn.designsystem.'), cap['mcp_name']
-        short = cap['tool_id'].split('.', 1)[1]
-        if short in _WRITE_TOOLS:
-            assert cap['required_scopes'] == [_WRITE_SCOPE], f'{short} 写类应为 designsystem:write'
-            # 出厂全 Allow 免确认（16-doc D-v3-1）；owner 可经 capability_modes 设 ask/deny override。
-            assert cap['human_confirmation'].get('required') is False
-        else:
-            assert cap['required_scopes'] == [], f'{short} 读类应无 required_scopes（与落地空 scope 一致）'
-            assert cap['human_confirmation'].get('required') is False
+        # scope 与工具**自己声明的**逐字对齐（此前按「写类/读类」两个手抄集合分流，
+        # 分错类就永远发现不了）。
+        assert cap['required_scopes'] == scope_by_name[cap['mcp_name']], cap['mcp_name']
+        # 出厂全 Allow 免确认（16-doc D-v3-1）；owner 可经 capability_modes 设 ask/deny override。
+        assert cap['human_confirmation'].get('required') is False
 
 
 def test_designsystem_scopes_registered_in_catalog() -> None:

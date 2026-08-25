@@ -232,9 +232,99 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST: dict[str, Any] = {
                     'description': '新建时挂靠的平台项目 id；缺字段时继承当前工作项目',
                 },
             },
-            required=['slug', 'name', 'content'],
+            # 与工具 input_schema 同口径：只有 content 无条件必填，slug/name 只在新建时需要
+            # （更新存量时 slug 不生效、name 缺省即保持原名），由工具体分场景校验。
+            required=['content'],
             page_rank=15,
             tags=['designsystem', 'save', 'write'],
+        ),
+        # —— 分片写入（DSPUT）：整包 save 的入参体积在 tool.call 上撑不住 → 建壳后逐块写 ——
+        _write_cap(
+            name='create',
+            title='新建设计系统（建壳）',
+            description='只要 slug + name 建一套空壳，拿到 id 后逐块写（put_tokens / put_design / put_gallery）。',
+            properties={
+                'slug': {'type': 'string', 'minLength': 1, 'description': 'owner 内唯一短名（建库后不可改）'},
+                'name': {'type': 'string', 'minLength': 1, 'description': '展示名'},
+                'category': {'type': ['string', 'null'], 'description': '分类（可选）'},
+                'required_scenes': {
+                    'type': ['array', 'null'],
+                    'items': {'type': 'string'},
+                    'description': '要求覆盖的交付物场景（缺省 [brand_website]）',
+                },
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'format': 'uuid',
+                    'description': '挂靠的平台项目 id；缺字段时继承当前工作项目',
+                },
+            },
+            required=['slug', 'name'],
+            page_rank=15,
+            tags=['designsystem', 'create', 'write'],
+        ),
+        _write_cap(
+            name='put_tokens',
+            title='写 tokens.css',
+            description='写四层 token 契约真源；design-tokens.json / tailwind / 评分报告由云端现算，不必回传。',
+            properties={
+                'design_system_id': {'type': 'integer', 'minimum': 1},
+                'tokens_css': {'type': 'string', 'minLength': 1, 'description': '完整的 :root{} tokens.css'},
+                'note': {'type': ['string', 'null'], 'description': '版本备注（可选）'},
+            },
+            required=['design_system_id', 'tokens_css'],
+            page_rank=15,
+            tags=['designsystem', 'tokens', 'write'],
+        ),
+        _write_cap(
+            name='put_design',
+            title='写设计说明',
+            description='写 design.md（创意与用法说明）；tokens 与组件画廊不受影响。',
+            properties={
+                'design_system_id': {'type': 'integer', 'minimum': 1},
+                'design_md': {'type': 'string', 'minLength': 1, 'description': 'Markdown 正文'},
+                'note': {'type': ['string', 'null'], 'description': '版本备注（可选）'},
+            },
+            required=['design_system_id', 'design_md'],
+            page_rank=15,
+            tags=['designsystem', 'design', 'write'],
+        ),
+        _write_cap(
+            name='put_gallery',
+            title='按场景写组件画廊',
+            description='一次写一个交付物场景，该场景整体替换、**其余场景原地不动**——不必重发整包画廊。',
+            properties={
+                'design_system_id': {'type': 'integer', 'minimum': 1},
+                'scene': {
+                    'type': 'string',
+                    'enum': ['brand_website', 'deck', 'poster', 'mobile'],
+                    'description': '交付物场景 id',
+                },
+                'html': {
+                    'type': 'string',
+                    'minLength': 1,
+                    'description': '该场景的自包含可渲染 markup（可直接回传 get_gallery(scene=…) 改过的文档）',
+                },
+                'note': {'type': ['string', 'null'], 'description': '版本备注（可选）'},
+            },
+            required=['design_system_id', 'scene', 'html'],
+            page_rank=15,
+            tags=['designsystem', 'gallery', 'write'],
+        ),
+        _write_cap(
+            name='finalize',
+            title='定稿设计系统',
+            description='判完整度 + 实检场景覆盖 + 够格则发完成卡；不需要再传任何内容。',
+            properties={
+                'design_system_id': {'type': 'integer', 'minimum': 1},
+                'required_scenes': {
+                    'type': ['array', 'null'],
+                    'items': {'type': 'string'},
+                    'description': '顺带更新「要求覆盖哪些场景」（缺省=不改）',
+                },
+            },
+            required=['design_system_id'],
+            page_rank=15,
+            tags=['designsystem', 'finalize', 'write'],
         ),
         # —— 读类（for_agent，无 scope）——
         _read_cap(
@@ -259,6 +349,20 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST: dict[str, Any] = {
             required=['design_system_id'],
             page_rank=17,
             tags=['designsystem', 'get', 'read'],
+        ),
+        _read_cap(
+            name='get_gallery',
+            description='按需取组件画廊 HTML（get 默认不带画廊）；可传 scene 只取该场景切片，省 token。',
+            properties={
+                'design_system_id': {'type': 'integer', 'minimum': 1},
+                'scene': {
+                    'type': ['string', 'null'],
+                    'description': '只取该场景（brand_website/deck/poster/mobile）；缺省取整包',
+                },
+            },
+            required=['design_system_id'],
+            page_rank=17,
+            tags=['designsystem', 'gallery', 'read'],
         ),
         _read_cap(
             name='check_scenes',

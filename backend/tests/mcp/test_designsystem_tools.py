@@ -18,6 +18,7 @@ list 可见该套；get 取回当前版本内容。测试后清理该 owner 行�
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -30,6 +31,7 @@ from backend.app.mcp.tools.designsystem import (
     DesignSystemCompileTokensTool,
     DesignSystemDeriveTool,
     DesignSystemExtractComponentsTool,
+    DesignSystemGetGalleryTool,
     DesignSystemGetTool,
     DesignSystemListTool,
     DesignSystemSaveTool,
@@ -63,15 +65,22 @@ async def _db_reachable() -> bool:
 
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
-def test_tools_register_ten_with_stable_names() -> None:
-    """恰好 10 个 designsystem 工具（6 云端权威 + 4 确定性纯函数），名稳定、顺序固定。
+def test_tools_register_fifteen_with_stable_names() -> None:
+    """恰好 15 个 designsystem 工具（6 云端权威 + 5 分片写入 + 4 确定性纯函数），名稳定、顺序固定。
 
     云端权威在 4 个基础上增补两个按需读（不是新语义，是 DSGET 瘦身/DSGAL 场景标准的产物）：
     `get_gallery`（get 瘦身后画廊按需单取）、`check_scenes`（场景覆盖自检）。
+    DSPUT 增补 5 个分片写入（`create`/`put_tokens`/`put_design`/`put_gallery`/`finalize`）——整包
+    `save` 的入参体积在 tool.call 上撑不住（实测 41% 调用生成不出合法 JSON），改建壳后逐块写。
     """
     assert [t.name for t in DESIGNSYSTEM_TOOLS] == [
         'hasn.designsystem.import',
         'hasn.designsystem.save',
+        'hasn.designsystem.create',
+        'hasn.designsystem.put_tokens',
+        'hasn.designsystem.put_design',
+        'hasn.designsystem.put_gallery',
+        'hasn.designsystem.finalize',
         'hasn.designsystem.list',
         'hasn.designsystem.get',
         'hasn.designsystem.get_gallery',
@@ -81,6 +90,28 @@ def test_tools_register_ten_with_stable_names() -> None:
         'hasn.designsystem.validate',
         'hasn.designsystem.extract_components',
     ]
+
+
+def test_shard_write_tools_declare_write_scope_and_required_resource_gate() -> None:
+    """5 个分片写工具都要 designsystem:write；写存量的四个 design_system_id 必填 → 资源门 required。
+
+    ``required=False`` 会让缺 id 的调用**滑过判权**（save 那样是因为它缺 id 就是新建），
+    而分片写工具写的一定是存量，缺 id 必须当场被拦。
+    """
+    by_name = {t.name: t for t in DESIGNSYSTEM_TOOLS}
+    shard = ['create', 'put_tokens', 'put_design', 'put_gallery', 'finalize']
+    for action in shard:
+        tool = by_name[f'hasn.designsystem.{action}']
+        assert tool.required_scopes == ['designsystem:write'], action
+        assert tool.source == 'platform'
+        assert tool.execution_location == 'cloud'
+    editor_gate = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'editor'}]
+    for action in ('put_tokens', 'put_design', 'put_gallery', 'finalize'):
+        gate = by_name[f'hasn.designsystem.{action}'].resource_access
+        assert gate == editor_gate, action
+        assert 'required' not in gate[0], f'{action}: 分片写工具不得放开 required'
+    # create 没有实例可判 → 不声明资源门（不设假闸门）
+    assert by_name['hasn.designsystem.create'].resource_access is None
 
 
 def test_tools_are_cloud_platform() -> None:
@@ -113,7 +144,22 @@ def test_required_fields_match_contract() -> None:
     """必填项与本地 hasn-mcp（Rust）工具逐字段一致。"""
     by_name = {t.name: t for t in DESIGNSYSTEM_TOOLS}
     assert by_name['hasn.designsystem.import'].input_schema['required'] == ['source', 'ref']
-    assert by_name['hasn.designsystem.save'].input_schema['required'] == ['slug', 'name', 'content']
+    # ⚠️ 改判（2026-08-25）：save 的必填从 ['slug','name','content'] 收到 ['content']。
+    # 旧口径把「更新存量」这条完全正当的调用判死——分身传 {design_system_id, content} 是语义正确的，
+    # 却收到 missing=[slug,name]，而 slug 在更新路径上根本不生效（service 白名单明写不许改 slug）。
+    # 实测这占该工具全部失败的 22%。slug/name 的必填性改由 execute 分场景校验并给分场景错误。
+    assert by_name['hasn.designsystem.save'].input_schema['required'] == ['content']
+    assert 'slug' not in by_name['hasn.designsystem.save'].input_schema['required']  # 反向：不得退回旧口径
+    # 分片写工具的必填清单（都短，且每一项都是真的必须）
+    assert by_name['hasn.designsystem.create'].input_schema['required'] == ['slug', 'name']
+    assert by_name['hasn.designsystem.put_tokens'].input_schema['required'] == ['design_system_id', 'tokens_css']
+    assert by_name['hasn.designsystem.put_design'].input_schema['required'] == ['design_system_id', 'design_md']
+    assert by_name['hasn.designsystem.put_gallery'].input_schema['required'] == [
+        'design_system_id',
+        'scene',
+        'html',
+    ]
+    assert by_name['hasn.designsystem.finalize'].input_schema['required'] == ['design_system_id']
     assert by_name['hasn.designsystem.get'].input_schema['required'] == ['design_system_id']
     assert 'required' not in by_name['hasn.designsystem.list'].input_schema
     # 纯函数工具必填项 1:1（compile_tokens 无必填，两入参二选一在 execute 里校验）。
@@ -252,10 +298,29 @@ async def test_save_rejects_missing_content() -> None:
 
 
 @pytest.mark.asyncio(loop_scope='session')
-async def test_save_rejects_missing_slug() -> None:
-    """save 缺 slug → RuntimeError（校验在打 DB 前）。"""
-    with pytest.raises(RuntimeError, match='slug'):
-        await DesignSystemSaveTool().execute(_agent_ctx('h_x'), {'name': 'n', 'content': {}})
+async def test_save_new_without_slug_says_it_is_a_create_only_requirement() -> None:
+    """**新建**缺 slug → 错误必须点明「新建才需要」并指出更新存量的走法，而不是笼统的 missing。
+
+    分身在这条错误上打转过很多次：schema 说 slug 必填、它在更新一套存量、于是既不知道该不该传，
+    也不知道传了有没有用（实际没用——slug 建库后改不动）。
+    """
+    with pytest.raises(RuntimeError, match='新建'):
+        await DesignSystemSaveTool().execute(_agent_ctx('h_x'), {'name': 'n', 'content': {'tokens_css': ':root{}'}})
+
+
+@pytest.mark.asyncio(loop_scope='session')
+async def test_save_update_no_longer_demands_slug_and_name() -> None:
+    """反向：更新存量（给了 design_system_id）不得再因为缺 slug/name 被判死。
+
+    此处只验「不是因为缺 slug/name 而失败」——不存在的 id 会因为查不到而失败，那是另一回事，
+    正是这条区分让改判可证伪：退回旧口径时报的是 slug/name，本用例当场红。
+    """
+    with pytest.raises(RuntimeError) as exc:
+        await DesignSystemSaveTool().execute(
+            _agent_ctx('h_x'), {'design_system_id': 999999999, 'content': {'tokens_css': ':root{}'}}
+        )
+    assert 'slug' not in str(exc.value)
+    assert '不存在' in str(exc.value)
 
 
 @pytest.mark.asyncio(loop_scope='session')
@@ -370,3 +435,231 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
             if project_id is not None:
                 await db.execute(delete(HasnProject).where(HasnProject.id == project_id))
+
+
+# ══ DSPUT·分片写入的真实 PG 往返 ═══════════════════════════════════════════════════
+_SHARD_BRAND_SECTION = (
+    '<section data-ds-scene="brand_website">'
+    '<nav data-ds-component="nav" style="color:var(--fg)">导航</nav>'
+    '<div data-ds-component="hero" style="background:var(--bg)">Hero</div>'
+    '<div data-ds-component="features" style="color:var(--fg-2)">特性</div>'
+    '<button data-ds-component="cta" style="background:var(--accent)">CTA</button>'
+    '<footer data-ds-component="footer" style="color:var(--muted)">页脚</footer>'
+    '</section>'
+)
+_SHARD_DECK_SECTION = (
+    '<section data-ds-scene="deck">'
+    '<div data-ds-component="cover" style="background:var(--bg)">封面</div>'
+    '<div data-ds-component="section" style="color:var(--fg)">章节</div>'
+    '<div data-ds-component="bullets" style="color:var(--fg-2)">要点</div>'
+    '<div data-ds-component="chart" style="border:1px solid var(--border)">图表</div>'
+    '<div data-ds-component="closing" style="background:var(--accent)">结束</div>'
+    '</section>'
+)
+
+
+def _shard_tokens_css() -> str:
+    from backend.app.hasn_designsystem.core import SourceToken, compile_tokens
+
+    source = [
+        SourceToken(name='--bg', value='#ffffff', source='test', line=None, usage=[]),
+        SourceToken(name='--fg', value='#0f172a', source='test', line=None, usage=[]),
+        SourceToken(name='--accent', value='#2563eb', source='test', line=None, usage=[]),
+    ]
+    return compile_tokens(source, '2026-08-25T00:00:00+00:00').tokens_css
+
+
+async def _silence_completion_card(design_system_id: int) -> None:
+    """把发卡幂等水位提前置位，让后续写入不触发真实 IM 投递。
+
+    完成卡投递要求分身身份在 hasn_humans/agents 里真实存在，而本文件用的是随机测试身份。
+    这里只想验「分片写入本身」，发卡链路另有其测试；置位水位比造一整套身份轻，也比把
+    内容故意写不全诚实——后者会让 complete=true 这条最关键的断言根本验不到。
+    """
+    from backend.app.hasn_designsystem.model.design_system import DesignSystem
+    from backend.database.db import async_db_session
+    from backend.utils.timezone import timezone as tz
+
+    async with async_db_session.begin() as db:
+        d = await db.get(DesignSystem, design_system_id)
+        assert d is not None
+        d.completed_notified_at = tz.now()
+
+
+async def _cleanup_design_system(design_system_id: int | None, owner: str) -> None:
+    if design_system_id is None:
+        return
+    from sqlalchemy import delete
+
+    from backend.app.hasn.model import HasnArtifactContributions, HasnArtifactRegistrationOutbox, HasnArtifacts
+    from backend.app.hasn_designsystem.model.design_system import DesignSystem
+    from backend.app.hasn_designsystem.model.revision import Revision
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as db:
+        await db.execute(delete(Revision).where(Revision.design_system_id == design_system_id))
+        await db.execute(delete(DesignSystem).where(DesignSystem.id == design_system_id))
+        # 参与记录与可靠投递队列均外键指向产物当前态，清理必须先删子表（与既有 save 往返测试同序）。
+        await db.execute(
+            delete(HasnArtifactRegistrationOutbox).where(HasnArtifactRegistrationOutbox.owner_hasn_id == owner)
+        )
+        await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
+        await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+
+
+@pytest.mark.asyncio(loop_scope='session')
+async def test_shard_write_roundtrip_real_db() -> None:
+    """真实 PG 端到端：create → put_tokens → put_design → put_gallery ×2 → finalize。
+
+    这条链要证明的不只是「能跑通」，而是**分身在整条链上从没传过一个派生物**：
+    design-tokens.json / tailwind / 契约报告 / 组件清单全部由云端现算。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    from backend.app.mcp.tools.designsystem import (
+        DesignSystemCreateTool,
+        DesignSystemFinalizeTool,
+        DesignSystemPutDesignTool,
+        DesignSystemPutGalleryTool,
+        DesignSystemPutTokensTool,
+    )
+
+    owner = f'h_ds_shard_{uuid.uuid4().hex[:16]}'
+    ctx = _agent_ctx(owner, agent_hasn_id=f'a_ds_shard_{uuid.uuid4().hex[:12]}')
+    ds_id: int | None = None
+    try:
+        shell = await DesignSystemCreateTool().execute(
+            ctx, {'slug': f'ds-shard-{uuid.uuid4().hex[:8]}', 'name': '分片往返', 'required_scenes': ['brand_website']}
+        )
+        ds_id = shell['id']
+        assert shell['created'] is True
+        assert shell['uri'] == f'hasn://designsystem/{ds_id}'  # 建壳就给出打开地址，不必二次查询
+        await _silence_completion_card(ds_id)
+
+        tokens = await DesignSystemPutTokensTool().execute(
+            ctx, {'design_system_id': ds_id, 'tokens_css': _shard_tokens_css()}
+        )
+        assert tokens['score'] == 100  # 评分来自云端现算，分身没传过报告
+        assert tokens['grade'] == 'excellent'
+
+        await DesignSystemPutDesignTool().execute(ctx, {'design_system_id': ds_id, 'design_md': '# 分片写入说明'})
+        brand = await DesignSystemPutGalleryTool().execute(
+            ctx, {'design_system_id': ds_id, 'scene': 'brand_website', 'html': _SHARD_BRAND_SECTION}
+        )
+        assert brand['scene'] == 'brand_website'
+        assert brand['scene_coverage']['complete'] is True  # 写完当场回覆盖，不必再单独 check_scenes
+
+        await DesignSystemPutGalleryTool().execute(
+            ctx, {'design_system_id': ds_id, 'scene': 'deck', 'html': _SHARD_DECK_SECTION}
+        )
+
+        done = await DesignSystemFinalizeTool().execute(ctx, {'design_system_id': ds_id})
+        assert done['complete'] is True  # 五项必填齐（其中三项是云端自己算出来的）
+        assert done['scene_report']['complete'] is True
+        assert done['uri'] == f'hasn://designsystem/{ds_id}'
+
+        # 两个场景都在，且各自完整——按场景写不会互相覆盖。
+        gallery = await DesignSystemGetGalleryTool().execute(ctx, {'design_system_id': ds_id})
+        assert 'data-ds-scene="brand_website"' in gallery['components_html']
+        assert 'data-ds-scene="deck"' in gallery['components_html']
+    finally:
+        await _cleanup_design_system(ds_id, owner)
+
+
+def test_shard_write_payload_is_an_order_of_magnitude_smaller() -> None:
+    """量化分片的收益：单次入参必须比等价的整包 save 小一个数量级。
+
+    这是整件事的**根因指标**——不是「代码更好看」，而是「分身能不能一次把参数吐完」。实测整包
+    save 经 tool.call 后要吐 2 万-4.5 万字符的双重转义串，41% 的调用在中途漏了逗号或引号。
+    断言按**双重序列化后**的长度算，因为那才是模型真正要生成的东西。
+    """
+    tokens_css = _shard_tokens_css()
+    whole = json.dumps(
+        {
+            'name': 'hasn.designsystem.save',
+            'params': json.dumps(
+                {
+                    'design_system_id': 1,
+                    'slug': 's',
+                    'name': 'n',
+                    'content': {
+                        'tokens_css': tokens_css,
+                        'design_md': '# 说明',
+                        'components_html': _SHARD_BRAND_SECTION + _SHARD_DECK_SECTION,
+                        # 整包口径下这两项也得由分身传（分片口径下云端现算，压根不出现在入参里）
+                        'components_manifest_json': {'brandId': 's', 'groups': [], 'fixture': {}},
+                        'token_contract_report_json': {'summary': {'score': 100}},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        },
+        ensure_ascii=False,
+    )
+    one_scene = json.dumps(
+        {
+            'tool': 'hasn.designsystem.put_gallery',
+            'params': json.dumps(
+                {'design_system_id': 1, 'scene': 'deck', 'html': _SHARD_DECK_SECTION}, ensure_ascii=False
+            ),
+        },
+        ensure_ascii=False,
+    )
+    assert len(one_scene) * 3 < len(whole), (
+        f'分片入参 {len(one_scene)} 字符 vs 整包 {len(whole)} 字符——收益不足一个数量级，'
+        f'说明分片没有真正把大块留在服务端'
+    )
+
+
+@pytest.mark.asyncio(loop_scope='session')
+async def test_create_through_tool_call_with_business_name_flattened_real_db() -> None:
+    """端到端复现生产事故的调用形状：经 hasn.cloud.tool.call、业务 name 平铺在顶层。
+
+    2026-08-25 生产实况：分身调 designsystem.save 时把设计系统展示名放在 tool.call 的顶层 name 上，
+    转发层拿它去查注册表 → `TOOL_NOT_FOUND: 昆明即时宠物零售 · 专业猫舍设计系统`（连撞两次触发
+    runtime 的 repeated_exact_failure_warning）；放进 params 又被 tool.call 自己判「缺 name」。
+    修复后用 `tool` 指定目标工具，平铺的业务 name 如实抵达内层——本用例断言那个中文名真的落进了库。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    from backend.app.mcp.server import HasnCloudMcpServer
+
+    owner = f'h_ds_tc_{uuid.uuid4().hex[:16]}'
+    ctx = _agent_ctx(owner, agent_hasn_id=f'a_ds_tc_{uuid.uuid4().hex[:12]}')
+    display_name = '昆明即时宠物零售 · 专业猫舍设计系统'
+    ds_id: int | None = None
+    server = HasnCloudMcpServer()
+    tool_call = server.tool_registry.get_tool('hasn.cloud.tool.call')
+    assert tool_call is not None
+    try:
+        created = await tool_call.execute(
+            ctx,
+            {
+                'tool': 'hasn.designsystem.create',
+                'name': display_name,  # 平铺在顶层的**业务**字段，不是工具名
+                'slug': f'ds-tc-{uuid.uuid4().hex[:8]}',
+            },
+        )
+        assert isinstance(created, dict), f'调用未抵达内层工具: {created!r}'
+        assert created.get('error') != 'input_validation_failed', created
+        ds_id = created['id']
+        assert created['name'] == display_name  # 业务 name 真的到了内层，没被当成工具名吃掉
+    finally:
+        await _cleanup_design_system(ds_id, owner)
+
+
+@pytest.mark.asyncio(loop_scope='session')
+async def test_tool_call_reports_business_name_as_argument_error_not_missing_tool() -> None:
+    """反向：真把业务名放在 name 上当工具名用 → 报入参错误并给出正确形状，不再是「工具不存在」。"""
+    from backend.app.mcp.errors import McpErrorCode, McpToolError
+    from backend.app.mcp.server import HasnCloudMcpServer
+
+    server = HasnCloudMcpServer()
+    tool_call = server.tool_registry.get_tool('hasn.cloud.tool.call')
+    assert tool_call is not None
+    with pytest.raises(McpToolError) as exc:
+        await tool_call.execute(_agent_ctx('h_x'), {'name': '昆明即时宠物零售 · 专业猫舍设计系统', 'slug': 's'})
+    assert exc.value.code == McpErrorCode.INVALID_CALL_ARGUMENTS
+    assert exc.value.code != McpErrorCode.TOOL_NOT_FOUND
