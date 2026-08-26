@@ -234,35 +234,35 @@ class ToolCallTool(BaseTool):
         # 否则 function-calling Runtime / LLM 会把「无字段的 object」当成「不接受任何字段」，
         # 只能产出 params={}（参数在 LLM 侧就丢了，根本到不了云端）。详见 tool.call 的字段透传修复。
         # 顶层放开 additionalProperties，容忍部分 Runtime 把内层参数平铺到顶层而非包进 params。
+        # ⚠️ 只暴露 **一个** 承载目标工具名的键。服务端 `_resolve_target_name` 仍然兼容接收
+        # `name`（老 Runtime 与存量调用方），但**绝不把它列进 properties**——2026-08-26 线上回归：
+        # 曾同时列出 `tool` 与 `name`、两者描述都写「目标工具 canonical name」，模型于是**把工具名
+        # 填了两遍**（`{"name":"hasn.designsystem.get","tool":"hasn.designsystem.get"}`）而把
+        # `params` 整个丢掉，designsystem / knowledge 等域一起报 missing。两个语义等价的键摆在
+        # 模型面前，它不会二选一，它会都填。
         return {
             "type": "object",
             "properties": {
                 "tool": {
                     "type": "string",
                     "description": (
-                        "目标工具 canonical name，如 hasn.community.create_post。"
-                        "**目标工具自己也有 name 字段时（designsystem.save / task.* / workflow.* 等），"
-                        "必须用本字段指定目标**，把业务 name 放进 params。"
-                    ),
-                },
-                "name": {
-                    "type": "string",
-                    "description": (
-                        "目标工具 canonical name（`tool` 的兼容别名，两者都给时以 `tool` 为准）。"
-                        "⚠️ 这个键与不少工具自己的 `name` 入参同名——要传业务 name 请用 `tool` 指定目标工具。"
+                        "要调用哪个工具，填 canonical name，如 hasn.community.create_post。"
+                        "这里**只放工具名**，业务参数一律放 params。"
                     ),
                 },
                 "params": {
                     "type": ["object", "string"],
                     "description": (
-                        "目标工具的入参；通常为对象，键=目标工具 input_schema 的字段"
-                        "（如 {\"query\": \"...\"}），也接受 JSON 字符串。先用 hasn.cloud.tool.search "
-                        "查目标工具 schema 再填。"
+                        "目标工具的**全部**入参，一个对象。键=目标工具 input_schema 的字段，"
+                        "例如调 hasn.designsystem.get 时传 params={\"design_system_id\": 157}。"
+                        "⚠️ 业务参数只能放这里，放到外层不会生效；目标工具自己有 name 字段时"
+                        "（designsystem.create/save、task.*、workflow.* 等），那个 name 也放在 params 里。"
+                        "不确定字段就先用 hasn.cloud.tool.search 查目标工具 schema。"
                     ),
                     "additionalProperties": True,
                 },
             },
-            "anyOf": [{"required": ["tool"]}, {"required": ["name"]}],
+            "required": ["tool", "params"],
             "additionalProperties": True,
         }
 

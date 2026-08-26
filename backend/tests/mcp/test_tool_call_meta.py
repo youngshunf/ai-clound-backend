@@ -266,6 +266,45 @@ async def test_tool_call_small_bad_json_does_not_advise_sharding(monkeypatch: py
     assert '转义' in exc.value.message
 
 
+def test_tool_call_schema_exposes_exactly_one_target_name_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """schema 里承载「目标工具名」的键只能有一个——两个等价键会让模型把工具名填两遍。
+
+    2026-08-26 线上回归：properties 同时列出 `tool` 与 `name`、两者描述都写「目标工具 canonical
+    name」，模型产出 `{"name":"hasn.designsystem.get","tool":"hasn.designsystem.get"}`——工具名填了
+    两遍，**params 整个丢掉**，designsystem / knowledge 等域一起报 missing，分身在纠正循环里
+    finish_reason=stop 收尾。服务端仍兼容接收 `name`（见 _resolve_target_name），但那是**收**，不是**宣传**。
+
+    这条是本次回归唯一可机器化的判据：模型会怎么填 schema 测不了，但「schema 里有没有摆出两个
+    等价选项」测得了。
+    """
+    server = _server(monkeypatch)
+    schema = _call_tool(server).input_schema
+    properties = schema['properties']
+    assert 'tool' in properties
+    assert 'name' not in properties, 'schema 不得同时暴露 tool 与 name 两个工具名键'
+    assert schema['required'] == ['tool', 'params'], 'params 必须是必填，否则模型会只给工具名'
+    # 描述里要明说业务参数只能放 params——模型是照描述填的
+    assert 'params' in properties['tool']['description']
+
+
+@pytest.mark.asyncio
+async def test_tool_call_still_accepts_legacy_name_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """反向：`name` 不再进 schema，但服务端必须继续收——老 Runtime 与存量调用方还在用它。"""
+    server = _server(monkeypatch)
+    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
+    assert result == {'echo': {'content': 'hi'}}
+
+
+@pytest.mark.asyncio
+async def test_tool_name_filled_twice_still_reaches_inner_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个键都填成同一个工具名时（线上那个形状），params 里的入参仍须如实抵达内层。"""
+    server = _server(monkeypatch)
+    result = await _call_tool(server).execute(
+        _ctx(), {'name': 'hasn.stub.act', 'tool': 'hasn.stub.act', 'params': {'content': 'hi'}}
+    )
+    assert result == {'echo': {'content': 'hi'}}
+
+
 def test_tool_call_schema_advertises_open_params(monkeypatch: pytest.MonkeyPatch) -> None:
     """schema 必须把 params 声明成「开放对象」，否则 function-calling LLM 填不进字段（线上根因）。"""
     server = _server(monkeypatch)
