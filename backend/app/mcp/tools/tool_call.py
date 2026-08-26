@@ -222,7 +222,8 @@ class ToolCallTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "调用任意云端 MCP 工具：tool.call(name, params)。已知 canonical name 可直接调用，"
+            "调用任意云端 MCP 工具：tool.call(tool, params)——目标工具名放 `tool`，业务入参放 `params`。"
+            "已知 canonical name 可直接调用，"
             "无需先 tool.search；参数错误会返回该工具的完整 schema 供修正后重试。"
             "params 是目标工具的入参对象，键即目标工具 input_schema 的字段——"
             "例如调用 hasn.community.search 时传 params={\"query\": \"关键词\", \"limit\": 10}。"
@@ -262,7 +263,16 @@ class ToolCallTool(BaseTool):
                     "additionalProperties": True,
                 },
             },
-            "required": ["tool", "params"],
+            # ⚠️ **不设 `required`**，这不是疏漏。MCP SDK 在把请求交给我们的 handler 之前，就先拿这份
+            # schema `jsonschema.validate` 了原始 wire 入参（`mcp/server/lowlevel/server.py`）——凡是
+            # 写进 `required` 的键，`_resolve_target_name` 的 `name` 兼容分支与 `_extract_params` 的
+            # 平铺兜底就**一起变成死代码**，根本走不到。2026-08-26 线上实测：那次把 `required` 钉成
+            # `["tool", "params"]` 后，存量调用方发的 `{"name": ..., "params": ...}` 全被 SDK 判
+            # `Input validation error: 'tool' is a required property`，分身连撞 3 次触发 Runtime 侧
+            # MCP 熔断，被告知「云端 MCP 不可用」，整条云端通道在它眼里雪崩——而云端一直是好的。
+            # 分工因此定死：**schema 只负责宣传（properties + description），判定一律落 handler**。
+            # handler 的错误回吐内层完整 schema（§9.4 schema-on-error）并给出可照抄形状，SDK 那句
+            # 只有一行、不带 schema，还白烧一次熔断次数。
             "additionalProperties": True,
         }
 

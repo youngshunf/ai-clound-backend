@@ -16,12 +16,14 @@ import logging
 
 from typing import Any
 
+import jsonschema
 import pytest
 
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.server import HasnCloudMcpServer
 from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.trust_gate import allow_reserved_fields_in_schema
 
 
 class _StubTool(BaseTool):
@@ -282,16 +284,63 @@ def test_tool_call_schema_exposes_exactly_one_target_name_key(monkeypatch: pytes
     properties = schema['properties']
     assert 'tool' in properties
     assert 'name' not in properties, 'schema 不得同时暴露 tool 与 name 两个工具名键'
-    assert schema['required'] == ['tool', 'params'], 'params 必须是必填，否则模型会只给工具名'
+    assert 'params' in properties
     # 描述里要明说业务参数只能放 params——模型是照描述填的
     assert 'params' in properties['tool']['description']
+    # `name` 只能不被宣传成**键**；描述散文里出现「canonical name」「目标工具自己的 name 字段」
+    # 是说明不是宣传，故判结构位置、不扫文案。
+    assert set(properties) == {'tool', 'params'}
+    # 顶层不得出现任何**判定性**关键字：schema 只宣传，判定一律落 handler。写进 required /
+    # anyOf 的键会被 MCP SDK 在 handler 之前强制，把服务端的兼容与平铺兜底一起变成死代码。
+    for keyword in ('required', 'anyOf', 'oneOf', 'allOf', 'dependentRequired'):
+        assert keyword not in schema, f'顶层不得出现 {keyword}——SDK 会拿它先于 handler 判死 wire 入参'
+
+
+def _assert_passes_sdk_gate(server: HasnCloudMcpServer, arguments: dict[str, Any]) -> None:
+    """按 MCP SDK 的方式校验 wire 入参——这是本元工具真正的第一道闸。
+
+    ⚠️ 直接 `await tool.execute(...)` **测不到**这道闸：SDK 在 `mcp/server/lowlevel/server.py`
+    里先 `jsonschema.validate(instance=arguments, schema=tool.inputSchema)`，通过了才调我们的
+    handler。2026-08-26 线上事故正是死在这里——服务端的 `name` 兼容分支写得好好的，但 schema 把
+    `tool` 钉成 required，wire 上根本走不到那个分支，而单测因为直调 execute 一路全绿。
+    schema 与线上同源过一道 `allow_reserved_fields_in_schema`（list_tools 就是这么投影的）。
+    """
+    schema = allow_reserved_fields_in_schema(_call_tool(server).input_schema)
+    jsonschema.validate(instance=arguments, schema=schema)
+
+
+@pytest.mark.parametrize(
+    ('shape', 'arguments'),
+    [
+        ('规范形', {'tool': 'hasn.stub.act', 'params': {'content': 'hi'}}),
+        ('兼容 name', {'name': 'hasn.stub.act', 'params': {'content': 'hi'}}),
+        ('params 是 JSON 串', {'tool': 'hasn.stub.act', 'params': '{"content": "hi"}'}),
+        ('平铺到顶层', {'tool': 'hasn.stub.act', 'content': 'hi'}),
+        ('两个键都填', {'tool': 'hasn.stub.act', 'name': 'hasn.stub.act', 'params': {'content': 'hi'}}),
+        ('系统注入保留字段', {'tool': 'hasn.stub.act', 'params': {'content': 'hi'}, '_hasn_session_id': 's1'}),
+    ],
+)
+def test_advertised_schema_lets_every_supported_wire_shape_through_the_sdk_gate(
+    monkeypatch: pytest.MonkeyPatch, shape: str, arguments: dict[str, Any],
+) -> None:
+    """服务端宽容接收的每一种形态，都必须先能过 SDK 的 jsonschema 闸——否则那份宽容是死代码。
+
+    变异验证：给 input_schema 加回 `"required": ["tool", "params"]`，「兼容 name」与「平铺到顶层」
+    两条当场红（正是 2026-08-26 线上那两条路）。
+    """
+    _assert_passes_sdk_gate(_server(monkeypatch), arguments)
 
 
 @pytest.mark.asyncio
 async def test_tool_call_still_accepts_legacy_name_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """反向：`name` 不再进 schema，但服务端必须继续收——老 Runtime 与存量调用方还在用它。"""
+    """反向：`name` 不再进 schema，但服务端必须继续收——老 Runtime 与存量调用方还在用它。
+
+    先过 SDK 闸再进 handler：只断言后者会漏掉真正的失败点（见 `_assert_passes_sdk_gate`）。
+    """
     server = _server(monkeypatch)
-    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
+    arguments = {'name': 'hasn.stub.act', 'params': {'content': 'hi'}}
+    _assert_passes_sdk_gate(server, arguments)
+    result = await _call_tool(server).execute(_ctx(), arguments)
     assert result == {'echo': {'content': 'hi'}}
 
 
