@@ -296,6 +296,19 @@ def test_tool_call_schema_exposes_exactly_one_target_name_key(monkeypatch: pytes
         assert keyword not in schema, f'顶层不得出现 {keyword}——SDK 会拿它先于 handler 判死 wire 入参'
 
 
+def test_tool_call_description_names_the_real_target_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """描述与 schema 必须指向同一个承载键——模型是照**描述**填参的，不是照 properties 填的。
+
+    2026-08-26 生产：schema 里承载工具名的键早已改成 `tool`，而 description 逐字还写着
+    `tool.call(name, params)`，于是分身持续发 `name`；SDK 严格校验把它判死，连撞 3 次触发
+    Runtime 侧 MCP 熔断，分身照着熔断文案如实汇报「云端 MCP 不可用」。schema 改了描述没跟着改，
+    是这类回归里**可机器化**的那一半。
+    """
+    description = _call_tool(_server(monkeypatch)).description
+    assert 'tool.call(tool, params)' in description, f'描述必须写出真正的承载键：{description}'
+    assert 'tool.call(name' not in description, f'描述不得再教模型把工具名填进 name：{description}'
+
+
 def _assert_passes_sdk_gate(server: HasnCloudMcpServer, arguments: dict[str, Any]) -> None:
     """按 MCP SDK 的方式校验 wire 入参——这是本元工具真正的第一道闸。
 
