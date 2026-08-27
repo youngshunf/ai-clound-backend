@@ -497,7 +497,7 @@ class KnowledgeService:
         if permission not in ('viewer', 'editor', 'manager'):
             raise errors.RequestError(msg='非法权限档')
         kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
-        return await resource_share_service.upsert_share(
+        share = await resource_share_service.upsert_share(
             db,
             resource_type=_RESOURCE_TYPE,
             resource_id=str(kb_id),
@@ -507,6 +507,9 @@ class KnowledgeService:
             permission=permission,
             granted_by=subject.hasn_id,
         )
+        # 回带库名，供 daemon 直接组分享卡片（无需另查本地镜像快照——快照可能未载/按项目过滤而缺行，
+        # 之前镜像未命中时卡片落成「未命名知识库」），与 add_doc_share 回带 doc_name 同口径。
+        return {**share, 'kb_id': kb_id, 'kb_name': kb.name}
 
     async def revoke_share(
         self, db: AsyncSession, *, subject: Subject, kb_id: int, grantee_type: str, grantee_id: str

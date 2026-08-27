@@ -67,9 +67,12 @@ async def test_explicit_share_human_viewer_editor(session) -> None:
         await knowledge_service.authorize_kb(session, subject=b, kb_id=kb.id, need='viewer')
 
     # A 共享 editor 给 B
-    await knowledge_service.add_share(
+    share = await knowledge_service.add_share(
         session, subject=a, kb_id=kb.id, grantee_type='human', grantee_id=b.hasn_id, permission='editor'
     )
+    # 响应回带权威库名/库 id（daemon 直接组分享卡片，不再依赖本地镜像快照）
+    assert share['kb_id'] == kb.id
+    assert share['kb_name'] == '报价资料'
     # B 可读可写
     got = await knowledge_service.authorize_kb(session, subject=b, kb_id=kb.id, need='editor')
     assert got.owner_id == a.hasn_id  # 委托键 = 库主人
