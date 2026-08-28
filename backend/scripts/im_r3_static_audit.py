@@ -43,6 +43,13 @@ _SQL_TABLE_REFERENCE_RE = re.compile(
     r'"[A-Za-z_][A-Za-z0-9_]*")',
     re.IGNORECASE,
 )
+_LEGACY_PUBLIC_MOVED_TABLE_RE = re.compile(
+    r'\b(?:from|join|insert\s+into|update|delete\s+from)\s+'
+    r'(?:public|"public")\s*\.\s*'
+    r'(?P<table>[A-Za-z_][A-Za-z0-9_]*|'
+    r'"[A-Za-z_][A-Za-z0-9_]*")',
+    re.IGNORECASE,
+)
 _MOVED_TABLE_DML_RE = re.compile(
     r'\b(?P<action>insert\s+into|update|delete\s+from)\s+'
     r'(?:(?P<schema>[A-Za-z_][A-Za-z0-9_]*|'
@@ -109,6 +116,39 @@ def find_unqualified_moved_table_sql(root: Path) -> list[Finding]:
                             value=table,
                         )
                     )
+    return sorted(findings, key=lambda item: (str(item.path), item.line, item.value))
+
+
+def find_legacy_public_moved_table_sql(root: Path) -> list[Finding]:
+    """查找运行时代码里写死 legacy ``public.`` 前缀的 moved table SQL（读写都算）。
+
+    R3 切换后这些表已 ``SET SCHEMA hasn_im`` / ``hasn_sync``，``public.`` 下的旧表不再存在，
+    写死前缀在 ``HASN_IM_SCHEMA_CUTOVER=true`` 的环境上必然 ``UndefinedTableError``。
+    ``find_unqualified_moved_table_sql`` 只判「有没有 schema」，判不出「schema 对不对」——
+    它的自测甚至把 ``public.hasn_messages`` 明确列为 GOOD，本函数补的正是那一半。
+    表名一律走 ``SCHEMA_NAMES.im_table`` / ``sync_table``，不写死任一侧。
+    """
+    findings: list[Finding] = []
+    for path in _iter_python_files(root):
+        tree = _parse(path)
+        docstring_ids = _docstring_node_ids(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstring_ids:
+                continue
+            for match in _LEGACY_PUBLIC_MOVED_TABLE_RE.finditer(node.value):
+                table = match.group('table').strip('"')
+                if table not in MOVED_TABLES:
+                    continue
+                findings.append(
+                    Finding(
+                        path=path,
+                        line=getattr(node, 'lineno', 0),
+                        kind='legacy_public_moved_table_sql',
+                        value=f'public.{table}',
+                    )
+                )
     return sorted(findings, key=lambda item: (str(item.path), item.line, item.value))
 
 
@@ -228,6 +268,9 @@ def audit_application(root: Path) -> list[Finding]:
     sql_findings = [
         item for item in find_unqualified_moved_table_sql(root) if is_runtime_source(item)
     ]
+    legacy_public_findings = [
+        item for item in find_legacy_public_moved_table_sql(root) if is_runtime_source(item)
+    ]
     event_findings = [
         item for item in find_legacy_event_producers(root) if is_runtime_source(item)
     ]
@@ -242,6 +285,7 @@ def audit_application(root: Path) -> list[Finding]:
     return sorted(
         [
             *sql_findings,
+            *legacy_public_findings,
             *event_findings,
             *route_findings,
             *write_findings,

@@ -18,6 +18,8 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.database.schema_names import SCHEMA_NAMES
+
 _MAX_LIMIT = 100
 _DEFAULT_LIMIT = 20
 
@@ -119,11 +121,12 @@ class AgentMessageReadService:
         cursor_id = _parse_cursor(cursor)
         conv = (conversation_id or '').strip() or None
 
+        messages_table = SCHEMA_NAMES.im_table('hasn_messages')
         rows = (
             (
                 await db.execute(
                     sa.text(
-                        """
+                        f"""
                     SELECT id,
                            conversation_id::text AS conversation_id,
                            from_id,
@@ -132,7 +135,7 @@ class AgentMessageReadService:
                            content_type,
                            content,
                            created_time
-                    FROM public.hasn_messages
+                    FROM {messages_table}
                     WHERE owner_id = :owner_id
                       AND (CAST(:conv AS text) IS NULL OR conversation_id = CAST(:conv AS uuid))
                       AND (CAST(:cursor_id AS bigint) IS NULL OR id < CAST(:cursor_id AS bigint))
@@ -184,11 +187,12 @@ class AgentMessageReadService:
         if conv is None:
             return {'messages': [], 'has_more': False, 'next_cursor': None}
 
+        messages_table = SCHEMA_NAMES.im_table('hasn_messages')
         rows = (
             (
                 await db.execute(
                     sa.text(
-                        """
+                        f"""
                     SELECT id,
                            conversation_id::text AS conversation_id,
                            from_id,
@@ -197,7 +201,7 @@ class AgentMessageReadService:
                            content_type,
                            content,
                            created_time
-                    FROM public.hasn_messages
+                    FROM {messages_table}
                     WHERE conversation_id = CAST(:conv AS uuid)
                       AND (CAST(:cursor_id AS bigint) IS NULL OR id < CAST(:cursor_id AS bigint))
                     ORDER BY id DESC
@@ -244,11 +248,13 @@ class AgentMessageReadService:
         lim = _clamp_limit(limit)
         cursor_id = _parse_cursor(cursor)
 
+        messages_table = SCHEMA_NAMES.im_table('hasn_messages')
+        conversations_table = SCHEMA_NAMES.im_table('hasn_conversations')
         rows = (
             (
                 await db.execute(
                     sa.text(
-                        """
+                        f"""
                     WITH last_msgs AS (
                         SELECT DISTINCT ON (conversation_id)
                                conversation_id,
@@ -258,7 +264,7 @@ class AgentMessageReadService:
                                sender_hasn_id,
                                content,
                                created_time
-                        FROM public.hasn_messages
+                        FROM {messages_table}
                         WHERE owner_id = :owner_id
                         ORDER BY conversation_id, id DESC
                     )
@@ -275,7 +281,7 @@ class AgentMessageReadService:
                            c.participant_b_id,
                            c.member_count
                     FROM last_msgs lm
-                    LEFT JOIN public.hasn_conversations c ON c.id = lm.conversation_id
+                    LEFT JOIN {conversations_table} c ON c.id = lm.conversation_id
                     WHERE (CAST(:cursor_id AS bigint) IS NULL OR lm.id < CAST(:cursor_id AS bigint))
                     ORDER BY lm.id DESC
                     LIMIT :limit
@@ -332,11 +338,12 @@ class AgentMessageReadService:
         escaped = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         pattern = f'%{escaped}%'
 
+        messages_table = SCHEMA_NAMES.im_table('hasn_messages')
         rows = (
             (
                 await db.execute(
                     sa.text(
-                        r"""
+                        rf"""
                     SELECT id,
                            conversation_id::text AS conversation_id,
                            from_id,
@@ -345,7 +352,7 @@ class AgentMessageReadService:
                            content_type,
                            content,
                            created_time
-                    FROM public.hasn_messages
+                    FROM {messages_table}
                     WHERE owner_id = :owner_id
                       AND (CAST(:conv AS text) IS NULL OR conversation_id = CAST(:conv AS uuid))
                       AND (CAST(:cursor_id AS bigint) IS NULL OR id < CAST(:cursor_id AS bigint))

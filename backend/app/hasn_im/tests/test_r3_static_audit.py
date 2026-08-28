@@ -7,10 +7,14 @@ from pathlib import Path
 from backend.scripts.im_r3_static_audit import (
     audit_application,
     find_legacy_event_producers,
+    find_legacy_public_moved_table_sql,
     find_legacy_write_routes,
     find_moved_table_writes,
     find_unqualified_moved_table_sql,
 )
+
+# 与文件尾 §4b 守卫同一层级口径：parents[3] == backend/，移动本文件必须同改这两处。
+_APP_ROOT = Path(__file__).resolve().parents[3] / 'app'
 
 
 def _write_source(root: Path, relative: str, source: str) -> None:
@@ -94,12 +98,18 @@ def test_im_application_is_the_only_authorized_message_writer(
 
     findings = audit_application(tmp_path / 'backend/app')
 
+    # 同一条越权写同时命中两类判据：写权限（谁能写）与 legacy public 前缀（切换后表还在不在）。
     assert [(item.path.name, item.kind, item.value) for item in findings] == [
+        (
+            'writer.py',
+            'legacy_public_moved_table_sql',
+            'public.hasn_messages',
+        ),
         (
             'writer.py',
             'moved_table_write',
             'INSERT public.hasn_messages',
-        )
+        ),
     ]
 
 
@@ -222,3 +232,48 @@ def test_every_im_schema_table_is_in_the_r3_cutover_move_list() -> None:
     for table in sorted(im_tables - renamed):
         assert f"'{table}'" in forward, f'{table} 未进 R3 正向搬迁清单，切换后代码会找不到它'
         assert f"'{table}'" in reverse, f'{table} 未进 R3 反向搬迁清单，回滚后会留在 hasn_im'
+
+
+def test_legacy_public_prefix_on_moved_table_is_detected(tmp_path: Path) -> None:
+    """写死 ``public.`` 的 moved table SQL 必须被发现——读写都算，非 moved 表不得误报。
+
+    ``find_unqualified_moved_table_sql`` 只判「有没有写 schema」，它的自测把
+    ``public.hasn_messages`` 明确列为 GOOD；判不出「写的这个 schema 切换后还在不在」的正是本函数。
+    """
+    _write_source(
+        tmp_path,
+        'backend/app/probe.py',
+        """
+from sqlalchemy import text
+
+BAD_READ = text("SELECT * FROM public.hasn_messages WHERE id = :id")
+BAD_JOIN = text("SELECT 1 FROM t JOIN public.hasn_conversations c ON c.id = t.cid")
+BAD_WRITE = text("DELETE FROM public.hasn_unread_projection WHERE id = :id")
+GOOD_IM = text("SELECT * FROM hasn_im.hasn_messages")
+GOOD_OTHER_TABLE = text("SELECT * FROM public.hasn_agents")
+""",
+    )
+
+    findings = find_legacy_public_moved_table_sql(tmp_path / 'backend/app')
+
+    assert [(item.path.name, item.value) for item in findings] == [
+        ('probe.py', 'public.hasn_messages'),
+        ('probe.py', 'public.hasn_conversations'),
+        ('probe.py', 'public.hasn_unread_projection'),
+    ]
+
+
+def test_runtime_moved_table_sql_has_no_legacy_public_prefix() -> None:
+    """运行时 moved table 上的 legacy ``public.`` 前缀必须清零。
+
+    生产 ``HASN_IM_SCHEMA_CUTOVER=true``、本机默认 false，写死 ``public.`` 只在生产
+    ``UndefinedTableError``——本机永远绿。这条断言是唯一会在合入前红出来的地方。
+    """
+    findings = [
+        item
+        for item in find_legacy_public_moved_table_sql(_APP_ROOT)
+        if 'tests' not in item.path.parts and 'migration' not in item.path.parts
+    ]
+
+    detail = [(str(item.path), item.line, item.value) for item in findings]
+    assert findings == [], f'moved table 上仍有写死的 public. 前缀：{detail}'
