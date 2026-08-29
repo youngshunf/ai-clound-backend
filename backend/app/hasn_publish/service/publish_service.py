@@ -5,6 +5,10 @@
 - 所有读写强制 owner_id 隔离（agent 代发布也落 owner 名下）。
 - 可见性序 private<password<unlisted<public；password 进出清空/写 hash。
 - 浏览器侧 private 访问票：短时签名 JWT，绑定 site_id（[01] §3.1）。
+- bundle-zip 物化异步化（2026-08-29）：读 zip + 逐对象 PUT 对象存储实测 38s+，超过 daemon 写死的
+  30s 上游超时（当日生产事故：客户端 499 放弃、服务端 200 落库、非幂等重试一晚重复发布 4 次）。
+  bundle-zip 请求内只落 pending revision 立即返回，Celery worker 物化完成后才翻
+  current_revision_id 指针；其余 runtime 无 fan-out，维持请求内同步物化。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_publish.model import Revision, Site
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.core.conf import settings
 from backend.plugin.s3.service.storage_service import storage_service
 from backend.plugin.s3.utils.file_ops import write_bytes
@@ -51,6 +56,21 @@ _VIEW_TICKET_TYPE = 'publish_view_ticket'
 FORM_ACCESS_TOKEN_TTL_SECONDS = 600
 GROWTH_LEAD_FORM_REF = 'growth-lead-v1'
 _FORM_ACCESS_TOKEN_TYPE = 'publish_form_access'
+
+# ---- bundle-zip 物化异步化（2026-08-29，见模块 docstring） ----
+
+#: 需要异步物化的 runtime 闭集：只有 bundle-zip 有「读 zip + 逐对象 PUT」的公网 fan-out。
+#: referenced 资产是同桶 server-side copy（亚秒级），不因此进异步路径。
+ASYNC_MATERIALIZE_RUNTIMES = frozenset({'bundle-zip'})
+
+#: revision.materialize_status 三态（仅 bundle-zip 会出现非 ready）
+MATERIALIZE_PENDING = 'pending'
+MATERIALIZE_READY = 'ready'
+MATERIALIZE_FAILED = 'failed'
+
+#: sweep 宽限期：正常 after_commit 派发到 worker 捡走是秒级；created_time 超过此时长仍
+#: pending 才判定为滞留（派发失败 / worker 中断 / broker 抖动），由每分钟 sweep 重新入队。
+_SWEEP_GRACE = timedelta(minutes=2)
 
 _password_hasher = PasswordHash((BcryptHasher(),))
 
@@ -212,6 +232,33 @@ async def _materialize_publish_manifest(
     return manifest
 
 
+def _dispatch_materialize_after_commit(db: AsyncSession, revision_id: int) -> None:
+    """注册 after_commit 钩子：本事务真正提交后才把物化任务入 Celery 队列。
+
+    与 growth 采集同一范式（growth_tool_handlers._enqueue_collection_job_after_commit）：
+    提前 .delay() 会让 worker 读到不存在（未提交）的 revision；事务回滚则钩子不触发
+    （不会出现"入了队却无 revision"的孤儿任务）。broker 不可达时 best-effort warn——
+    pending 行由每分钟 sweep（publish_materialize_sweep）兜底重派，不会丢。
+    """
+    from sqlalchemy import event
+
+    def _enqueue(_sync_session: Any) -> None:
+        try:
+            # 延迟 import：tasks 模块反向 import 本 service，模块级互引成环
+            from backend.app.hasn_publish.tasks import publish_materialize_revision
+
+            publish_materialize_revision.delay(revision_id)
+            log.info(f'[Publish] 物化任务已入队: revision_id={revision_id}')
+        except Exception as exc:
+            log.warning(
+                '[Publish] 物化任务入队失败，等 sweep 兜底: revision_id=%s error_type=%s',
+                revision_id,
+                exc.__class__.__name__,
+            )
+
+    event.listen(db.sync_session, 'after_commit', _enqueue, once=True)
+
+
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return _password_hasher.verify(plain, hashed)
@@ -262,6 +309,8 @@ def revision_to_dict(rev: Revision) -> dict[str, Any]:
         'content_hash': rev.content_hash,
         'size_bytes': rev.size_bytes,
         'manifest_json': rev.manifest_json,
+        'materialize_status': rev.materialize_status,
+        'materialize_error': rev.materialize_error,
         'created_time': timezone.to_str(rev.created_time) if rev.created_time else None,
     }
 
@@ -459,11 +508,16 @@ class PublishService:
         db.add(site)
         await db.flush()  # 取 site.id
 
-        # 发布时物化：bundle-zip 解包 + referenced 资产 server-side copy，
-        # serve 侧按 files manifest 逐对象代吐（缺这一步 /s/{slug} 恒 410）。
-        manifest_json = await _materialize_publish_manifest(
-            db, owner_id=owner_id, asset_id=asset_id, runtime=runtime, manifest_json=manifest_json
-        )
+        # 发布时物化：bundle-zip 走异步（落 pending revision 立即返回，Celery worker 物化完成后
+        # 才翻 current_revision_id——翻转前 /s/{slug} 由 serve 侧呈现「发布进行中」过渡页）；
+        # 其余 runtime 无公网 fan-out，维持请求内同步物化 + 立即翻指针。
+        if runtime in ASYNC_MATERIALIZE_RUNTIMES:
+            materialize_status = MATERIALIZE_PENDING
+        else:
+            manifest_json = await _materialize_publish_manifest(
+                db, owner_id=owner_id, asset_id=asset_id, runtime=runtime, manifest_json=manifest_json
+            )
+            materialize_status = MATERIALIZE_READY
 
         revision = Revision(
             site_id=site.id,
@@ -474,12 +528,16 @@ class PublishService:
             content_hash=content_hash,
             size_bytes=size_bytes,
             manifest_json=manifest_json,
+            materialize_status=materialize_status,
         )
         db.add(revision)
         await db.flush()  # 取 revision.id
 
-        site.current_revision_id = revision.id
-        await db.flush()
+        if materialize_status == MATERIALIZE_READY:
+            site.current_revision_id = revision.id
+            await db.flush()
+        else:
+            _dispatch_materialize_after_commit(db, revision.id)
         return {'site': site_to_dict(site), 'revision': revision_to_dict(revision)}
 
     # ---------------- update（新 revision） ----------------
@@ -504,7 +562,7 @@ class PublishService:
         if title is not None:
             site.title = PublishService.normalize_title(title)
 
-        # content_hash 去重：site 内同 hash 复用 revision（仅移动指针）
+        # content_hash 去重：site 内同 hash 复用 revision（不新起版本）
         if content_hash:
             dup = (
                 await db.execute(
@@ -519,7 +577,16 @@ class PublishService:
                 )
             ).scalar_one_or_none()
             if dup is not None:
-                site.current_revision_id = dup.id
+                # 按物化状态三分：
+                # - ready   → 仅移动指针（原语义）
+                # - pending → 物化任务已在跑/排队，完成后自行翻指针，这里不动指针
+                # - failed  → 同内容重试 = 重置回 pending 重新入队（诚实重试，不另起 revision）
+                if dup.materialize_status == MATERIALIZE_FAILED:
+                    dup.materialize_status = MATERIALIZE_PENDING
+                    dup.materialize_error = None
+                    _dispatch_materialize_after_commit(db, dup.id)
+                elif dup.materialize_status == MATERIALIZE_READY:
+                    site.current_revision_id = dup.id
                 site.status = 'active'
                 site.rev += 1
                 await db.flush()
@@ -528,10 +595,15 @@ class PublishService:
         next_seq = (
             await db.execute(select(func.coalesce(func.max(Revision.seq), 0)).where(Revision.site_id == site.id))
         ).scalar_one() + 1
-        # 发布时物化：与 create 同一环节（serve 侧按 files manifest 逐对象代吐）。
-        manifest_json = await _materialize_publish_manifest(
-            db, owner_id=owner_id, asset_id=asset_id, runtime=runtime, manifest_json=manifest_json
-        )
+        # 发布时物化：与 create 同一环节、同一异步边界。pending 期间指针留在旧 revision——
+        # 物化完成前旧内容继续可访问，任务完成才原子翻转（不会出现「新内容没好、旧内容先没」）。
+        if runtime in ASYNC_MATERIALIZE_RUNTIMES:
+            materialize_status = MATERIALIZE_PENDING
+        else:
+            manifest_json = await _materialize_publish_manifest(
+                db, owner_id=owner_id, asset_id=asset_id, runtime=runtime, manifest_json=manifest_json
+            )
+            materialize_status = MATERIALIZE_READY
         revision = Revision(
             site_id=site.id,
             owner_id=owner_id,
@@ -541,14 +613,18 @@ class PublishService:
             content_hash=content_hash,
             size_bytes=size_bytes,
             manifest_json=manifest_json,
+            materialize_status=materialize_status,
         )
         db.add(revision)
         await db.flush()
-        site.current_revision_id = revision.id
+        if materialize_status == MATERIALIZE_READY:
+            site.current_revision_id = revision.id
         site.status = 'active'  # update 自动复活已撤销 site
         site.rev += 1
         await db.flush()
         await PublishService._gc_revisions(db, site_id=site.id, keep_id=revision.id)
+        if materialize_status == MATERIALIZE_PENDING:
+            _dispatch_materialize_after_commit(db, revision.id)
         return {'site': site_to_dict(site), 'revision': revision_to_dict(revision), 'reused': False}
 
     @staticmethod
@@ -671,7 +747,14 @@ class PublishService:
 
     @staticmethod
     async def get_owned(db: AsyncSession, *, owner_id: str, site_id: int) -> dict[str, Any]:
-        return site_to_dict(await PublishService._get_owned(db, owner_id=owner_id, site_id=site_id))
+        site = await PublishService._get_owned(db, owner_id=owner_id, site_id=site_id)
+        latest = await PublishService.get_latest_revision(db, site_id=site_id)
+        return {
+            'site': site_to_dict(site),
+            # 轮询面：bundle-zip 异步物化后，调用方按 latest_revision.materialize_status 判
+            # pending/ready/failed——current_revision 指针只在 ready 时翻转，代表不了在途状态
+            'latest_revision': revision_to_dict(latest) if latest is not None else None,
+        }
 
     @staticmethod
     async def list_owned(
@@ -714,6 +797,166 @@ class PublishService:
         if site is None or site.current_revision_id is None:
             return None
         return await db.get(Revision, site.current_revision_id)
+
+    @staticmethod
+    async def get_latest_revision(db: AsyncSession, *, site_id: int) -> Revision | None:
+        """site 的最新未删 revision（serve 侧判「发布进行中」与 GET 轮询面用）。"""
+        return (
+            await db.execute(
+                select(Revision)
+                .where(Revision.site_id == site_id, Revision.deleted_time.is_(None))
+                .order_by(Revision.seq.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    # ---------------- 异步物化（bundle-zip，Celery worker 执行） ----------------
+
+    @staticmethod
+    async def materialize_revision(db: AsyncSession, *, revision_id: int) -> str:
+        """物化一个 pending revision：对象存储 fan-out → 回写 manifest.files → ready → 翻 site 指针。
+
+        幂等：`FOR UPDATE SKIP LOCKED`——重复消息/并发 worker 下同一 revision 只有一个在执行，
+        其余当场跳过；已 ready/failed 的直接跳过。
+
+        零 fake：确定性业务失败（制品缺失、zip 损坏/缺入口、referenced 资产失效）落
+        `failed` + 主人可读文案并通知主人，绝不静默，也绝不抛给任务层重试（重试无意义）；
+        其余意外异常（对象存储/网络/DB 抖动）原样抛出，由任务层退避重试。
+        """
+        revision = (
+            await db.execute(
+                select(Revision)
+                .where(Revision.id == revision_id, Revision.deleted_time.is_(None))
+                .with_for_update(skip_locked=True)
+            )
+        ).scalar_one_or_none()
+        if revision is None:
+            return 'skip:locked-or-deleted'
+        if revision.materialize_status != MATERIALIZE_PENDING:
+            return f'skip:{revision.materialize_status}'
+
+        site = await db.get(Site, revision.site_id)
+        if site is None or site.deleted_time is not None:
+            # 站点在物化期间被删除：落终态避免每分钟 sweep 反复捞起，不通知（主人自己删的）
+            revision.materialize_status = MATERIALIZE_FAILED
+            revision.materialize_error = '发布已取消（站点已删除）'
+            await db.flush()
+            return 'failed:site-deleted'
+
+        try:
+            manifest_json = await _materialize_publish_manifest(
+                db,
+                owner_id=revision.owner_id,
+                asset_id=revision.asset_id,
+                runtime=revision.runtime,
+                manifest_json=revision.manifest_json,
+            )
+        except (errors.RequestError, errors.ServerError) as exc:
+            revision.materialize_status = MATERIALIZE_FAILED
+            revision.materialize_error = exc.msg
+            await db.flush()
+            log.warning(f'[Publish] 物化业务失败: revision_id={revision_id}, site_id={site.id}, msg={exc.msg}')
+            await PublishService._notify_materialize_failed(db, site=site, revision=revision)
+            return f'failed:{exc.msg}'
+
+        revision.manifest_json = manifest_json
+        revision.materialize_status = MATERIALIZE_READY
+        revision.materialize_error = None
+
+        # 翻指针：行锁串行化并发物化；只许向更新的 seq 翻——同一 site 两个 pending 同时物化时，
+        # 先完成的旧 seq 不许把指针从新 seq 上拽回来。
+        # 已撤销/已删除的 site 不翻：serve 面按 status 判 410，翻了也是死指针，保持原状更诚实。
+        locked_site = (
+            await db.execute(select(Site).where(Site.id == site.id).with_for_update())
+        ).scalar_one()
+        if locked_site.deleted_time is None and locked_site.status != 'revoked':
+            current = None
+            if locked_site.current_revision_id is not None:
+                current = await db.get(Revision, locked_site.current_revision_id)
+            if current is None or current.seq < revision.seq:
+                locked_site.current_revision_id = revision.id
+        await db.flush()
+        log.info(f'[Publish] 物化完成: revision_id={revision_id}, site_id={site.id}')
+        return 'ready'
+
+    @staticmethod
+    async def mark_materialize_failed(db: AsyncSession, *, revision_id: int, error: str) -> str:
+        """任务重试耗尽后的兜底落 failed（由任务层用独立会话调用——主事务已回滚）。
+
+        幂等：非 pending 不动（可能已被 sweep 重派的新一轮执行救活）。
+        """
+        revision = (
+            await db.execute(
+                select(Revision)
+                .where(Revision.id == revision_id, Revision.deleted_time.is_(None))
+                .with_for_update(skip_locked=True)
+            )
+        ).scalar_one_or_none()
+        if revision is None or revision.materialize_status != MATERIALIZE_PENDING:
+            return 'skip'
+        revision.materialize_status = MATERIALIZE_FAILED
+        revision.materialize_error = error
+        await db.flush()
+        site = await db.get(Site, revision.site_id)
+        if site is not None and site.deleted_time is None:
+            await PublishService._notify_materialize_failed(db, site=site, revision=revision)
+        return 'failed'
+
+    @staticmethod
+    async def find_stuck_pending_materializations(db: AsyncSession, *, limit: int = 50) -> list[int]:
+        """滞留 pending 的 revision id 列表（created_time 早于宽限期），供每分钟 sweep 重新入队。
+
+        不加行锁：物化任务本身幂等（SKIP LOCKED + 状态判据），重复入队无害；
+        已删 site 的 pending 不捞（物化出来也没有读者）。
+        """
+        cutoff = timezone.now() - _SWEEP_GRACE
+        rows = (
+            await db.execute(
+                select(Revision.id)
+                .join(Site, Site.id == Revision.site_id)
+                .where(
+                    Revision.materialize_status == MATERIALIZE_PENDING,
+                    Revision.deleted_time.is_(None),
+                    Revision.created_time < cutoff,
+                    Site.deleted_time.is_(None),
+                )
+                .order_by(Revision.id)
+                .limit(limit)
+            )
+        ).scalars().all()
+        return list(rows)
+
+    @staticmethod
+    async def _notify_materialize_failed(db: AsyncSession, *, site: Site, revision: Revision) -> None:
+        """物化失败告知主人（best-effort，收在 savepoint 里）。
+
+        通知是「告知」，不是物化动作本身——通知侧故障绝不能把已落库的 failed 状态回滚掉
+        （同 hosting 生命周期通知的纪律）。失败如实 warn，外层事务照常继续。
+        """
+        from backend.app.notification.service.notification_service import NotificationService
+
+        try:
+            async with db.begin_nested():
+                await NotificationService.emit(
+                    db,
+                    recipient_id=site.owner_id,
+                    source={'kind': 'system', 'id': 'publish'},
+                    category='app',
+                    type='publish_materialize_failed',
+                    title=f'网页发布失败：{site.title or site.slug}',
+                    body=revision.materialize_error or '发布处理失败，请重新发布',
+                    payload={
+                        'site_id': site.id,
+                        'revision_id': revision.id,
+                        'materialize_status': revision.materialize_status,
+                    },
+                    priority='high',
+                    dedupe_key=f'publish_materialize_failed:{revision.id}',
+                )
+        except Exception as exc:
+            log.warning(
+                f'[Publish] 物化失败通知发送失败（不影响 failed 落库）: revision_id={revision.id}, err={exc}'
+            )
 
     # ---------------- 公开查看（/s/{slug}，[03] §3） ----------------
 

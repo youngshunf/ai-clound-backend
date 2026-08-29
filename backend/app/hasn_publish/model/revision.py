@@ -31,4 +31,12 @@ class Revision(PublishAppBase):
     manifest_json: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(), default=None, comment='bundle-zip 子文件清单（name→object_key/mime/size）；single-html 为 null'
     )
+    # 发布异步化（2026-08-29）：bundle-zip 物化（读 zip + 逐对象 PUT 对象存储，实测 38s+）挪进
+    # Celery，请求内只落 pending revision 立即返回。存量行 DEFAULT 'ready' 回填即真相。
+    materialize_status: Mapped[str] = mapped_column(
+        sa.String(16), default='ready', comment='物化状态（ready:已物化/pending:物化在途/failed:物化失败；仅 bundle-zip 会出现非 ready）'
+    )
+    materialize_error: Mapped[str | None] = mapped_column(
+        sa.Text(), default=None, comment='物化失败的主人可读原因（materialize_status=failed 时非空）'
+    )
     deleted_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='软删时间（非空=已删/回收）')

@@ -127,8 +127,9 @@ async def agent_list_sites(
 @router.get('/sites/{site_id}', summary='Agent 取发布详情', dependencies=[DependsAgentJwtAuth], name='publish_agent_get')
 async def agent_get_site(request: Request, db: CurrentSession, site_id: int) -> ResponseModel:
     agent = await _agent(request, db, _SCOPE_READ)
+    # data = {site, latest_revision}：latest_revision.materialize_status 是异步物化的轮询面
     data = await publish_service.get_owned(db, owner_id=agent.owner_hasn_id, site_id=site_id)
-    return response_base.success(data={'site': data})
+    return response_base.success(data=data)
 
 
 @router.put('/sites/{site_id}', summary='Agent 更新发布', dependencies=[DependsAgentJwtAuth], name='publish_agent_update')

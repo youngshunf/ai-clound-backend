@@ -58,6 +58,12 @@ LOCAL_BEAT_SCHEDULE = {
         # 抢占用 FOR UPDATE SKIP LOCKED，多副本并发安全。
         'schedule': TzAwareCrontab('*'),
     },
+    '发布物化滞留兜底': {
+        'task': 'publish_materialize_sweep',
+        # 每分钟把滞留 pending 的发布物化重新入队（after_commit 派发失败 / worker 中断 /
+        # broker 抖动）。物化任务幂等（SKIP LOCKED + 状态判据），重复入队无害。
+        'schedule': TzAwareCrontab('*'),
+    },
     'Agent 控制边关系 outbox 投递': {
         'task': 'hasn_relation_outbox_dispatch',
         # 提交后即时唤醒失败时，每分钟扫描一次持久命令，保证控制边最终落入 IM 关系域。

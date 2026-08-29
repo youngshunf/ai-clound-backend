@@ -134,8 +134,9 @@ async def get_by_source(
 @router.get('/sites/{site_id}', summary='发布详情', dependencies=[DependsJwtAuth])
 async def get_site(request: Request, db: CurrentSession, site_id: int) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
+    # data = {site, latest_revision}：latest_revision.materialize_status 是异步物化的轮询面
     data = await publish_service.get_owned(db, owner_id=owner_id, site_id=site_id)
-    return response_base.success(data={'site': data})
+    return response_base.success(data=data)
 
 
 @router.put('/sites/{site_id}', summary='更新发布（新 revision，URL 不变）', dependencies=[DependsJwtAuth])

@@ -11,6 +11,7 @@
 鉴权（[03] §3）：
   slug 不存在/已删/已撤销 → 404/410（不存在 slug 的探测按 IP 限速）
   expires_at 已过 → 410 Gone
+  bundle-zip 物化在途（current_revision 尚未翻转）→ 409；外壳渲染自动刷新的「发布进行中」过渡页
   private → 需短时访问票（[01] §3.1），否则 401
   password → 无票 → 输口令页；/unlock 校验（限速）通过发票
   unlisted/public → 直接放行；unlisted 恒 X-Robots-Tag: noindex
@@ -34,7 +35,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_publish.model.site import Site
-from backend.app.hasn_publish.service.publish_service import publish_service
+from backend.app.hasn_publish.service.publish_service import MATERIALIZE_PENDING, publish_service
 from backend.core.conf import settings
 from backend.database.db import CurrentSession
 from backend.database.redis import redis_client
@@ -196,6 +197,14 @@ async def _authorize_view(
             status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '分享已过期', 'data': None}
         )
     if site.current_revision_id is None:
+        # 指针为空的两种真相：bundle-zip 异步物化在途/失败（2026-08-29 发布异步化引入），
+        # 或从未有过内容。在途必须给「发布进行中」而不是 410——410 会被主人当成坏链，
+        # 而此刻内容其实正在就绪（visitor_shell 把 409 渲染成自动刷新过渡页）。
+        latest = await publish_service.get_latest_revision(db, site_id=site.id)
+        if latest is not None and latest.materialize_status == MATERIALIZE_PENDING:
+            return site, JSONResponse(
+                status_code=409, headers=_NO_STORE_HEADERS, content={'code': 409, 'msg': '发布进行中', 'data': None}
+            )
         return None, JSONResponse(
             status_code=410, headers=_NO_STORE_HEADERS, content={'code': 410, 'msg': '分享内容不可用', 'data': None}
         )
@@ -216,6 +225,12 @@ async def viewer_shell(
 ) -> Response:
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
+        # bundle-zip 物化在途 → 自动刷新过渡页（200 + meta refresh），与 401→口令页同模式
+        if isinstance(err, JSONResponse) and err.status_code == 409 and site is not None:
+            return HTMLResponse(
+                content=_materializing_page(site.title),
+                headers={'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'no-store'},
+            )
         # password 未授权时返回输口令页（200 + 表单），其余原样
         if (
             isinstance(err, JSONResponse)
@@ -522,6 +537,29 @@ if(r.ok&&j.data&&j.data.ticket){{location.href='/s/{s}?vt='+encodeURIComponent(j
 else{{document.getElementById('err').textContent=(j&&j.msg)||'口令错误';}}}}
 document.getElementById('pw').addEventListener('keydown',function(e){{if(e.key==='Enter')go();}});
 </script></body></html>"""
+
+
+def _materializing_page(title: str) -> str:
+    """bundle-zip 异步物化在途的过渡页：5s 自动刷新，就绪即进正式查看器。
+
+    存在理由：发布异步化后 create 立即返回、物化在 worker 里跑（大包几十秒）。此间打开
+    链接若给 410「内容不可用」是假话（内容正在就绪），且会被主人当成坏链关掉。
+    title 经 html.escape（用户输入，防注入）。
+    """
+    t = html.escape(title) if title else ''
+    heading = f'「{t}」正在发布' if t else '页面正在发布'
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>发布进行中 · 唤星</title><style>
+body{{font-family:system-ui,-apple-system,sans-serif;background:#f9fafb;color:#111827;display:flex;
+min-height:100vh;align-items:center;justify-content:center;margin:0}}
+.card{{background:#fff;padding:32px;border-radius:16px;width:320px;text-align:center}}
+h1{{font-size:16px;margin:0 0 12px}}p{{font-size:13px;color:#6b7280;margin:0;line-height:1.7}}
+.dot{{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2563EB;margin-right:8px;
+animation:p 1s ease-in-out infinite alternate}}@keyframes p{{from{{opacity:.25}}to{{opacity:1}}}}
+</style></head><body><div class="card"><h1><span class="dot"></span>{heading}</h1>
+<p>内容正在打包上线，通常几十秒内就绪。<br>本页会自动刷新，无需操作。</p></div></body></html>"""
 
 
 def _growth_form_broker_script(

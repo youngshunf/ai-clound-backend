@@ -17,6 +17,9 @@ CREATE TABLE "hasn_publish"."revision" (
   "content_hash"  varchar(64)    NOT NULL DEFAULT '',
   "size_bytes"    bigint         NOT NULL DEFAULT 0,
   "manifest_json" jsonb,
+  -- 2026-08-29 发布异步化新增（迁移：migrations/2026-08-29-revision-materialize-status.sql）
+  "materialize_status" varchar(16)  NOT NULL DEFAULT 'ready',
+  "materialize_error" text,
   "created_time"  timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time"  timestamptz(6),
   "deleted_time"  timestamptz(6)
@@ -35,7 +38,9 @@ COMMENT ON COLUMN "hasn_publish"."revision"."asset_id" IS '制品在 public.hasn
 COMMENT ON COLUMN "hasn_publish"."revision"."runtime" IS '运行时形态 (single-html:单文件:green/bundle-zip:含资产:blue)';
 COMMENT ON COLUMN "hasn_publish"."revision"."content_hash" IS '制品内容哈希 sha256（去重/校验/幂等）';
 COMMENT ON COLUMN "hasn_publish"."revision"."size_bytes" IS '制品大小（字节）';
-COMMENT ON COLUMN "hasn_publish"."revision"."manifest_json" IS 'bundle-zip 发布时解包的子文件清单（name→object_key/mime/size）；single-html 为 null';
+COMMENT ON COLUMN "hasn_publish"."revision"."manifest_json" IS 'bundle-zip 发布时解包的子文件清单（name→object_key/mime/size）；single-html 为 null；pending 期间为打包侧原 manifest（无 files）';
+COMMENT ON COLUMN "hasn_publish"."revision"."materialize_status" IS '物化状态（ready:已物化/pending:bundle-zip 物化在途(Celery)/failed:物化失败；仅 bundle-zip 会出现非 ready）';
+COMMENT ON COLUMN "hasn_publish"."revision"."materialize_error" IS '物化失败的主人可读原因（materialize_status=failed 时非空，可空）';
 COMMENT ON COLUMN "hasn_publish"."revision"."created_time" IS '发布时刻（revision 永不改）';
 COMMENT ON COLUMN "hasn_publish"."revision"."updated_time" IS '更新时间（revision immutable，恒为空；为对齐 fba DateTimeMixin 保留）';
 COMMENT ON COLUMN "hasn_publish"."revision"."deleted_time" IS '软删时间（非空=已删/回收）';
